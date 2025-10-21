@@ -4,7 +4,7 @@ set -euo pipefail
 URL="${1:-https://www.youtube.com/watch?v=4Qj5y0Vtdds}"
 OUTDIR="${2:-./out}"
 
-# Device defaults to CPU to avoid cuDNN issues; override by exporting DEVICE=cuda if desired
+# You can still try GPU, but the script now *forces CPU* if CUDA/cuDNN are not good.
 DEVICE="${DEVICE:-cpu}"
 COMPUTE_TYPE="${COMPUTE_TYPE:-int8}"
 
@@ -12,7 +12,7 @@ echo "=== yt-dlp probe (CLI formats) ==="
 yt-dlp -F "$URL" | sed -n '1,60p'
 echo
 
-echo "=== running local_transcribe.py (CPU by default) ==="
+echo "=== running local_transcribe.py (GPU if viable, otherwise forced CPU) ==="
 python local_transcribe.py \
   --url "$URL" \
   --model medium \

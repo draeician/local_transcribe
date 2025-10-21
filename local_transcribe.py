@@ -2,9 +2,10 @@
 """
 Robust local YouTube audio → Whisper transcript → JSON.
 
-Defaults to CPU to avoid CUDA/cuDNN issues. You can opt into GPU with:
-  --device cuda --compute-type float16
-(provided your CUDA/cuDNN stack matches the faster-whisper/ctranslate2 wheels)
+HARD CPU SAFEGUARD:
+- Even if --device cuda is requested, we *preflight* CUDA/cuDNN.
+- If anything looks off, we *force CPU* by setting CT2_USE_CUDA=0
+  before model init to avoid native aborts.
 
 Usage:
   python local_transcribe.py \
@@ -13,14 +14,14 @@ Usage:
     --language auto \
     --device cpu \
     --compute-type int8 \
-    --output-dir ./out \
-    [--cookies-from-browser firefox]
+    --output-dir ./out
 """
 
 import argparse
 import json
 import os
 import sys
+import ctypes
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, Dict
@@ -35,6 +36,13 @@ SAFARI_UA = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) "
     "Version/15.6 Safari/605.1.15"
 )
+
+CUDNN_CANDIDATES = [
+    # Common cuDNN 9 sonames seen in recent distros
+    "libcudnn_ops.so.9.1.0", "libcudnn_ops.so.9.1", "libcudnn_ops.so.9",
+    # Fallback generic names (older/newer)
+    "libcudnn.so.9", "libcudnn.so",
+]
 
 
 def iso8601_from_ts(ts: Optional[float]) -> str:
@@ -197,6 +205,41 @@ def download_audio_and_metadata(
     raise RuntimeError(f"All download strategies failed. Last error: {last_err}")
 
 
+def _cuda_preflight() -> tuple[bool, str]:
+    """
+    Try to decide if CUDA/cuDNN are usable *without crashing the process*.
+    Returns (ok, reason_if_not_ok).
+    """
+    # Respect explicit opt-out
+    if os.environ.get("CT2_USE_CUDA", "").strip() == "0":
+        return False, "CT2_USE_CUDA=0"
+
+    # Check ctranslate2's view of GPUs
+    try:
+        import ctranslate2 as ct2  # type: ignore
+        get_cnt = getattr(ct2, "get_cuda_device_count", None)
+        if callable(get_cnt):
+            if get_cnt() < 1:
+                return False, "No CUDA devices visible to ctranslate2"
+        else:
+            # Older ct2 builds might not expose this; continue checks
+            pass
+    except Exception as e:
+        return False, f"ctranslate2 import failed: {e}"
+
+    # Try to see if cuDNN is present (best-effort)
+    try:
+        for name in CUDNN_CANDIDATES:
+            try:
+                ctypes.CDLL(name)
+                return True, ""
+            except OSError:
+                continue
+        return False, "cuDNN .so not found"
+    except Exception as e:
+        return False, f"cuDNN probe error: {e}"
+
+
 def transcribe_audio(
     audio_path: Path,
     model_name: str = "medium",
@@ -208,37 +251,44 @@ def transcribe_audio(
 ) -> str:
     """
     Transcribe with faster-whisper.
-    - Defaults to CPU + int8 for maximum compatibility.
-    - If device='auto' or 'cuda' is chosen but GPU init fails, falls back to CPU.
+    HARD CPU SAFEGUARD: If CUDA/cuDNN preflight fails, we force CPU by
+    setting CT2_USE_CUDA=0 *before* model init to prevent native aborts.
     """
     lang_arg = None if (language is None or language.lower() == "auto") else language
 
-    def _run(model_device: str, model_compute: str) -> str:
-        model = WhisperModel(model_name, device=model_device, compute_type=model_compute)
-        segments, _info = model.transcribe(
-            str(audio_path),
-            language=lang_arg,
-            beam_size=beam_size,
-            vad_filter=vad_filter,
-        )
-        parts = []
-        for seg in segments:
-            t = (seg.text or "").strip()
-            if t:
-                parts.append(t)
-        return " ".join(parts)
+    # Preflight GPU if requested
+    effective_device = device
+    effective_compute = compute_type
+    if device.lower() in ("cuda", "auto"):
+        ok, reason = _cuda_preflight()
+        if not ok:
+            # Force CPU at environment level (read by ctranslate2)
+            os.environ["CT2_USE_CUDA"] = "0"
+            print(f"[warn] CUDA not usable ({reason}); forcing CPU int8.", file=sys.stderr)
+            effective_device = "cpu"
+            effective_compute = "int8"
+        else:
+            # Ensure GPU is allowed
+            os.environ.pop("CT2_USE_CUDA", None)
 
-    try:
-        return _run(device, compute_type)
-    except Exception as e:
-        if device.lower() in ("cuda", "auto"):
-            print(f"[warn] GPU init failed ({e}); falling back to CPU int8.", file=sys.stderr)
-            return _run("cpu", "int8")
-        raise
+    # Initialize and run
+    model = WhisperModel(model_name, device=effective_device, compute_type=effective_compute)
+    segments, _info = model.transcribe(
+        str(audio_path),
+        language=lang_arg,
+        beam_size=beam_size,
+        vad_filter=vad_filter,
+    )
+    parts = []
+    for seg in segments:
+        t = (seg.text or "").strip()
+        if t:
+            parts.append(t)
+    return " ".join(parts)
 
 
 def main():
-    p = argparse.ArgumentParser(description="YouTube → local audio → Whisper → JSON (API-free)")
+    p = argparse.ArgumentParser(description="YouTube → local audio → Whisper → JSON (API-free, CPU-safe)")
     p.add_argument("--url", required=True, help="YouTube video URL (or ID).")
     p.add_argument("--model", default="medium", help="Whisper model: tiny|base|small|medium|large-v3")
     p.add_argument("--language", default="auto", help='Language code (e.g., "en") or "auto"')
@@ -283,7 +333,7 @@ def main():
             user_extractor_args=args.user_extractor_args,
         )
     except Exception as e:
-        print(f"[error] Failed to download audio/metadata: {e}", file=sys.stderr)
+        print(f("[error] Failed to download audio/metadata: {e}"), file=sys.stderr)
         sys.exit(2)
 
     try:
@@ -295,7 +345,7 @@ def main():
             compute_type=args.compute_type,
         )
     except Exception as e:
-        print(f"[error] Failed to transcribe audio: {e}", file=sys.stderr)
+        print(f("[error] Failed to transcribe audio: {e}"), file=sys.stderr)
         sys.exit(3)
 
     output_obj = build_output_json(meta, transcript)
