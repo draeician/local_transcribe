@@ -1,0 +1,10 @@
+# Example URL list for batch processing
+# Lines starting with # are ignored
+# Empty lines are also ignored
+
+https://www.youtube.com/watch?v=GHUyr2UGTh8
+https://www.youtube.com/watch?v=DMQ_HcNSOAI
+
+# Add more URLs below (one per line)
+
+
