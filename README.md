@@ -1,3 +1,58 @@
+# Local YouTube Transcription System
+
+> **Production-ready batch transcription** with resume capability, file verification, and detailed logging.
+
+**Features:**
+- ✅ Local processing (no API throttling)
+- ✅ CUDA GPU acceleration + CPU fallback
+- ✅ Batch processing with resume capability
+- ✅ File verification and status tracking
+- ✅ Retry logic and failure handling
+- ✅ FOSS only (yt-dlp + faster-whisper)
+
+---
+
+## 🚀 Quick Start
+
+### New to the system?
+1. Follow the [Setup Guide](#system-setup) below
+2. Read [QUICK_REFERENCE.md](QUICK_REFERENCE.md) for common commands
+3. Start with: `python batch_transcribe.py --input inputfile.txt`
+
+### Batch Processing (Recommended)
+```bash
+# Process multiple videos with resume capability
+python batch_transcribe.py --input inputfile.txt
+
+# If interrupted, just resume
+python batch_transcribe.py --resume
+
+# Check status
+python reconcile.py
+```
+
+### Single Video
+```bash
+python local_transcribe.py --url "https://youtube.com/watch?v=VIDEO_ID"
+```
+
+---
+
+## 📚 Documentation
+
+| Document | Purpose |
+|----------|---------|
+| **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** | ⭐ Common commands (start here!) |
+| **[BATCH_TRANSCRIBE_README.md](BATCH_TRANSCRIBE_README.md)** | Complete batch system guide |
+| **[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)** | System evolution & features |
+| **[UPGRADE_SUMMARY.md](UPGRADE_SUMMARY.md)** | Why use batch_transcribe.py |
+| **[BUILDPLAN.md](BUILDPLAN.md)** | Original design document |
+| **This file (README.md)** | System setup & troubleshooting |
+
+---
+
+## System Setup
+
 ```bash
 # System setup for Whisper + CUDA 13 + cuDNN 9 on Linux Mint 22
 
@@ -47,7 +102,7 @@ print("cuDNN version:", torch.backends.cudnn.version())
 print("CT2 version:", ctranslate2.__version__)
 EOF
 
-# 10. Run local transcribe pipeline
+# 10. Test the setup
 python local_transcribe.py \
   --url "https://www.youtube.com/watch?v=DMQ_HcNSOAI" \
   --model medium \
@@ -55,6 +110,9 @@ python local_transcribe.py \
   --device cuda \
   --compute-type float16 \
   --output-dir ./out
+
+# 11. For batch processing, use the batch application
+python batch_transcribe.py --input inputfile.txt
 ```
 
 [1](https://github.com/SYSTRAN/faster-whisper)
@@ -157,38 +215,39 @@ export LD_LIBRARY_PATH=$(python3 -c "import nvidia.cublas, nvidia.cudnn, os; pri
 python local_transcribe.py --url <URL> --model medium --device cuda --compute-type float16 --output-dir ./out
 ```
 
-**Option 2: Create a wrapper script (Recommended) ⭐**
-A `run_transcribe.sh` wrapper script has been created for you with sensible defaults:
+**Option 2: Use the Python batch application (Recommended) ⭐**
+
+For batch processing, use `batch_transcribe.py` instead of the shell wrapper:
+
 ```bash
-# Simple usage - just provide the URL!
-./run_transcribe.sh --url <YOUTUBE_URL>
+# Batch mode with resume capability
+python batch_transcribe.py --input inputfile.txt
 
-# Batch mode - process multiple URLs from a file
-./run_transcribe.sh -i urls.txt
+# If interrupted, just resume
+python batch_transcribe.py --resume
 
-# Override defaults if needed
-./run_transcribe.sh --url <YOUTUBE_URL> --model large-v3 --device cpu
-./run_transcribe.sh -i urls.txt --model large-v3
+# Check status anytime
+python reconcile.py
 ```
 
-**Default values:**
-- `--model medium`
-- `--device cuda`
-- `--compute-type float16`
-- `--output-dir /home/draeician/references/transcripts`
+**Why use batch_transcribe.py instead of run_transcribe.sh?**
+- ✅ **Resume capability** - Never lose progress
+- ✅ **File verification** - Checks actual output files
+- ✅ **Status tracking** - JSON state for every video
+- ✅ **Retry logic** - Automatic retry for failures
+- ✅ **Detailed logging** - Complete audit trail
+- ✅ **Failure reports** - Know what failed and why
 
-**Batch mode (`-i` flag):**
-- Reads URLs from a file (one URL per line)
-- Processes each URL in sequence
-- Successfully completed URLs are logged to `finished.dat`
-- Empty lines and lines starting with `#` are ignored
-- Shows summary statistics at the end
+See [BATCH_TRANSCRIBE_README.md](BATCH_TRANSCRIBE_README.md) for full details.
 
-This script automatically:
-- Activates the venv
-- Sets the correct LD_LIBRARY_PATH for cuDNN/cublas
-- Applies sensible defaults for CUDA transcription
-- Runs local_transcribe.py with your arguments
+**Legacy shell wrapper:**
+The `run_transcribe.sh` script is still available but deprecated. It lacks resume capability and file verification.
+
+```bash
+# Legacy usage (not recommended for batch jobs)
+./run_transcribe.sh --url <YOUTUBE_URL>
+./run_transcribe.sh -i urls.txt
+```
 
 **Option 3: Add to activation script (Persistent for this venv)**
 Add to `venv/bin/activate`:
@@ -236,8 +295,11 @@ A: The NVIDIA cuDNN libraries installed via pip go into your venv's `site-packag
 **Q: Can I suppress the DRM warning?**  
 A: Yes, but it's not recommended. If you really want to, redirect stderr: `./run_transcribe.sh --url <URL> 2>/dev/null`. However, this will also hide legitimate error messages.
 
-**Q: How do I use the simplified wrapper script?**  
-A: Just run `./run_transcribe.sh --url <YOUTUBE_URL>` - it uses CUDA by default with the medium model. All other parameters (--model, --device, --compute-type, --output-dir) can be overridden if needed.
+**Q: How do I process multiple videos?**  
+A: Use the Python batch application: `python batch_transcribe.py --input inputfile.txt`. It has resume capability, status tracking, and file verification. See [QUICK_REFERENCE.md](QUICK_REFERENCE.md).
 
-**Q: How do I process multiple videos at once?**  
-A: Create a text file with one URL per line (e.g., `urls.txt`), then run `./run_transcribe.sh -i urls.txt`. Successfully completed URLs are logged to `finished.dat` so you can track progress. You can use `#` for comments and blank lines are ignored.
+**Q: What if I get interrupted while processing?**  
+A: Just run `python batch_transcribe.py --resume` - it picks up exactly where you left off.
+
+**Q: How do I check what's actually completed?**  
+A: Run `python reconcile.py` - it checks actual transcript files vs. what's recorded in finished.dat and generates reports.

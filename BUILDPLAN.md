@@ -1,4 +1,19 @@
-PROMPT:
+# BUILDPLAN.md - Original Design Document
+
+> **Note**: This document represents the **original design** from October 2024. The system has since evolved significantly beyond this initial plan. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for current features, or [QUICK_REFERENCE.md](QUICK_REFERENCE.md) to start using the system today.
+>
+> **Current status**: ✅ Core plan implemented and **significantly enhanced** with production features:
+> - Resume capability for batch processing
+> - File verification and reconciliation
+> - Detailed logging and status tracking
+> - Retry logic and failure handling
+> - See [BATCH_TRANSCRIBE_README.md](BATCH_TRANSCRIBE_README.md) for the full feature set
+
+---
+
+## Original Requirements (October 2024)
+
+**PROMPT:**
 On a debian based linux system, I need a way to download the audio from a youtube video, and extract the text transcription from it.  The youtube api tends to throttle transcript downloads quickly, this will offload the work to my systems.  Create a plan on how to do this using python  and only free/open source solutions.  The output of this process should look like a normal transcript output in the json format below.
 
 [Attached file: YOUTUBE_VIDEO_ID.json
@@ -304,5 +319,62 @@ if __name__ == "__main__":
 * **Durations:** we trust `yt-dlp`’s `duration`. If you want to derive from the file, add an ffprobe or `soundfile` check as a fallback.
 * **Comments array:** left empty per your schema. If later you want to populate comments *without the YouTube API*, you can add an HTML scraper with caching and rate-limiting, but that’s separate.
 
-That’s it—fully local, API-free, and emits exactly your target JSON.
+That's it—fully local, API-free, and emits exactly your target JSON.
+
+---
+
+## 🎉 Implementation Status
+
+This plan was **successfully implemented** as `local_transcribe.py` with significant enhancements:
+
+### ✅ Original Requirements Met
+- YouTube audio download via yt-dlp ✅
+- Local Whisper transcription via faster-whisper ✅
+- Exact JSON schema output ✅
+- FOSS-only solution ✅
+- No API dependencies ✅
+
+### 🚀 Beyond Original Plan
+The implementation evolved into a **production-ready system** with:
+
+1. **`local_transcribe.py`** - Enhanced single-video processor
+   - CUDA safety checks with CPU fallback
+   - Multiple download strategies
+   - Cookie support for restricted videos
+   - Better error handling
+
+2. **`batch_transcribe.py`** - Production batch processor (NEW)
+   - Process 500+ videos with resume capability
+   - Status tracking in JSON
+   - Retry logic with configurable attempts
+   - Detailed logging and failure reports
+   - File verification before marking complete
+   - Real-time progress monitoring
+
+3. **`reconcile.py`** - Three-way status checker (NEW)
+   - Compares input file vs finished.dat vs actual transcript files
+   - Identifies missing/orphaned files
+   - Generates clean input files
+   - Detects duplicates and invalid URLs
+
+### 📚 Documentation
+- [QUICK_REFERENCE.md](QUICK_REFERENCE.md) - Start here for common commands
+- [BATCH_TRANSCRIBE_README.md](BATCH_TRANSCRIBE_README.md) - Complete feature guide
+- [UPGRADE_SUMMARY.md](UPGRADE_SUMMARY.md) - Why the enhanced system
+- [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) - Evolution timeline
+
+### 🎯 Quick Start (Current System)
+
+```bash
+# For batch processing (recommended):
+python batch_transcribe.py --input inputfile.txt
+
+# For single videos:
+python local_transcribe.py --url "https://youtube.com/watch?v=VIDEO_ID"
+
+# Check status:
+python reconcile.py
+```
+
+**See [QUICK_REFERENCE.md](QUICK_REFERENCE.md) for full usage guide.**
 
