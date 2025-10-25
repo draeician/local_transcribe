@@ -13,6 +13,7 @@ Features:
 Usage:
     python batch_transcribe.py --input inputfile.txt [options]
     python batch_transcribe.py --resume  # Resume previous run
+    python batch_transcribe.py --clear-completed  # Clear completed videos from status file
 """
 
 import argparse
@@ -368,8 +369,9 @@ class BatchTranscriber:
         self.initialize_videos(urls)
         
         self.logger.info(f"Total videos: {self.stats['total']}")
-        self.logger.info(f"Already completed: {self.stats['skipped']}")
-        self.logger.info(f"To process: {self.stats['pending']}")
+        self.logger.info(f"Completed: {self.stats['completed']}")
+        self.logger.info(f"Failed: {self.stats['failed']}")
+        self.logger.info(f"Pending: {self.stats['pending']}")
         self.logger.info("")
         
         # Process all pending videos
@@ -493,8 +495,8 @@ def main():
     
     parser.add_argument(
         "--cookies-from-browser",
-        default=None,
-        help='Load cookies from browser (e.g., "firefox", "chrome", "brave")'
+        default="firefox",
+        help='Load cookies from browser (default: firefox; other options: "chrome", "brave")'
     )
     
     parser.add_argument(
@@ -503,7 +505,41 @@ def main():
         help="Path to cookies.txt file in Netscape format"
     )
     
+    parser.add_argument(
+        "--clear-completed", "-c",
+        action="store_true",
+        help="Clear completed videos from batch_status.json (keeps failed and pending)"
+    )
+    
     args = parser.parse_args()
+    
+    # Handle --clear-completed flag
+    if args.clear_completed:
+        status_file = Path("batch_status.json")
+        if not status_file.exists():
+            print("No batch_status.json found. Nothing to clear.")
+            sys.exit(0)
+        
+        with open(status_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        original_count = len(data)
+        completed_count = sum(1 for v in data.values() if v['status'] == 'completed')
+        
+        # Keep only failed and pending videos
+        filtered_data = {
+            vid_id: status_data 
+            for vid_id, status_data in data.items() 
+            if status_data['status'] in ['failed', 'pending', 'processing']
+        }
+        
+        with open(status_file, 'w', encoding='utf-8') as f:
+            json.dump(filtered_data, f, indent=2)
+        
+        print(f"Cleared {completed_count} completed videos from batch_status.json")
+        print(f"Kept {len(filtered_data)} videos (failed/pending/processing)")
+        print(f"Total before: {original_count} → Total after: {len(filtered_data)}")
+        sys.exit(0)
     
     # Create transcriber
     transcriber = BatchTranscriber(

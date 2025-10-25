@@ -33,6 +33,8 @@ categorize_failures.py
 check_accessible.py
 cleanup_dead_videos.py
 cleanup_stuck_video.py
+fix_stuck_processing.py
+reset_to_pending.py
 split_into_batches.py
 process_all_batches.sh
 safer_batch_transcribe.sh

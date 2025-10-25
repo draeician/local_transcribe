@@ -302,7 +302,7 @@ def main():
                    help="CT2 compute type (default: int8)")
 
     # Advanced/network/auth
-    p.add_argument("--cookies-from-browser", default=None, help='e.g., "firefox", "chrome", "brave"')
+    p.add_argument("--cookies-from-browser", default="firefox", help='Load cookies from browser (default: firefox; other options: "chrome", "brave")')
     p.add_argument("--cookies-file", default=None, help="Path to cookies.txt (Netscape format)")
     p.add_argument("--retries", type=int, default=10)
     p.add_argument("--fragment-retries", type=int, default=10)
