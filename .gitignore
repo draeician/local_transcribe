@@ -1,12 +1,39 @@
 .env
 venv/
 
+# Output and downloads
 out/
-
 cuda-keyring_1.1-1_all.deb
 
 # Cursor specific
 .cursor/rules/*.mdc
 
+# Input files and tracking
 finished.dat
+finished_clean.dat
+finished_corrected.dat
 inputfile.txt
+inputfile.txt.backup
+inputfile_clean.txt
+
+# Batch processing files
+batch_status.json
+batches/
+logs/
+
+# Categorization and reconciliation outputs
+accessible.txt
+pending.txt
+recoverable.txt
+missing_transcripts.txt
+orphaned_transcripts.txt
+
+# Temporary helper scripts and guides
+categorize_failures.py
+check_accessible.py
+cleanup_dead_videos.py
+cleanup_stuck_video.py
+split_into_batches.py
+process_all_batches.sh
+safer_batch_transcribe.sh
+SYSTEM_FREEZE_PREVENTION.md

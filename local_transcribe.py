@@ -306,7 +306,7 @@ def main():
     p.add_argument("--cookies-file", default=None, help="Path to cookies.txt (Netscape format)")
     p.add_argument("--retries", type=int, default=10)
     p.add_argument("--fragment-retries", type=int, default=10)
-    p.add_argument("--concurrent-frags", type=int, default=8)
+    p.add_argument("--concurrent-frags", type=int, default=4)  # Reduced from 8 to prevent system overload
 
     # Optional overrides (yt-dlp)
     p.add_argument("--format", dest="user_format", default=None, help='yt-dlp format selector, e.g. "140"')
@@ -333,7 +333,7 @@ def main():
             user_extractor_args=args.user_extractor_args,
         )
     except Exception as e:
-        print(f("[error] Failed to download audio/metadata: {e}"), file=sys.stderr)
+        print(f"[error] Failed to download audio/metadata: {e}", file=sys.stderr)
         sys.exit(2)
 
     try:

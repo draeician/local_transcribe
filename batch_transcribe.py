@@ -55,6 +55,8 @@ class BatchTranscriber:
         max_retries: int = 2,
         log_dir: Optional[Path] = None,
         status_file: Optional[Path] = None,
+        cookies_from_browser: Optional[str] = None,
+        cookies_file: Optional[str] = None,
     ):
         self.input_file = input_file
         self.output_dir = Path(output_dir)
@@ -64,6 +66,8 @@ class BatchTranscriber:
         self.device = device
         self.compute_type = compute_type
         self.max_retries = max_retries
+        self.cookies_from_browser = cookies_from_browser
+        self.cookies_file = cookies_file
         
         # Setup logging
         self.log_dir = Path(log_dir or "logs")
@@ -266,15 +270,21 @@ class BatchTranscriber:
         
         self.logger.info(f"[{self.stats['completed']}/{self.stats['total']}] Processing: {vid_id} (attempt {status.attempts})")
         
-        # Build command
+        # Build command (use current Python interpreter)
         cmd = [
-            "python", "local_transcribe.py",
+            sys.executable, "local_transcribe.py",
             "--url", status.url,
             "--model", self.model,
             "--device", self.device,
             "--compute-type", self.compute_type,
             "--output-dir", str(self.output_dir),
         ]
+        
+        # Add cookie options if specified
+        if self.cookies_from_browser:
+            cmd.extend(["--cookies-from-browser", self.cookies_from_browser])
+        if self.cookies_file:
+            cmd.extend(["--cookies-file", self.cookies_file])
         
         start_time = time.time()
         
@@ -481,6 +491,18 @@ def main():
         help="Resume from previous run (uses batch_status.json)"
     )
     
+    parser.add_argument(
+        "--cookies-from-browser",
+        default=None,
+        help='Load cookies from browser (e.g., "firefox", "chrome", "brave")'
+    )
+    
+    parser.add_argument(
+        "--cookies-file",
+        default=None,
+        help="Path to cookies.txt file in Netscape format"
+    )
+    
     args = parser.parse_args()
     
     # Create transcriber
@@ -492,6 +514,8 @@ def main():
         compute_type=args.compute_type,
         max_retries=args.max_retries,
         log_dir=args.log_dir,
+        cookies_from_browser=args.cookies_from_browser,
+        cookies_file=args.cookies_file,
     )
     
     # Run
