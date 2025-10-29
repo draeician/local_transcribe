@@ -1,0 +1,3 @@
+- video id tracking system based on how it will be housed in the real system with a tank of transcripts to be checked agains, defined in queue and outqueue
+- need a better means of tracking videos
+- workers to run the queue so we can have more than one video at a time being transcribed to possibly speed things up
