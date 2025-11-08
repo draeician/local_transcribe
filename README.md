@@ -80,6 +80,8 @@ lt transcribe "https://youtube.com/watch?v=VIDEO_ID" \
 
 ### Using the CLI
 All functionality is available through the unified `lt` command:
+- `lt` or `lt --help` - Show help screen
+- `lt --version` - Show version information
 - `lt transcribe` - Transcribe a single video
 - `lt batch` - Process multiple videos
 - `lt reconcile` - Reconcile input with finished transcripts

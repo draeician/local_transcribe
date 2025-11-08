@@ -7,6 +7,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from local_transcribe import __version__
 from local_transcribe.logging_setup import configure_logging
 from local_transcribe.services.pipeline import BatchConfig, BatchPipeline
 from local_transcribe.services.reconcile import reconcile as reconcile_service, write_reconcile_outputs
@@ -307,6 +308,7 @@ def main(
     cookies_from_browser: str = typer.Option(None, help="Browser to extract cookies from"),
     cookies_file: str = typer.Option(None, help="Path to cookies.txt file"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
+    version: bool = typer.Option(False, "--version", help="Show version and exit"),
 ):
     """
     Smart transcription: automatically detects URL (single) or file (batch).
@@ -316,14 +318,28 @@ def main(
         lt inputfile.txt                                   # Batch processing
         lt inputfile.txt --resume                          # Resume batch
     """
+    # Handle --version flag
+    if version:
+        console.print(f"local-transcribe version {__version__}")
+        raise typer.Exit(0)
+    
     # IMPORTANT: Check if a subcommand is being invoked FIRST
     # ctx.invoked_subcommand is set by Typer when a subcommand is used
     # If it's not None, we should not process the source argument
     if ctx.invoked_subcommand is not None:
         return
     
-    # If no source provided, let Typer show help or handle subcommands
+    # If no source provided, show help
+    # With invoke_without_command=True, we need to explicitly show help
     if source is None:
+        # Check if this is just "lt" with no arguments (not a subcommand)
+        import sys
+        # If only script name in argv (or script + options but no positional args), show help
+        non_option_args = [arg for arg in sys.argv[1:] if not arg.startswith('-')]
+        if not non_option_args:
+            # No positional arguments - show help
+            ctx.get_help()
+            raise typer.Exit(0)
         return
     
     # Check if source is a known command name

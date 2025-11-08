@@ -337,7 +337,8 @@ du -h out/*.json | sort -h | tail -10
 - **README.md**: Complete setup and troubleshooting
 - **BATCH_TRANSCRIBE_README.md**: Complete guide
 - **UPGRADE_SUMMARY.md**: Why upgrade from shell script
-- **lt --help**: All CLI commands
+- **lt** or **lt --help**: Show help screen with all available commands
+- **lt --version**: Show version information
 
 ---
 
