@@ -4,6 +4,34 @@ Get started with local YouTube transcription in under 10 commands.
 
 ## Installation
 
+### Option 1: Using pipx (Recommended - Global Installation)
+
+**Quick Install (with GPU support):**
+```bash
+# From local directory
+./install_with_gpu.sh
+
+# Or from git repository (one-liner)
+pipx install git+https://github.com/draeician/local_transcribe.git && pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+**Manual Install:**
+```bash
+# Install from local directory
+pipx install .
+
+# Or install directly from git repository
+pipx install git+https://github.com/draeician/local_transcribe.git
+
+# Install PyTorch with CUDA support (required for GPU)
+pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Verify installation
+lt doctor
+```
+
+### Option 2: Using pip in a Virtual Environment
+
 ```bash
 # 1. Clone and enter the repository
 cd ~/git/personal/local_transcribe
@@ -15,8 +43,12 @@ source venv/bin/activate
 # 3. Install the package
 pip install -e .
 
-# 4. Verify installation
-lt --help
+# 4. Install GPU dependencies (optional)
+pip install -r requirements.txt
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 5. Verify installation
+lt doctor
 ```
 
 ## Basic Usage

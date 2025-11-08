@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-transcribe"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local YouTube transcription with Whisper"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,6 +20,8 @@ dependencies = [
     "ctranslate2>=4.3.1",
     "typer>=0.9.0",
     "rich>=13.0.0",
+    "nvidia-cublas",
+    "nvidia-cudnn",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +32,7 @@ dev = [
 ]
 
 [project.scripts]
-lt = "local_transcribe.cli:app"
+lt = "local_transcribe.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

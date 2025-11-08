@@ -1,2 +1,2 @@
 [console_scripts]
-lt = local_transcribe.cli:app
+lt = local_transcribe.cli:main

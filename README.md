@@ -14,11 +14,46 @@
 
 ## 🚀 Quick Start
 
-### New to the system?
-1. Follow the [Setup Guide](#system-setup) below
-2. Read [START_HERE.md](START_HERE.md) for quick installation
-3. Install: `pip install -e .`
-4. Start with: `lt batch --input inputfile.txt`
+### Installation Options
+
+**Option 1: pipx (Recommended - Global Installation)**
+```bash
+# Install from GitHub with GPU support
+pipx install git+https://github.com/draeician/local_transcribe.git
+pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Verify installation
+lt doctor
+```
+
+**Option 2: Local Development**
+```bash
+# Clone the repository
+git clone https://github.com/draeician/local_transcribe.git
+cd local_transcribe
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install the package
+pip install -e .
+pip install -r requirements.txt
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+**Updating an Existing Installation**
+```bash
+# If installed via pipx from git
+pipx upgrade local-transcribe
+
+# If installed locally via git clone
+cd ~/git/personal/local_transcribe
+git pull
+pip install -e . --upgrade
+```
+
+See [START_HERE.md](START_HERE.md) for detailed installation instructions.
 
 ### Batch Processing (Recommended)
 ```bash
@@ -68,16 +103,16 @@ All functionality is available through the unified `lt` command:
 
 ---
 
-## System Setup
+## Installation Guide
+
+### Prerequisites
 
 ```bash
-# System setup for Whisper + CUDA 13 + cuDNN 9 on Linux Mint 22
-
-# 1. Install dependencies
+# 1. Install system dependencies
 sudo apt update
-sudo apt install -y python3 python3-venv python3-pip ffmpeg
+sudo apt install -y python3 python3-venv python3-pip ffmpeg pipx
 
-# 2. Install CUDA Toolkit
+# 2. Install CUDA Toolkit (for GPU support)
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt update
@@ -91,72 +126,88 @@ source ~/.bashrc
 # 4. Verify CUDA
 nvcc --version
 nvidia-smi
+```
 
-# 5. Create project virtual environment
-cd ~/git/personal/local_transcribe
+### Installation Methods
+
+#### Method 1: pipx from GitHub (Recommended)
+
+**First-time installation:**
+```bash
+# Install the package (includes GPU dependencies)
+pipx install git+https://github.com/draeician/local_transcribe.git
+
+# Install PyTorch with CUDA support
+pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Verify installation
+lt doctor
+```
+
+**Updating an existing installation:**
+```bash
+# Update to latest version from GitHub
+pipx upgrade local-transcribe
+
+# Update PyTorch if needed
+pipx runpip local-transcribe install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Verify
+lt doctor
+```
+
+#### Method 2: Local Development (git clone)
+
+**First-time installation:**
+```bash
+# Clone the repository
+git clone https://github.com/draeician/local_transcribe.git
+cd local_transcribe
+
+# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
-# 6. Install CUDA‑13 cuDNN 9 (Python wheels)
-pip install -U nvidia-cublas-cu13 nvidia-cudnn-cu13
-export LD_LIBRARY_PATH=$(python3 -c "import nvidia.cublas, nvidia.cudnn, os; print(os.path.dirname(nvidia.cublas.__file__)+':'+os.path.dirname(nvidia.cudnn.__file__))"):$LD_LIBRARY_PATH
-
-# 7. Install PyTorch GPU + Faster Whisper
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-pip install -U ctranslate2>=4.6.0 faster-whisper
-
-# 8. (Optional) Symlink legacy cuDNN names if needed
-sudo ln -s /usr/lib/x86_64-linux-gnu/libcudnn_ops.so.9 /usr/lib/x86_64-linux-gnu/libcudnn_ops_infer.so.8
-sudo ln -s /usr/lib/x86_64-linux-gnu/libcudnn_cnn.so.9 /usr/lib/x86_64-linux-gnu/libcudnn_cnn_infer.so.8
-sudo ldconfig
-
-# 9. Verify GPU and cuDNN
-python3 - <<'EOF'
-import torch, ctranslate2
-print("CUDA available:", torch.cuda.is_available())
-print("Device:", torch.cuda.get_device_name(0))
-print("cuDNN version:", torch.backends.cudnn.version())
-print("CT2 version:", ctranslate2.__version__)
-EOF
-
-# 10. Install the package
+# Install the package and dependencies
 pip install -e .
+pip install -r requirements.txt
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
-# 11. Test the setup
+# Verify installation
+lt doctor
+```
+
+**Updating an existing installation:**
+```bash
+# Navigate to the repository
+cd ~/git/personal/local_transcribe  # or wherever you cloned it
+
+# Pull latest changes
+git pull
+
+# Update the package
+pip install -e . --upgrade
+
+# Update dependencies if needed
+pip install -r requirements.txt --upgrade
+pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Verify
+lt doctor
+```
+
+### Quick Test
+
+```bash
+# Test single video transcription
 lt transcribe "https://www.youtube.com/watch?v=DMQ_HcNSOAI" \
   --model medium \
   --device cuda \
   --compute-type float16
 
-# 12. For batch processing
+# Test batch processing
 lt batch --input inputfile.txt
 ```
-
-[1](https://github.com/SYSTRAN/faster-whisper)
-[2](https://pypi.org/project/whisper-ctranslate2/)
-[3](https://github.com/bungerr/faster-whisper-3)
-[4](https://www.youtube.com/watch?v=eFmql0NqacU)
-[5](https://www.youtube.com/watch?v=Kyc0AgMIBSU)
-[6](https://opennmt.net/CTranslate2/installation.html)
-[7](https://huggingface.co/Systran/faster-whisper-base)
-[8](https://rocm.blogs.amd.com/artificial-intelligence/ctranslate2/README.html)
-[9](https://www.reddit.com/r/LocalLLaMA/comments/1d1j31r/faster_whisper_server_an_openai_compatible_server/)
-[10](https://huggingface.co/Systran/faster-whisper-large-v3)
-
-
-
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt update
-sudo apt install -y cuda-toolkit
-echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-source ~/.bashrc
-
-nvcc --version
-
-Install cuda
-https://developer.nvidia.com/cudnn-downloads?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=24.04&target_type=deb_network
 
 ---
 

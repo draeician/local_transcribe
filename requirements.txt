@@ -4,3 +4,8 @@ tqdm>=4.66.2
 soundfile>=0.12.1
 ctranslate2>=4.3.1
 
+# GPU/CUDA support (optional - only needed for GPU acceleration)
+nvidia-cublas
+nvidia-cudnn
+# PyTorch with CUDA support - install from PyPI with:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
