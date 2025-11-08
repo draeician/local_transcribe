@@ -4,33 +4,39 @@
 
 ### First Time Setup
 ```bash
-# 1. Clean your input file
-python reconcile.py
+# 1. Install the package
+pip install -e .
 
-# 2. Start batch transcription
-python batch_transcribe.py --input inputfile_clean.txt
+# 2. Clean your input file
+lt reconcile
+
+# 3. Start batch transcription
+lt batch --input inputfile_clean.txt --device cuda --compute-type float16
 ```
 
 ### Resume After Interruption
 ```bash
 # Just resume! It remembers everything
-python batch_transcribe.py --resume
+lt batch --resume
 ```
 
 ### Check Status Anytime
 ```bash
 # Full reconciliation report
-python reconcile.py
+lt reconcile
 
 # Check current batch status
-cat batch_status.json | jq -r '.[] | [.status, .video_id] | @tsv' | sort | uniq -c
+lt status
 
-# Count by status
+# Or use jq for detailed queries
 jq '[.[] | .status] | group_by(.) | map({status: .[0], count: length})' batch_status.json
 ```
 
 ### Handle Failures
 ```bash
+# Generate failure report
+lt report
+
 # See what failed and why
 cat logs/failed_videos.txt
 
@@ -38,7 +44,7 @@ cat logs/failed_videos.txt
 jq -r '.[] | select(.status=="failed") | .url' batch_status.json > failed.txt
 
 # Retry with more attempts
-python batch_transcribe.py --input failed.txt --max-retries 5
+lt batch --input failed.txt --max-retries 5
 ```
 
 ---
@@ -47,10 +53,10 @@ python batch_transcribe.py --input failed.txt --max-retries 5
 
 ```
 local_transcribe/
-├── batch_transcribe.py          # NEW: Robust batch processor
-├── reconcile.py                 # NEW: Three-way status checker
-├── local_transcribe.py          # Core transcription (unchanged)
-├── run_transcribe.sh            # OLD: Legacy shell script
+├── src/local_transcribe/        # Package source code
+│   ├── cli.py                   # Unified CLI (lt command)
+│   ├── services/                # Core services
+│   └── utils/                   # Utilities
 │
 ├── inputfile.txt                # Your original URL list
 ├── inputfile_clean.txt          # Generated: Deduplicated, valid URLs
@@ -73,10 +79,10 @@ local_transcribe/
 ### Workflow 1: Fresh Start
 ```bash
 # Clean and prepare
-python reconcile.py
+lt reconcile
 
 # Start processing (uses cleaned input)
-python batch_transcribe.py --input inputfile_clean.txt
+lt batch --input inputfile_clean.txt --device cuda --compute-type float16
 
 # Monitor in another terminal
 tail -f logs/batch_transcribe_*.log
@@ -86,28 +92,28 @@ tail -f logs/batch_transcribe_*.log
 ```bash
 # Your previous run was interrupted...
 # Just resume!
-python batch_transcribe.py --resume
+lt batch --resume
 ```
 
 ### Workflow 3: Process Only New Videos
 ```bash
-# reconcile.py creates pending.txt with unprocessed videos
-python reconcile.py
+# reconcile creates pending.txt with unprocessed videos
+lt reconcile
 
 # Process just the pending ones
-python batch_transcribe.py --input pending.txt
+lt batch --input pending.txt
 ```
 
 ### Workflow 4: Retry Failures
 ```bash
 # After a batch run, some videos failed
-cat logs/failed_videos.txt  # Review failures
+lt report  # Generate failure report
 
 # Extract URLs
 jq -r '.[] | select(.status=="failed") | .url' batch_status.json > retry.txt
 
 # Retry with more attempts or different settings
-python batch_transcribe.py --input retry.txt --max-retries 5 --device cpu
+lt batch --input retry.txt --max-retries 5 --device cpu
 ```
 
 ---
@@ -116,16 +122,22 @@ python batch_transcribe.py --input retry.txt --max-retries 5 --device cpu
 
 ```bash
 # CPU mode (slower but more stable)
-python batch_transcribe.py --input INPUT.txt --device cpu --compute-type int8
+lt batch --input INPUT.txt --device cpu --compute-type int8
 
 # High quality model
-python batch_transcribe.py --input INPUT.txt --model large-v3
+lt batch --input INPUT.txt --model large-v3
 
 # More retries for flaky network
-python batch_transcribe.py --input INPUT.txt --max-retries 5
+lt batch --input INPUT.txt --max-retries 5
 
 # Custom output location
-python batch_transcribe.py --input INPUT.txt --output-dir /path/to/transcripts
+lt batch --input INPUT.txt --output-dir /path/to/transcripts
+
+# Single video transcription
+lt transcribe "https://youtube.com/watch?v=VIDEO_ID" --model medium --device cuda
+
+# Environment diagnostics
+lt doctor
 ```
 
 ---
@@ -180,18 +192,19 @@ pip install dataclasses
 Check that `batch_status.json` exists:
 ```bash
 ls -lh batch_status.json
+lt status  # Check status
 ```
 
 ### Want to start completely fresh
 ```bash
 rm batch_status.json
-python batch_transcribe.py --input inputfile.txt
+lt batch --input inputfile.txt
 ```
 
 ### Check what's actually completed
 ```bash
 # Run reconciliation
-python reconcile.py
+lt reconcile
 
 # Shows truth: claimed vs. actual files
 ```
@@ -236,19 +249,19 @@ jq '. | length' batch_status.json
 
 ### 1. Always reconcile first
 ```bash
-python reconcile.py  # Shows true state
+lt reconcile  # Shows true state
 ```
 
 ### 2. Use clean input files
 ```bash
-# reconcile.py generates these for you
-python batch_transcribe.py --input inputfile_clean.txt
+# lt reconcile generates these for you
+lt batch --input inputfile_clean.txt
 ```
 
 ### 3. Monitor in separate terminal
 ```bash
 # Terminal 1: Run batch
-python batch_transcribe.py --input inputfile.txt
+lt batch --input inputfile.txt
 
 # Terminal 2: Watch progress
 tail -f logs/batch_transcribe_*.log
@@ -307,22 +320,24 @@ du -h out/*.json | sort -h | tail -10
 
 ## 🚀 Quick Start Checklist
 
-- [ ] Run `python reconcile.py` to understand current state
+- [ ] Install: `pip install -e .`
+- [ ] Run `lt reconcile` to understand current state
 - [ ] Review generated files (inputfile_clean.txt, pending.txt)
-- [ ] Start with: `python batch_transcribe.py --input inputfile_clean.txt`
-- [ ] If interrupted: `python batch_transcribe.py --resume`
-- [ ] Check failures: `cat logs/failed_videos.txt`
-- [ ] Verify completion: `python reconcile.py`
+- [ ] Start with: `lt batch --input inputfile_clean.txt`
+- [ ] If interrupted: `lt batch --resume`
+- [ ] Check failures: `lt report` or `cat logs/failed_videos.txt`
+- [ ] Verify completion: `lt reconcile`
 
 ---
 
 ## 📚 Full Documentation
 
 - **This file**: Quick commands
+- **START_HERE.md**: Quick installation guide
+- **README.md**: Complete setup and troubleshooting
 - **BATCH_TRANSCRIBE_README.md**: Complete guide
 - **UPGRADE_SUMMARY.md**: Why upgrade from shell script
-- **reconcile.py --help**: Status checking options
-- **batch_transcribe.py --help**: All batch options
+- **lt --help**: All CLI commands
 
 ---
 

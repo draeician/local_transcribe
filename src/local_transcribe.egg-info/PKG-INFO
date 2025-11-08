@@ -1,3 +1,23 @@
+Metadata-Version: 2.4
+Name: local-transcribe
+Version: 0.1.0
+Summary: Local YouTube transcription with Whisper
+Author: Your Name
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: yt-dlp>=2025.1.1
+Requires-Dist: faster-whisper>=1.0.3
+Requires-Dist: tqdm>=4.66.2
+Requires-Dist: soundfile>=0.12.1
+Requires-Dist: ctranslate2>=4.3.1
+Requires-Dist: typer>=0.9.0
+Requires-Dist: rich>=13.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Requires-Dist: mypy>=1.0.0; extra == "dev"
+
 # Local YouTube Transcription System
 
 > **Production-ready batch transcription** with resume capability, file verification, and detailed logging.
