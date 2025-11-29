@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+
 from local_transcribe.services.status_store import JsonStatusStore, StatusStore, TranscriptStatus
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
 from local_transcribe.utils.files import safe_append_line, safe_read_lines, validate_transcript_file
@@ -248,14 +250,68 @@ class BatchPipeline:
         # Initialize video tracking
         self.initialize_videos(urls, resume=resume)
         
-        # Process all pending videos
-        for vid_id, status in list(self.videos.items()):
-            if status.status == "pending":
-                self.transcribe_video(status)
+        # Get list of pending videos
+        pending_videos = [(vid_id, status) for vid_id, status in self.videos.items() 
+                         if status.status == "pending"]
+        
+        if not pending_videos:
+            return self.stats
+        
+        # Create progress bar
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.fields[current_url]}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("•"),
+            TimeRemainingColumn(),
+            TextColumn("• [cyan]{task.fields[last_duration]}"),
+        ) as progress:
+            
+            task = progress.add_task(
+                "[cyan]Processing videos...", 
+                total=len(pending_videos),
+                current_url="Initializing...",
+                last_duration="--"
+            )
+            
+            # Process all pending videos
+            for idx, (vid_id, status) in enumerate(pending_videos, 1):
+                # Update progress with current URL
+                current_url_display = f"{status.video_id} ({idx}/{len(pending_videos)})"
+                progress.update(task, current_url=current_url_display)
+                
+                # Transcribe the video
+                start_time = time.time()
+                success = self.transcribe_video(status)
+                duration = time.time() - start_time
+                
+                # Format duration for display
+                if duration < 60:
+                    duration_str = f"{duration:.1f}s"
+                elif duration < 3600:
+                    mins = int(duration // 60)
+                    secs = int(duration % 60)
+                    duration_str = f"{mins}m {secs}s"
+                else:
+                    hours = int(duration // 3600)
+                    mins = int((duration % 3600) // 60)
+                    duration_str = f"{hours}h {mins}m"
+                
                 self._update_stats()
                 
+                # Update progress
+                progress.update(
+                    task, 
+                    advance=1,
+                    last_duration=f"Last: {duration_str} {'✓' if success else '✗'}"
+                )
+                
                 # Brief pause between videos
-                time.sleep(self.config.sleep_interval_between_videos)
+                if idx < len(pending_videos):  # Don't sleep after last video
+                    time.sleep(self.config.sleep_interval_between_videos)
         
         return self.stats
     
