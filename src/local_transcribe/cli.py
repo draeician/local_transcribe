@@ -107,15 +107,22 @@ def batch(
     
     try:
         # Handle defaults properly - check if value is actually a string or OptionInfo
-        if input is None or not isinstance(input, str):
-            input_path = Path("inputfile.txt")
-        else:
-            input_path = Path(input).expanduser()
-        
         if output_dir is None or not isinstance(output_dir, str):
             output_path = Path(DEFAULT_OUTPUT_DIR).expanduser()
         else:
             output_path = Path(output_dir).expanduser()
+        
+        if input is None or not isinstance(input, str):
+            # Try pending file first (created by reconcile/verify commands)
+            pending_file = output_path / "transcript-pending.md"
+            if pending_file.exists():
+                input_path = pending_file
+                console.print(f"[blue]Using pending file: {pending_file}[/blue]")
+            else:
+                # Fall back to inputfile.txt for backward compatibility
+                input_path = Path("inputfile.txt")
+        else:
+            input_path = Path(input).expanduser()
         
         # Status store and finished file will default to output_dir in BatchPipeline
         config = BatchConfig(
