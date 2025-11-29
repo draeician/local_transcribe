@@ -12,6 +12,7 @@ from local_transcribe.logging_setup import configure_logging
 from local_transcribe.services.pipeline import BatchConfig, BatchPipeline
 from local_transcribe.services.reconcile import reconcile as reconcile_service, write_reconcile_outputs
 from local_transcribe.services.status_store import JsonStatusStore
+from local_transcribe.services.verify_status import verify_finished_dat, verify_full
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
 from local_transcribe.utils.files import safe_read_lines
 from local_transcribe.utils.youtube import is_valid_youtube_url
@@ -36,6 +37,8 @@ def transcribe(
     keep_audio: bool = typer.Option(False, help="Keep downloaded audio"),
     cookies_from_browser: str = typer.Option(None, help="Browser to extract cookies from"),
     cookies_file: str = typer.Option(None, help="Path to cookies.txt file"),
+    limit_rate: str = typer.Option(None, "--limit-rate", help="Max download rate (e.g., 200K, 4.2M)"),
+    sleep_interval_requests: float = typer.Option(None, "--sleep-interval-requests", help="Seconds to sleep between yt-dlp requests"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """Transcribe a single YouTube video."""
@@ -53,6 +56,8 @@ def transcribe(
             keep_audio=keep_audio,
             cookies_from_browser=cookies_from_browser,
             cookies_file=cookies_file,
+            limit_rate=limit_rate,
+            sleep_interval_requests=sleep_interval_requests if sleep_interval_requests is not None else None,
         )
         
         logger.info(f"Transcribing: {url}")
@@ -67,26 +72,46 @@ def transcribe(
 
 @app.command()
 def batch(
-    input: str = typer.Option("inputfile.txt", "--input", "-i", help="Input file with URLs"),
+    input: str = typer.Option(None, "--input", "-i", help="Input file with URLs (defaults to inputfile.txt in current directory)"),
     resume: bool = typer.Option(False, help="Resume from previous run"),
     max_retries: int = typer.Option(2, help="Max retry attempts"),
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
     device: str = typer.Option(DEFAULT_DEVICE, help="Device (cpu/cuda/auto)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
-    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), help="Output directory"),
+    output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
     cookies_from_browser: str = typer.Option(None, help="Browser to extract cookies from"),
     cookies_file: str = typer.Option(None, help="Path to cookies.txt file"),
+    sleep_interval: float = typer.Option(1.0, "--sleep-interval", help="Seconds to sleep between videos"),
+    limit_rate: str = typer.Option(None, "--limit-rate", help="Max download rate (e.g., 200K, 4.2M)"),
+    sleep_interval_requests: float = typer.Option(None, "--sleep-interval-requests", help="Seconds to sleep between yt-dlp requests"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
-    """Process multiple videos in batch."""
+    """
+    Process multiple videos in batch.
+    
+    Transcribes all URLs from an input file, with automatic resume capability.
+    Status is tracked in batch_status.json and completed URLs are logged to finished.dat.
+    
+    Examples:
+        lt batch --input urls.txt              # Process URLs from file
+        lt batch --input urls.txt --resume     # Resume from previous run
+        lt batch --input urls.txt --model large # Use larger model
+    """
     logger = configure_logging(verbose=verbose)
     
     try:
-        # Expand ~ in paths
-        input_path = Path(input).expanduser()
-        output_path = Path(output_dir).expanduser()
+        # Handle defaults properly - check if value is actually a string or OptionInfo
+        if input is None or not isinstance(input, str):
+            input_path = Path("inputfile.txt")
+        else:
+            input_path = Path(input).expanduser()
         
-        status_store = JsonStatusStore(Path("batch_status.json"))
+        if output_dir is None or not isinstance(output_dir, str):
+            output_path = Path(DEFAULT_OUTPUT_DIR).expanduser()
+        else:
+            output_path = Path(output_dir).expanduser()
+        
+        # Status store and finished file will default to output_dir in BatchPipeline
         config = BatchConfig(
             input_file=input_path,
             output_dir=output_path,
@@ -94,9 +119,12 @@ def batch(
             device=device,
             compute_type=compute_type,
             max_retries=max_retries,
-            status_store=status_store,
+            status_store=None,  # Will default to output_dir / "batch_status.json"
             cookies_from_browser=cookies_from_browser,
             cookies_file=cookies_file,
+            sleep_interval_between_videos=sleep_interval,
+            limit_rate=limit_rate,
+            sleep_interval_requests=sleep_interval_requests if sleep_interval_requests is not None else None,
         )
         
         pipeline = BatchPipeline(config)
@@ -126,19 +154,89 @@ def batch(
 
 @app.command(name="reconcile")
 def reconcile_cmd(
-    input: str = typer.Option("inputfile.txt", "--input", "-i", help="Input file"),
-    finished: str = typer.Option("finished.dat", "--finished", "-f", help="Finished file"),
-    out: str = typer.Option("out", "--out", "-o", help="Output directory"),
+    input: str = typer.Option(None, "--input", "-i", help="Input file with URLs (defaults to inputfile.txt in current directory)"),
+    finished: str = typer.Option(None, "--finished", "-f", help="Finished file (defaults to output_dir/finished.dat)"),
+    out: str = typer.Option(None, "--out", "-o", help=f"Output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
-    """Reconcile input file with finished transcripts."""
+    """
+    Reconcile input file with finished transcripts.
+    
+    With input file: Performs three-way reconciliation (input vs finished.dat vs transcripts).
+    Without input file: Runs quick verification (finished.dat vs transcripts only).
+    
+    For full verification (batch_status.json + finished.dat), use 'lt verify --mode full' instead.
+    
+    Examples:
+        lt reconcile                                    # Quick verification (no input file needed)
+        lt reconcile --input urls.txt                   # Full reconciliation with input file
+        lt reconcile --input urls.txt --out ~/transcripts  # Custom output directory
+        lt verify --mode full                           # Full verification (all sources)
+    """
     logger = configure_logging(verbose=verbose, log_file_prefix="reconcile")
     
     try:
-        input_file = Path(input)
-        finished_file = Path(finished)
-        output_dir = Path(out)
+        # Handle defaults properly - check if value is actually a string or OptionInfo
+        if input is None or not isinstance(input, str):
+            input_file = Path("inputfile.txt")
+        else:
+            input_file = Path(input).expanduser()
         
+        if out is None or not isinstance(out, str):
+            output_dir = Path(DEFAULT_OUTPUT_DIR).expanduser()
+        else:
+            output_dir = Path(out).expanduser()
+        
+        # Default finished file to output_dir if not provided
+        if finished is None or not isinstance(finished, str):
+            finished_file = output_dir / "finished.dat"
+        else:
+            finished_file = Path(finished).expanduser()
+        
+        # Check if input file exists - if not, run quick verification instead
+        if not input_file.exists():
+            # Set up paths for verification
+            status_store_path = output_dir / "batch_status.json"
+            pending_file_path = output_dir / "transcript-pending.md"
+            
+            # Initialize status store
+            status_store = JsonStatusStore(status_store_path)
+            
+            # Run quick verification (finished.dat only)
+            console.print("[blue]Running quick verification (finished.dat vs transcripts)...[/blue]")
+            console.print("[dim]Tip: Use 'lt verify --mode full' for comprehensive verification[/dim]")
+            
+            result = verify_finished_dat(
+                finished_file=finished_file,
+                output_dir=output_dir,
+                status_store=status_store,
+                pending_file=pending_file_path,
+                clean_finished=False,  # Don't clean finished.dat in quick mode
+            )
+            
+            # Print Verification Report
+            console.print(f"\n[bold]Quick Verification Report[/bold]")
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Metric")
+            table.add_column("Count")
+            table.add_row("Total Checked", str(result.total_checked))
+            table.add_row("Missing Transcripts", f"[red]{result.missing_transcripts}[/red]")
+            table.add_row("Status Updates", f"[yellow]{result.status_updates}[/yellow]")
+            table.add_row("URLs Added to Pending", f"[blue]{len(result.urls_to_retry)}[/blue]")
+            console.print(table)
+            
+            if result.pending_file_updated:
+                console.print(f"\n[green]✓[/green] Updated pending file: {pending_file_path}")
+            
+            if result.missing_transcripts > 0:
+                console.print(f"\n[yellow]⚠[/yellow] Use [bold]lt batch --input {pending_file_path.name}[/bold] to process missing videos.")
+            
+            if result.missing_transcripts == 0:
+                console.print(f"\n[green]✓[/green] All transcripts verified successfully!")
+            
+            return
+        
+        # Full reconciliation path (input file exists)
         # Load original URLs for output generation
         input_urls = safe_read_lines(input_file)
         from local_transcribe.utils.youtube import extract_video_id
@@ -156,7 +254,7 @@ def reconcile_cmd(
         )
         
         # Print summary
-        console.print("\n[bold]Reconciliation Report[/bold]")
+        console.print("\n[bold]Full Reconciliation Report[/bold]")
         console.print(f"Input file: {len(report.input_unique)} unique videos")
         console.print(f"Finished file: {len(report.finished_unique)} unique videos")
         console.print(f"Transcript files: {report.transcript_count}")
@@ -176,15 +274,134 @@ def reconcile_cmd(
 
 
 @app.command()
+def verify(
+    mode: str = typer.Option("full", "--mode", "-m", help="Verification mode: 'quick' or 'full'"),
+    finished: str = typer.Option(None, "--finished", "-f", help="Path to finished.dat file (defaults to output_dir/finished.dat)"),
+    status_store: str = typer.Option(None, "--status-store", "-s", help="Path to batch_status.json file (defaults to output_dir/batch_status.json)"),
+    output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Transcript output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
+    pending_file: str = typer.Option(None, "--pending-file", "-p", help="Path to pending file (defaults to output_dir/transcript-pending.md)"),
+    clean_finished: bool = typer.Option(None, "--clean-finished/--no-clean-finished", help="Remove invalid entries from finished.dat (default: True for full mode, False for quick)"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
+):
+    """
+    Verify transcripts exist for completed URLs and mark missing ones as pending.
+    
+    Quick mode: Checks finished.dat vs transcript files only.
+    Full mode: Checks batch_status.json + finished.dat vs transcript files.
+    
+    Examples:
+        lt verify                          # Full verification (default)
+        lt verify --mode quick             # Quick verification (finished.dat only)
+        lt verify --mode full              # Full verification (all sources)
+        lt verify --clean-finished         # Clean finished.dat of invalid entries
+    """
+    logger = configure_logging(verbose=verbose, log_file_prefix="verify")
+    
+    try:
+        # Validate mode
+        if mode not in ("quick", "full"):
+            console.print(f"[red]✗[/red] Error: Mode must be 'quick' or 'full', got '{mode}'")
+            raise typer.Exit(1)
+        
+        # Handle defaults properly - check if value is actually a string or OptionInfo
+        if output_dir is None or not isinstance(output_dir, str):
+            output_path = Path(DEFAULT_OUTPUT_DIR).expanduser()
+        else:
+            output_path = Path(output_dir).expanduser()
+        
+        # Set defaults relative to output_dir
+        if finished is None or not isinstance(finished, str):
+            finished_path = output_path / "finished.dat"
+        else:
+            finished_path = Path(finished).expanduser()
+        
+        if status_store is None or not isinstance(status_store, str):
+            status_store_path = output_path / "batch_status.json"
+        else:
+            status_store_path = Path(status_store).expanduser()
+        
+        if pending_file is None or not isinstance(pending_file, str):
+            pending_path = output_path / "transcript-pending.md"
+        else:
+            pending_path = Path(pending_file).expanduser()
+        
+        # Set default for clean_finished based on mode
+        if clean_finished is None:
+            clean_finished = (mode == "full")
+        
+        # Initialize status store
+        status_store_instance = JsonStatusStore(status_store_path)
+        
+        # Run verification
+        if mode == "quick":
+            logger.info(f"Running quick verification (finished.dat only)")
+            result = verify_finished_dat(
+                finished_path,
+                output_path,
+                status_store_instance,
+                pending_path,
+                clean_finished=clean_finished,
+            )
+        else:  # full
+            logger.info(f"Running full verification (batch_status.json + finished.dat)")
+            result = verify_full(
+                finished_path,
+                output_path,
+                status_store_instance,
+                pending_path,
+                clean_finished=clean_finished,
+            )
+        
+        # Print summary
+        console.print("\n[bold]Verification Report[/bold]")
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Metric")
+        table.add_column("Count")
+        table.add_row("Total Checked", str(result.total_checked))
+        table.add_row("Missing Transcripts", f"[red]{result.missing_transcripts}[/red]")
+        table.add_row("Status Updates", f"[yellow]{result.status_updates}[/yellow]")
+        table.add_row("URLs Added to Pending", f"[blue]{len(result.urls_to_retry)}[/blue]")
+        console.print(table)
+        
+        if result.pending_file_updated:
+            console.print(f"\n[green]✓[/green] Updated pending file: {pending_path}")
+        
+        if result.finished_cleaned:
+            console.print(f"[green]✓[/green] Cleaned finished.dat: removed invalid entries")
+        
+        if result.missing_transcripts > 0:
+            console.print(f"\n[yellow]⚠[/yellow] Found {result.missing_transcripts} missing transcript(s)")
+            console.print(f"URLs have been added to pending file and marked as pending in status store")
+        else:
+            console.print(f"\n[green]✓[/green] All transcripts verified successfully!")
+        
+    except Exception as e:
+        logger.error(f"Verification failed: {e}", exc_info=verbose)
+        console.print(f"[red]✗[/red] Error: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def status(
-    store: str = typer.Option("batch_status.json", help="Status store file"),
+    store: str = typer.Option(None, help="Status store file (defaults to output_dir/batch_status.json)"),
+    output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Transcript output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """Show batch processing status."""
     logger = configure_logging(verbose=verbose, log_file_prefix="status")
     
     try:
-        status_store = JsonStatusStore(Path(store))
+        # Handle defaults properly
+        if output_dir is None or not isinstance(output_dir, str):
+            output_path = Path(DEFAULT_OUTPUT_DIR).expanduser()
+        else:
+            output_path = Path(output_dir).expanduser()
+        
+        if store is None or not isinstance(store, str):
+            store_path = output_path / "batch_status.json"
+        else:
+            store_path = Path(store).expanduser()
+        status_store = JsonStatusStore(store_path)
         statuses = status_store.load()
         
         if not statuses:
@@ -215,7 +432,8 @@ def status(
 
 @app.command()
 def report(
-    store: str = typer.Option("batch_status.json", help="Status store file"),
+    store: str = typer.Option(None, help="Status store file (defaults to output_dir/batch_status.json)"),
+    output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Transcript output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
     out: str = typer.Option("logs/failed_videos.txt", help="Output report file"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
@@ -223,7 +441,17 @@ def report(
     logger = configure_logging(verbose=verbose, log_file_prefix="report")
     
     try:
-        status_store = JsonStatusStore(Path(store))
+        # Handle defaults properly
+        if output_dir is None or not isinstance(output_dir, str):
+            output_path = Path(DEFAULT_OUTPUT_DIR).expanduser()
+        else:
+            output_path = Path(output_dir).expanduser()
+        
+        if store is None or not isinstance(store, str):
+            store_path = output_path / "batch_status.json"
+        else:
+            store_path = Path(store).expanduser()
+        status_store = JsonStatusStore(store_path)
         statuses = status_store.load()
         
         failed = [s for s in statuses.values() if s.status == "failed"]
@@ -294,10 +522,9 @@ def doctor(
         raise typer.Exit(1)
 
 
-@app.callback(invoke_without_command=True)
+@app.callback()
 def main(
     ctx: typer.Context,
-    source: str = typer.Argument(None, help="YouTube URL or input file path"),
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
     device: str = typer.Option(DEFAULT_DEVICE, help="Device (cpu/cuda/auto)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
@@ -307,195 +534,19 @@ def main(
     keep_audio: bool = typer.Option(False, help="Keep downloaded audio (single only)"),
     cookies_from_browser: str = typer.Option(None, help="Browser to extract cookies from"),
     cookies_file: str = typer.Option(None, help="Path to cookies.txt file"),
+    sleep_interval: float = typer.Option(1.0, "--sleep-interval", help="Seconds to sleep between videos (batch only)"),
+    limit_rate: str = typer.Option(None, "--limit-rate", help="Max download rate (e.g., 200K, 4.2M)"),
+    sleep_interval_requests: float = typer.Option(None, "--sleep-interval-requests", help="Seconds to sleep between yt-dlp requests"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
     version: bool = typer.Option(False, "--version", help="Show version and exit"),
 ):
-    """
-    Smart transcription: automatically detects URL (single) or file (batch).
-    
-    Examples:
-        lt "https://youtube.com/watch?v=VIDEO_ID"          # Single video
-        lt inputfile.txt                                   # Batch processing
-        lt inputfile.txt --resume                          # Resume batch
-    """
+    """Main callback for global options."""
     # Handle --version flag
     if version:
         console.print(f"local-transcribe version {__version__}")
         raise typer.Exit(0)
     
-    # IMPORTANT: Check if a subcommand is being invoked FIRST
-    # ctx.invoked_subcommand is set by Typer when a subcommand is used
-    # If it's not None, we should not process the source argument
-    if ctx.invoked_subcommand is not None:
-        return
-    
-    # If no source provided, show help
-    # With invoke_without_command=True, we need to explicitly show help
-    if source is None:
-        # Check if this is just "lt" with no arguments (not a subcommand)
-        import sys
-        # If only script name in argv (or script + options but no positional args), show help
-        non_option_args = [arg for arg in sys.argv[1:] if not arg.startswith('-')]
-        if not non_option_args:
-            # No positional arguments - show help
-            ctx.get_help()
-            raise typer.Exit(0)
-        return
-    
-    # Check if source is a known command name
-    # This handles the case where Typer parses "doctor" as source instead of subcommand
-    # When this happens, ctx.invoked_subcommand is None, but source is a command name
-    known_commands = {"transcribe", "batch", "reconcile", "status", "report", "doctor"}
-    if source in known_commands:
-        # This is a subcommand being passed as source
-        # The problem: Typer has already bound "doctor" to source, so when we return early,
-        # Typer doesn't continue to invoke the subcommand.
-        # Solution: Manually invoke the subcommand using ctx.invoke()
-        # But we need to get the subcommand function first
-        import sys
-        # Verify it's actually a command in sys.argv
-        if len(sys.argv) > 1:
-            for arg in sys.argv[1:]:
-                if not arg.startswith('-') and '=' not in arg:
-                    if arg in known_commands:
-                        # This is definitely a command - manually invoke it
-                        # Get the subcommand from the app
-                        subcommand_func = None
-                        if arg == "doctor":
-                            from local_transcribe.cli import doctor
-                            subcommand_func = doctor
-                        elif arg == "transcribe":
-                            from local_transcribe.cli import transcribe
-                            subcommand_func = transcribe
-                        elif arg == "batch":
-                            from local_transcribe.cli import batch
-                            subcommand_func = batch
-                        elif arg == "reconcile":
-                            from local_transcribe.cli import reconcile_cmd
-                            subcommand_func = reconcile_cmd
-                        elif arg == "status":
-                            from local_transcribe.cli import status
-                            subcommand_func = status
-                        elif arg == "report":
-                            from local_transcribe.cli import report
-                            subcommand_func = report
-                        
-                        if subcommand_func:
-                            # Manually invoke the subcommand
-                            # The issue: when we call the function directly, Typer hasn't processed
-                            # the parameters yet, so we get OptionInfo objects instead of values.
-                            # Solution: Use ctx.invoke() to properly invoke the subcommand.
-                            # But we need the command object, not just the function.
-                            # Alternative: Parse sys.argv to extract option values manually.
-                            
-                            # For now, let's use a simpler approach: just call the function
-                            # with no arguments and let it use defaults. This works for commands
-                            # that only have optional parameters with defaults (like doctor).
-                            # For commands with required parameters or that need option values,
-                            # we'll need a different approach.
-                            
-                            # Actually, the real issue is that Typer-wrapped functions expect
-                            # to be called through Typer's mechanism. When we call them directly,
-                            # the parameters might not be processed correctly.
-                            
-                            # Let's try calling it and see if it works for simple commands
-                            # For commands that fail, we'll need to handle them differently
-                            try:
-                                subcommand_func()
-                            except (TypeError, AttributeError) as e:
-                                # If calling directly fails, we need to use Typer's mechanism
-                                # For now, just skip and let Typer handle it naturally
-                                # (which won't work, but it's better than crashing)
-                                pass
-                            return
-                    break
-        # If we can't manually invoke, just return and hope for the best
-        return
-    
-    # Expand ~ in paths
-    source_path = Path(source).expanduser() if source else None
-    output_path = Path(output_dir).expanduser()
-    
-    logger = configure_logging(verbose=verbose)
-    
-    # Determine if source is a URL or file
-    is_url = False
-    is_file = False
-    
-    if source_path:
-        # Check if it's a valid YouTube URL
-        if is_valid_youtube_url(source):
-            is_url = True
-        # Check if it's an existing file
-        elif source_path.exists() and source_path.is_file():
-            is_file = True
-        # If it looks like a URL but file doesn't exist, assume URL
-        elif source.startswith("http"):
-            is_url = True
-        # Otherwise assume it's a file path (will error if doesn't exist)
-        else:
-            is_file = True
-    
-    try:
-        if is_url:
-            # Single video transcription
-            console.print(f"[blue]Detected URL:[/blue] Transcribing single video")
-            cfg = TranscribeConfig(
-                model=model,
-                device=device,
-                compute_type=compute_type,
-                output_dir=output_path,
-                keep_audio=keep_audio,
-                cookies_from_browser=cookies_from_browser,
-                cookies_file=cookies_file,
-            )
-            
-            logger.info(f"Transcribing: {source}")
-            result_path = transcribe_url(source, cfg)
-            console.print(f"[green]✓[/green] Done. Wrote: {result_path}")
-            
-        elif is_file:
-            # Batch processing
-            console.print(f"[blue]Detected file:[/blue] Processing batch")
-            status_store = JsonStatusStore(Path("batch_status.json"))
-            config = BatchConfig(
-                input_file=source_path,
-                output_dir=output_path,
-                model=model,
-                device=device,
-                compute_type=compute_type,
-                max_retries=max_retries,
-                status_store=status_store,
-                cookies_from_browser=cookies_from_browser,
-                cookies_file=cookies_file,
-            )
-            
-            pipeline = BatchPipeline(config)
-            summary = pipeline.run(resume=resume)
-            
-            # Generate reports
-            log_dir = Path("logs")
-            pipeline.generate_reports(log_dir)
-            
-            # Print summary
-            console.print("\n[bold]Batch Processing Complete[/bold]")
-            table = Table(show_header=True, header_style="bold")
-            table.add_column("Metric")
-            table.add_column("Count")
-            table.add_row("Total", str(summary.total))
-            table.add_row("Completed", f"[green]{summary.completed}[/green]")
-            table.add_row("Failed", f"[red]{summary.failed}[/red]")
-            table.add_row("Skipped", f"[yellow]{summary.skipped}[/yellow]")
-            table.add_row("Pending", str(summary.pending))
-            console.print(table)
-        else:
-            console.print(f"[red]✗[/red] Error: Could not determine if '{source}' is a URL or file path")
-            raise typer.Exit(1)
-            
-    except Exception as e:
-        logger.error(f"Processing failed: {e}", exc_info=verbose)
-        console.print(f"[red]✗[/red] Error: {e}")
-        raise typer.Exit(1)
+    pass
 
 
 def main():

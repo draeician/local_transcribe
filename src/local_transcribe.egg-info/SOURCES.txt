@@ -15,6 +15,7 @@ src/local_transcribe/services/pipeline.py
 src/local_transcribe/services/reconcile.py
 src/local_transcribe/services/status_store.py
 src/local_transcribe/services/transcriber.py
+src/local_transcribe/services/verify_status.py
 src/local_transcribe/utils/__init__.py
 src/local_transcribe/utils/doctor.py
 src/local_transcribe/utils/files.py

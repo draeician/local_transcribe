@@ -24,6 +24,8 @@ def make_base_ydl_opts(
     concurrent_frags: int = 4,
     cookies_from_browser: Optional[str] = None,
     cookies_file: Optional[str] = None,
+    limit_rate: Optional[str] = None,
+    sleep_interval_requests: Optional[float] = None,
 ) -> Dict:
     """
     Create base yt-dlp options.
@@ -35,6 +37,8 @@ def make_base_ydl_opts(
         concurrent_frags: Number of concurrent fragment downloads
         cookies_from_browser: Browser to extract cookies from (e.g., "firefox")
         cookies_file: Path to cookies.txt file
+        limit_rate: Max download rate (e.g., "200K", "4.2M")
+        sleep_interval_requests: Sleep between yt-dlp requests (seconds)
         
     Returns:
         Dictionary of yt-dlp options
@@ -55,6 +59,10 @@ def make_base_ydl_opts(
         opts["cookiesfrombrowser"] = (cookies_from_browser, None, None)
     if cookies_file:
         opts["cookiefile"] = cookies_file
+    if limit_rate:
+        opts["limit_rate"] = limit_rate
+    if sleep_interval_requests is not None:
+        opts["sleep_interval_requests"] = sleep_interval_requests
     return opts
 
 
@@ -125,6 +133,8 @@ def download_audio_and_metadata(
     user_format: Optional[str] = None,
     user_remux_codec: Optional[str] = None,
     user_extractor_args: Optional[str] = None,
+    limit_rate: Optional[str] = None,
+    sleep_interval_requests: Optional[float] = None,
 ) -> Tuple[Path, dict]:
     """
     Download audio and metadata from YouTube URL with multi-strategy fallback.
@@ -147,6 +157,8 @@ def download_audio_and_metadata(
         user_format: User-specified format selector
         user_remux_codec: User-specified remux codec
         user_extractor_args: User-specified extractor args (space-separated)
+        limit_rate: Max download rate (e.g., "200K", "4.2M")
+        sleep_interval_requests: Sleep between yt-dlp requests (seconds)
         
     Returns:
         Tuple of (audio_path, metadata_dict)
@@ -156,7 +168,8 @@ def download_audio_and_metadata(
     """
     outdir.mkdir(parents=True, exist_ok=True)
     base_opts = make_base_ydl_opts(
-        outdir, retries, fragment_retries, concurrent_frags, cookies_from_browser, cookies_file
+        outdir, retries, fragment_retries, concurrent_frags, cookies_from_browser, cookies_file,
+        limit_rate=limit_rate, sleep_interval_requests=sleep_interval_requests
     )
 
     parsed_user_ea: Dict[str, Dict[str, object]] = {}

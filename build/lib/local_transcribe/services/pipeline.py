@@ -25,7 +25,10 @@ class BatchConfig:
     cookies_from_browser: Optional[str] = None
     cookies_file: Optional[str] = None
     timeout_seconds: int = 1800  # 30 minutes
-    finished_file: Path = Path("finished.dat")
+    finished_file: Optional[Path] = None  # Defaults to output_dir / "finished.dat"
+    sleep_interval_between_videos: float = 1.0
+    limit_rate: Optional[str] = None
+    sleep_interval_requests: Optional[float] = None
 
 
 @dataclass
@@ -51,9 +54,13 @@ class BatchPipeline:
         self.config = config
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Set finished_file default to output_dir if not provided
+        if config.finished_file is None:
+            self.config.finished_file = config.output_dir / "finished.dat"
+        
         # Initialize status store
         if config.status_store is None:
-            status_file = Path("batch_status.json")
+            status_file = config.output_dir / "batch_status.json"
             self.status_store = JsonStatusStore(status_file)
         else:
             self.status_store = config.status_store
@@ -184,6 +191,8 @@ class BatchPipeline:
                 keep_audio=False,
                 cookies_from_browser=self.config.cookies_from_browser,
                 cookies_file=self.config.cookies_file,
+                limit_rate=self.config.limit_rate,
+                sleep_interval_requests=self.config.sleep_interval_requests,
             )
             
             # Transcribe
@@ -246,7 +255,7 @@ class BatchPipeline:
                 self._update_stats()
                 
                 # Brief pause between videos
-                time.sleep(1)
+                time.sleep(self.config.sleep_interval_between_videos)
         
         return self.stats
     

@@ -34,6 +34,8 @@ class TranscribeConfig:
     language: Optional[str] = None
     beam_size: int = 5
     vad_filter: bool = True
+    limit_rate: Optional[str] = None
+    sleep_interval_requests: Optional[float] = None
 
 
 def iso8601_from_ts(ts: Optional[float]) -> str:
@@ -197,6 +199,8 @@ def transcribe_url(url: str, cfg: TranscribeConfig) -> Path:
         outdir=cfg.output_dir,
         cookies_from_browser=cfg.cookies_from_browser,
         cookies_file=cfg.cookies_file,
+        limit_rate=cfg.limit_rate,
+        sleep_interval_requests=cfg.sleep_interval_requests,
     )
     
     # Transcribe
