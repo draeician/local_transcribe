@@ -27,6 +27,12 @@ DEFAULT_COMPUTE_TYPE = "float16"
 DEFAULT_OUTPUT_DIR = Path.home() / "references" / "transcripts"
 
 
+@app.command(name="version")
+def version_cmd():
+    """Show version information."""
+    console.print(f"local-transcribe version {__version__}")
+
+
 @app.command()
 def transcribe(
     url: str = typer.Argument(..., help="YouTube video URL"),
@@ -522,31 +528,24 @@ def doctor(
         raise typer.Exit(1)
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
-    device: str = typer.Option(DEFAULT_DEVICE, help="Device (cpu/cuda/auto)"),
-    compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
-    output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), help="Output directory"),
-    resume: bool = typer.Option(False, help="Resume from previous run (batch only)"),
-    max_retries: int = typer.Option(2, help="Max retry attempts (batch only)"),
-    keep_audio: bool = typer.Option(False, help="Keep downloaded audio (single only)"),
-    cookies_from_browser: str = typer.Option(None, help="Browser to extract cookies from"),
-    cookies_file: str = typer.Option(None, help="Path to cookies.txt file"),
-    sleep_interval: float = typer.Option(1.0, "--sleep-interval", help="Seconds to sleep between videos (batch only)"),
-    limit_rate: str = typer.Option(None, "--limit-rate", help="Max download rate (e.g., 200K, 4.2M)"),
-    sleep_interval_requests: float = typer.Option(None, "--sleep-interval-requests", help="Seconds to sleep between yt-dlp requests"),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
     version: bool = typer.Option(False, "--version", help="Show version and exit"),
 ):
-    """Main callback for global options."""
+    """Local YouTube transcription with Whisper."""
     # Handle --version flag
     if version:
         console.print(f"local-transcribe version {__version__}")
         raise typer.Exit(0)
     
-    pass
+    # If a subcommand is being invoked, let it handle everything
+    if ctx.invoked_subcommand is not None:
+        return
+    
+    # No subcommand and no --version? Show help
+    ctx.get_help()
+    raise typer.Exit(0)
 
 
 def main():
