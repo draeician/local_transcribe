@@ -10,6 +10,11 @@ from yt_dlp.utils import DownloadError
 from local_transcribe.utils.youtube import pick_channel
 
 
+class RateLimitError(Exception):
+    """Raised when HTTP 429 (Too Many Requests) is detected."""
+    pass
+
+
 SAFARI_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) "
@@ -204,12 +209,22 @@ def download_audio_and_metadata(
     ])
 
     last_err: Optional[Exception] = None
+    rate_limit_detected = False
     for fmt, remux, ea, label in strategies:
         try:
             return try_download_with_strategy(url, base_opts, fmt, remux, ea, label)
         except DownloadError as e:
             last_err = e
+            error_str = str(e).lower()
+            # Check for HTTP 429 (Too Many Requests)
+            if "429" in error_str or "too many requests" in error_str:
+                rate_limit_detected = True
+                print(f"[error] HTTP 429 (Rate Limit) detected: {e}", file=sys.stderr)
+                raise RateLimitError(f"HTTP 429 Too Many Requests: {e}")
             print(f"[warn] Strategy '{label}' failed: {e}", file=sys.stderr)
+        except RateLimitError:
+            # Re-raise rate limit errors immediately
+            raise
         except Exception as e:
             last_err = e
             print(f"[warn] Strategy '{label}' failed: {e}", file=sys.stderr)

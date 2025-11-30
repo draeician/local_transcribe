@@ -159,6 +159,47 @@ def batch(
         table.add_row("Pending", str(summary.pending))
         console.print(table)
         
+        # Print rate limit stats
+        rate_stats = pipeline.rate_limiter.get_stats()
+        console.print("\n[bold]Rate Limit Status[/bold]")
+        rate_table = Table(show_header=True, header_style="bold")
+        rate_table.add_column("Period")
+        rate_table.add_column("Usage")
+        rate_table.add_column("Limit")
+        rate_table.add_column("Percent")
+        
+        hour_color = "green"
+        if rate_stats['hour_percent'] >= 80:
+            hour_color = "yellow"
+        if rate_stats['hour_percent'] >= 100:
+            hour_color = "red"
+        
+        day_color = "green"
+        if rate_stats['day_percent'] >= 80:
+            day_color = "yellow"
+        if rate_stats['day_percent'] >= 100:
+            day_color = "red"
+        
+        rate_table.add_row(
+            "Per Hour",
+            str(rate_stats['requests_this_hour']),
+            str(rate_stats['max_per_hour']),
+            f"[{hour_color}]{rate_stats['hour_percent']:.1f}%[/{hour_color}]"
+        )
+        rate_table.add_row(
+            "Per Day",
+            str(rate_stats['requests_today']),
+            str(rate_stats['max_per_day']),
+            f"[{day_color}]{rate_stats['day_percent']:.1f}%[/{day_color}]"
+        )
+        console.print(rate_table)
+        
+        if rate_stats['total_429_errors'] > 0:
+            console.print(
+                f"\n[yellow]⚠[/yellow] Encountered {rate_stats['total_429_errors']} rate limit error(s). "
+                f"Consider increasing --sleep-interval between videos."
+            )
+        
     except Exception as e:
         logger.error(f"Batch processing failed: {e}", exc_info=verbose)
         console.print(f"[red]✗[/red] Error: {e}")

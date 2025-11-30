@@ -1,2 +1,0 @@
-[console_scripts]
-lt = local_transcribe.cli:main

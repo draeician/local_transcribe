@@ -175,13 +175,14 @@ def transcribe_audio(
     return " ".join(parts)
 
 
-def transcribe_url(url: str, cfg: TranscribeConfig) -> Path:
+def transcribe_url(url: str, cfg: TranscribeConfig, cleanup_callback=None) -> Path:
     """
     Transcribe a YouTube URL: download audio, transcribe, save JSON.
     
     Args:
         url: YouTube video URL
         cfg: Transcription configuration
+        cleanup_callback: Optional callback function(Path) called with audio_path after download
         
     Returns:
         Path to output JSON file
@@ -202,6 +203,10 @@ def transcribe_url(url: str, cfg: TranscribeConfig) -> Path:
         limit_rate=cfg.limit_rate,
         sleep_interval_requests=cfg.sleep_interval_requests,
     )
+    
+    # Notify callback about audio file for cleanup tracking
+    if cleanup_callback:
+        cleanup_callback(audio_path)
     
     # Transcribe
     transcript = transcribe_audio(
