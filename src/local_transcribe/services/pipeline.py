@@ -13,8 +13,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from local_transcribe.services.rate_limiter import RateLimiter
 from local_transcribe.services.status_store import JsonStatusStore, StatusStore, TranscriptStatus
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
-from local_transcribe.services.downloader import RateLimitError
-from local_transcribe.utils.files import safe_append_line, safe_read_lines, validate_transcript_file
+from local_transcribe.services.downloader import RateLimitError, VideoUnavailableError
+from local_transcribe.utils.files import safe_append_line, safe_read_lines, safe_write_lines, validate_transcript_file
 from local_transcribe.utils.youtube import extract_video_id, is_valid_youtube_url
 
 
@@ -214,6 +214,50 @@ class BatchPipeline:
         """Callback to track current audio file for cleanup on interrupt."""
         self.current_audio_file = audio_path
     
+    def _remove_from_pending_file(self, url: str) -> bool:
+        """
+        Remove a URL from the pending file(s) if it exists.
+        
+        Checks both the input file (if it's transcript-pending.md) and
+        the standard pending file location in output_dir.
+        
+        Args:
+            url: URL to remove
+            
+        Returns:
+            True if URL was found and removed from any file, False otherwise
+        """
+        removed = False
+        files_to_check = []
+        
+        # Check if input file is the pending file
+        if self.config.input_file.name == "transcript-pending.md":
+            files_to_check.append(self.config.input_file)
+        
+        # Also check the standard pending file location in output_dir
+        standard_pending = self.config.output_dir / "transcript-pending.md"
+        if standard_pending.exists() and standard_pending not in files_to_check:
+            files_to_check.append(standard_pending)
+        
+        for pending_file in files_to_check:
+            try:
+                # Read all lines
+                lines = safe_read_lines(pending_file)
+                
+                # Filter out the URL (case-insensitive, handle with/without trailing whitespace)
+                original_count = len(lines)
+                lines = [line for line in lines if line.strip().lower() != url.strip().lower()]
+                
+                # If we removed a line, write back
+                if len(lines) < original_count:
+                    safe_write_lines(pending_file, lines)
+                    self.logger.info(f"Removed unavailable video from {pending_file.name}: {url}")
+                    removed = True
+            except Exception as e:
+                self.logger.warning(f"Failed to remove URL from {pending_file}: {e}")
+        
+        return removed
+    
     def transcribe_video(self, status: TranscriptStatus, cleanup_callback=None) -> bool:
         """
         Transcribe a single video.
@@ -269,6 +313,24 @@ class BatchPipeline:
                 self.status_store.set(vid_id, status)
                 return False
         
+        except VideoUnavailableError as e:
+            # Handle unavailable videos - don't retry, remove from pending file
+            duration = time.time() - start_time
+            status.duration_seconds = duration
+            status.error_message = f"Video unavailable: {str(e)[:500]}"
+            status.status = "failed"
+            self.status_store.set(vid_id, status)
+            
+            # Log clearly
+            self.logger.error(f"✗ Video unavailable {vid_id}: {status.error_message}")
+            
+            # Remove from pending file
+            self._remove_from_pending_file(status.url)
+            
+            return False
+        except RateLimitError as e:
+            # Re-raise rate limit errors to be handled in run()
+            raise
         except Exception as e:
             duration = time.time() - start_time
             status.duration_seconds = duration

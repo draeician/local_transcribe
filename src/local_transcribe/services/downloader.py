@@ -15,6 +15,11 @@ class RateLimitError(Exception):
     pass
 
 
+class VideoUnavailableError(Exception):
+    """Raised when a video is unavailable (deleted, terminated account, etc.)."""
+    pass
+
+
 SAFARI_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) "
@@ -221,9 +226,13 @@ def download_audio_and_metadata(
                 rate_limit_detected = True
                 print(f"[error] HTTP 429 (Rate Limit) detected: {e}", file=sys.stderr)
                 raise RateLimitError(f"HTTP 429 Too Many Requests: {e}")
+            # Check for video unavailable errors
+            if "video unavailable" in error_str or "no longer available" in error_str or "account associated with this video has been terminated" in error_str:
+                print(f"[error] Video unavailable: {e}", file=sys.stderr)
+                raise VideoUnavailableError(f"Video unavailable: {e}")
             print(f"[warn] Strategy '{label}' failed: {e}", file=sys.stderr)
-        except RateLimitError:
-            # Re-raise rate limit errors immediately
+        except (RateLimitError, VideoUnavailableError):
+            # Re-raise these specific errors immediately
             raise
         except Exception as e:
             last_err = e
