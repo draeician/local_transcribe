@@ -309,8 +309,8 @@ def reconcile_cmd(
         
         # Print summary
         console.print("\n[bold]Full Reconciliation Report[/bold]")
-        console.print(f"Input file: {len(report.input_unique)} unique videos")
-        console.print(f"Finished file: {len(report.finished_unique)} unique videos")
+        console.print(f"Input file: {report.input_unique} unique videos")
+        console.print(f"Finished file: {report.finished_unique} unique videos")
         console.print(f"Transcript files: {report.transcript_count}")
         console.print(f"\n[green]Completed:[/green] {len(report.completed)}")
         console.print(f"[yellow]Pending:[/yellow] {len(report.pending)}")
