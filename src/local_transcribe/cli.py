@@ -14,7 +14,7 @@ from local_transcribe.services.reconcile import reconcile as reconcile_service, 
 from local_transcribe.services.status_store import JsonStatusStore
 from local_transcribe.services.verify_status import verify_finished_dat, verify_full
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
-from local_transcribe.utils.files import safe_read_lines
+from local_transcribe.utils.files import safe_read_lines, safe_write_lines
 from local_transcribe.utils.youtube import is_valid_youtube_url
 
 app = typer.Typer(help="Local YouTube transcription with Whisper")
@@ -307,13 +307,31 @@ def reconcile_cmd(
             report, input_urls, input_ids, finished_urls, finished_ids, output_dir
         )
         
+        # Update transcript-pending.md if it was used as input
+        pending_file_updated = False
+        if input_file.name == "transcript-pending.md":
+            actually_pending_urls = [
+                url for url, vid_id in zip(input_urls, input_ids)
+                if vid_id in report.actually_pending
+            ]
+            if actually_pending_urls:
+                safe_write_lines(input_file, actually_pending_urls)
+                pending_file_updated = True
+                console.print(f"\n[green]✓[/green] Updated {input_file.name} with {len(actually_pending_urls)} videos that need processing")
+            else:
+                # Remove all URLs if nothing is pending
+                safe_write_lines(input_file, [])
+                pending_file_updated = True
+                console.print(f"\n[green]✓[/green] Cleared {input_file.name} - all videos have transcripts")
+        
         # Print summary
         console.print("\n[bold]Full Reconciliation Report[/bold]")
         console.print(f"Input file: {report.input_unique} unique videos")
         console.print(f"Finished file: {report.finished_unique} unique videos")
         console.print(f"Transcript files: {report.transcript_count}")
-        console.print(f"\n[green]Completed:[/green] {len(report.completed)}")
-        console.print(f"[yellow]Pending:[/yellow] {len(report.pending)}")
+        console.print(f"\n[green]Completed:[/green] {len(report.completed)} (in both input and finished.dat)")
+        console.print(f"[yellow]Pending (not in finished.dat):[/yellow] {len(report.pending)}")
+        console.print(f"[red]Actually Pending (no transcript file):[/red] {len(report.actually_pending)}")
         console.print(f"[red]Failed/Missing:[/red] {len(report.finished_but_no_file)}")
         
         if outputs:
