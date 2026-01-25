@@ -135,27 +135,19 @@ def download_audio_and_metadata(
         limit_rate=limit_rate, sleep_interval_requests=sleep_interval_requests
     )
 
-    # Format selectors - try specific formats first, then fall back to bestaudio/best
-    preferred_audio_fmt = "140/251/250/249/bestaudio/best"
+    # Format selectors - use best audio with m4a extension like the working CLI command
+    preferred_audio_fmt = "ba[ext=m4a]/140/251/250/249/bestaudio/best"
     fallback_audio_fmt = "bestaudio/best"
-    # Last resort: no format restriction, let yt-dlp choose and extract audio
-    unrestricted_fmt = "best"
     
     strategies = [
-        # Strategy 1: Default client (auto-detects best client, usually Android/TV which don't require n-challenge)
+        # Strategy 1: Chrome impersonation (matches working CLI command)
+        (preferred_audio_fmt, "m4a", None, "chrome", "chrome-impersonate"),
+        # Strategy 2: Chrome impersonation with simpler format
+        (fallback_audio_fmt, "m4a", None, "chrome", "chrome-impersonate-simple"),
+        # Strategy 3: Default client without impersonation
         (preferred_audio_fmt, "m4a", None, None, "default-client"),
-        # Strategy 2: Default client with simpler format selector
+        # Strategy 4: Default client with simpler format selector
         (fallback_audio_fmt, "m4a", None, None, "default-client-simple"),
-        # Strategy 3: Default client with no format restriction
-        (unrestricted_fmt, "m4a", None, None, "default-client-unrestricted"),
-        # Strategy 4: iOS fallback (may work for some restricted videos)
-        (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback"),
-        # Strategy 5: iOS with simpler format selector
-        (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback-simple"),
-        # Strategy 6: Web client (requires n-challenge solving, use as last resort)
-        (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "web-client"),
-        # Strategy 7: Web client with simpler format selector
-        (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "web-client-simple"),
     ]
 
     last_err: Optional[Exception] = None
