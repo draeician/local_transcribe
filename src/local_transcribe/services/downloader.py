@@ -44,7 +44,10 @@ def make_base_ydl_opts(
         "prefer_ipv4": True,
         # Use the standard backend if curl_cffi is unstable in this venv
         "http_backend": "requests", 
+        # Prefer local JavaScript runtime (Deno) for YouTube SABR challenge solving
         "esm_preference": "local",
+        # Explicitly prefer Deno if available
+        "js_runtimes": ["deno", "node", "bun"],
     }
     if cookies_from_browser:
         opts["cookiesfrombrowser"] = (cookies_from_browser, None, None)
@@ -136,27 +139,49 @@ def download_audio_and_metadata(
     # Format selectors - try specific formats first, then fall back to bestaudio/best
     preferred_audio_fmt = "140/251/250/249/bestaudio/best"
     fallback_audio_fmt = "bestaudio/best"
+    # Last resort: no format restriction, let yt-dlp choose and extract audio
+    unrestricted_fmt = "best"
     
     strategies = [
         # Strategy 1: Standard Web + Deno (The most reliable for audio right now)
         (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web"),
         # Strategy 2: Web with simpler format selector (fallback if specific formats unavailable)
         (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web-simple"),
-        # Strategy 3: iOS fallback
+        # Strategy 3: Web with no format restriction (extract audio from any format)
+        (unrestricted_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web-unrestricted"),
+        # Strategy 4: iOS fallback
         (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback"),
-        # Strategy 4: iOS with simpler format selector
+        # Strategy 5: iOS with simpler format selector
         (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback-simple"),
+        # Strategy 6: iOS with no format restriction
+        (unrestricted_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback-unrestricted"),
     ]
 
     last_err: Optional[Exception] = None
+    format_errors = 0
     for fmt, remux, ea, imp, label in strategies:
         try:
             return try_download_with_strategy(url, base_opts, fmt, remux, ea, imp, label)
         except DownloadError as e:
             last_err = e
+            error_str = str(e).lower()
+            if "format is not available" in error_str or "requested format" in error_str:
+                format_errors += 1
             print(f"[warn] Strategy '{label}' failed: {e}", file=sys.stderr)
         except Exception as e:
             last_err = e
             print(f"[warn] Strategy '{label}' encountered unexpected error: {e}", file=sys.stderr)
 
+    # Provide helpful error message if all strategies failed with format errors
+    if format_errors == len(strategies):
+        error_msg = (
+            f"All download strategies failed. YouTube is not providing any formats for this video.\n"
+            f"This may indicate:\n"
+            f"  1. The video requires authentication - try using --cookies-file or --cookies-from-browser\n"
+            f"  2. Deno is not being used by yt-dlp - verify with 'lt doctor' that Deno is accessible\n"
+            f"  3. The video may be region-locked or age-restricted\n"
+            f"\nLast error: {last_err}"
+        )
+        raise RuntimeError(error_msg)
+    
     raise RuntimeError(f"All download strategies failed. Last error: {last_err}")
