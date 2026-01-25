@@ -84,8 +84,23 @@ def try_download_with_strategy(
 
     print(f"[info] Strategy: {label} | client={extractor_args.get('youtube', {}).get('player_client', 'default')}", file=sys.stderr)
 
-    with YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except DownloadError as e:
+        # Check if it's a format error - if so, try without format restriction
+        error_str = str(e).lower()
+        if "format is not available" in error_str or "requested format" in error_str:
+            # Retry with bestaudio/best as a last resort
+            if fmt != "bestaudio/best":
+                print(f"[info] Retrying {label} with bestaudio/best format", file=sys.stderr)
+                opts["format"] = "bestaudio/best"
+                with YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+            else:
+                raise
+        else:
+            raise
 
     vid = info["id"]
     candidates = list(Path(base_opts["outtmpl"]).parent.glob(f"{vid}.*"))
@@ -118,13 +133,19 @@ def download_audio_and_metadata(
         limit_rate=limit_rate, sleep_interval_requests=sleep_interval_requests
     )
 
-    default_audio_fmt = "140/251/250/249/bestaudio/best"
+    # Format selectors - try specific formats first, then fall back to bestaudio/best
+    preferred_audio_fmt = "140/251/250/249/bestaudio/best"
+    fallback_audio_fmt = "bestaudio/best"
     
     strategies = [
         # Strategy 1: Standard Web + Deno (The most reliable for audio right now)
-        (default_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web"),
-        # Strategy 2: iOS fallback
-        (default_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback"),
+        (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web"),
+        # Strategy 2: Web with simpler format selector (fallback if specific formats unavailable)
+        (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web-simple"),
+        # Strategy 3: iOS fallback
+        (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback"),
+        # Strategy 4: iOS with simpler format selector
+        (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback-simple"),
     ]
 
     last_err: Optional[Exception] = None
