@@ -142,18 +142,20 @@ def download_audio_and_metadata(
     unrestricted_fmt = "best"
     
     strategies = [
-        # Strategy 1: Standard Web + Deno (The most reliable for audio right now)
-        (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web"),
-        # Strategy 2: Web with simpler format selector (fallback if specific formats unavailable)
-        (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web-simple"),
-        # Strategy 3: Web with no format restriction (extract audio from any format)
-        (unrestricted_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "stable-web-unrestricted"),
-        # Strategy 4: iOS fallback
+        # Strategy 1: Default client (auto-detects best client, usually Android/TV which don't require n-challenge)
+        (preferred_audio_fmt, "m4a", None, None, "default-client"),
+        # Strategy 2: Default client with simpler format selector
+        (fallback_audio_fmt, "m4a", None, None, "default-client-simple"),
+        # Strategy 3: Default client with no format restriction
+        (unrestricted_fmt, "m4a", None, None, "default-client-unrestricted"),
+        # Strategy 4: iOS fallback (may work for some restricted videos)
         (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback"),
         # Strategy 5: iOS with simpler format selector
         (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback-simple"),
-        # Strategy 6: iOS with no format restriction
-        (unrestricted_fmt, "m4a", {"youtube": {"player_client": ["ios"]}}, None, "ios-fallback-unrestricted"),
+        # Strategy 6: Web client (requires n-challenge solving, use as last resort)
+        (preferred_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "web-client"),
+        # Strategy 7: Web client with simpler format selector
+        (fallback_audio_fmt, "m4a", {"youtube": {"player_client": ["web"]}}, None, "web-client-simple"),
     ]
 
     last_err: Optional[Exception] = None
