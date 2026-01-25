@@ -556,6 +556,182 @@ def report(
 
 
 @app.command()
+def update(
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
+):
+    """Update local-transcribe package with Deno verification."""
+    import subprocess
+    import sys
+    
+    logger = configure_logging(verbose=verbose, log_file_prefix="update")
+    
+    try:
+        # Step 1: Check if Deno is installed
+        console.print("[blue]Checking for Deno runtime...[/blue]")
+        deno_available = False
+        deno_version = None
+        
+        try:
+            result = subprocess.run(
+                ["deno", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                deno_available = True
+                deno_version = result.stdout.split('\n')[0].strip()
+                console.print(f"[green]✓[/green] Deno found: {deno_version}")
+            else:
+                console.print("[red]✗[/red] Deno command returned error")
+        except FileNotFoundError:
+            # Check common locations
+            import os
+            common_paths = [
+                "/usr/local/bin/deno",
+                os.path.expanduser("~/.deno/bin/deno"),
+            ]
+            for path in common_paths:
+                if os.path.exists(path) and os.access(path, os.X_OK):
+                    try:
+                        result = subprocess.run(
+                            [path, "--version"],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        if result.returncode == 0:
+                            deno_available = True
+                            deno_version = result.stdout.split('\n')[0].strip()
+                            console.print(f"[green]✓[/green] Deno found: {deno_version} (at {path})")
+                            break
+                    except Exception:
+                        continue
+        
+        if not deno_available:
+            console.print("\n[red]✗[/red] Deno is not installed or not accessible")
+            console.print("\n[bold]Deno is required for YouTube 2026 SABR support.[/bold]")
+            console.print("\nPlease install Deno first:")
+            console.print("\n  [cyan]curl -fsSL https://deno.land/install.sh | sh[/cyan]")
+            console.print("  [cyan]export DENO_INSTALL=\"$HOME/.deno\"[/cyan]")
+            console.print("  [cyan]export PATH=\"$DENO_INSTALL/bin:$PATH\"[/cyan]")
+            console.print("  [cyan]sudo ln -sf \"$DENO_INSTALL/bin/deno\" /usr/local/bin/deno[/cyan]")
+            console.print("\nFor more information, visit: [link=https://deno.com/]https://deno.com/[/link]")
+            raise typer.Exit(1)
+        
+        # Step 2: Detect installation method
+        console.print("\n[blue]Detecting installation method...[/blue]")
+        is_pipx = False
+        is_local = False
+        
+        # Check if installed via pipx
+        try:
+            result = subprocess.run(
+                ["pipx", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and "local-transcribe" in result.stdout:
+                is_pipx = True
+                console.print("[green]✓[/green] Detected pipx installation")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        
+        # Check if in local development directory
+        if not is_pipx:
+            current_dir = Path.cwd()
+            pyproject_path = current_dir / "pyproject.toml"
+            src_path = current_dir / "src" / "local_transcribe"
+            
+            if pyproject_path.exists() and src_path.exists():
+                is_local = True
+                console.print("[green]✓[/green] Detected local development installation")
+        
+        if not is_pipx and not is_local:
+            console.print("[yellow]⚠[/yellow] Could not detect installation method")
+            console.print("Attempting pipx upgrade as default...")
+            is_pipx = True
+        
+        # Step 3: Update the package
+        console.print("\n[blue]Updating local-transcribe...[/blue]")
+        
+        if is_pipx:
+            try:
+                # Try to upgrade from git if possible, otherwise just upgrade
+                result = subprocess.run(
+                    ["pipx", "upgrade", "local-transcribe"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if result.returncode == 0:
+                    console.print("[green]✓[/green] Package updated via pipx")
+                else:
+                    console.print(f"[red]✗[/red] pipx upgrade failed: {result.stderr}")
+                    raise typer.Exit(1)
+            except FileNotFoundError:
+                console.print("[red]✗[/red] pipx not found. Please install pipx first.")
+                raise typer.Exit(1)
+            except subprocess.TimeoutExpired:
+                console.print("[red]✗[/red] Update timed out")
+                raise typer.Exit(1)
+        
+        elif is_local:
+            try:
+                # Update local installation
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-e", ".", "--upgrade"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if result.returncode == 0:
+                    console.print("[green]✓[/green] Local package updated")
+                else:
+                    console.print(f"[red]✗[/red] pip install failed: {result.stderr}")
+                    raise typer.Exit(1)
+            except subprocess.TimeoutExpired:
+                console.print("[red]✗[/red] Update timed out")
+                raise typer.Exit(1)
+        
+        # Step 4: Verify installation
+        console.print("\n[blue]Verifying installation...[/blue]")
+        try:
+            from local_transcribe.utils.doctor import run_diagnostics
+            results = run_diagnostics()
+            
+            # Check critical components
+            critical_checks = ["Deno Runtime", "FFmpeg", "yt-dlp"]
+            all_critical_ok = all(
+                results.get(check, (False, ""))[0] for check in critical_checks
+            )
+            
+            if all_critical_ok:
+                console.print("[green]✓[/green] All critical checks passed")
+            else:
+                console.print("[yellow]⚠[/yellow] Some checks failed. Run 'lt doctor' for details.")
+                # Show failed checks
+                for check in critical_checks:
+                    status, details = results.get(check, (False, ""))
+                    if not status:
+                        console.print(f"  [red]✗[/red] {check}: {details}")
+        except Exception as e:
+            logger.warning(f"Verification failed: {e}", exc_info=verbose)
+            console.print(f"[yellow]⚠[/yellow] Verification failed: {e}")
+            console.print("Run 'lt doctor' manually to check your installation")
+        
+        console.print("\n[green]✓[/green] Update complete!")
+        
+    except typer.Exit:
+        raise
+    except Exception as e:
+        logger.error(f"Update failed: {e}", exc_info=verbose)
+        console.print(f"[red]✗[/red] Error: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def doctor(
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):

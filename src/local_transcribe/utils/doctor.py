@@ -201,6 +201,47 @@ def check_yt_dlp() -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
+def check_deno() -> Tuple[bool, str]:
+    """Check if Deno is installed and accessible."""
+    try:
+        result = subprocess.run(
+            ["deno", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            # Extract version from first line (e.g., "deno 2.6.6")
+            version_line = result.stdout.split('\n')[0]
+            return True, version_line.strip()
+        return False, "deno returned error"
+    except FileNotFoundError:
+        # Check common locations
+        common_paths = [
+            "/usr/local/bin/deno",
+            os.path.expanduser("~/.deno/bin/deno"),
+        ]
+        for path in common_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                try:
+                    result = subprocess.run(
+                        [path, "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if result.returncode == 0:
+                        version_line = result.stdout.split('\n')[0]
+                        return True, f"{version_line.strip()} (found at {path})"
+                except Exception:
+                    continue
+        return False, "deno not found in PATH or common locations"
+    except subprocess.TimeoutExpired:
+        return False, "deno timeout"
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
 def run_diagnostics() -> Dict[str, Tuple[bool, str]]:
     """
     Run all diagnostic checks.
@@ -210,13 +251,14 @@ def run_diagnostics() -> Dict[str, Tuple[bool, str]]:
     """
     results = {}
     
+    results["Deno Runtime"] = check_deno()
+    results["FFmpeg"] = check_ffmpeg()
+    results["yt-dlp"] = check_yt_dlp()
     results["GPU Detection (nvidia-smi)"] = check_nvidia_smi()
     results["CUDA Toolkit (nvcc)"] = check_nvcc()
     results["Python Packages"] = check_python_packages()
     results["cuDNN Location"] = check_cudnn_location()
     results["LD_LIBRARY_PATH"] = check_ld_library_path()
-    results["FFmpeg"] = check_ffmpeg()
-    results["yt-dlp"] = check_yt_dlp()
     results["cuDNN .so Files"] = check_cudnn_so()
     results["ctranslate2 CUDA"] = check_ctranslate2_cuda()
     results["PyTorch CUDA"] = check_pytorch_cuda()

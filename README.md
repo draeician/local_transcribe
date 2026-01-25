@@ -88,6 +88,7 @@ All functionality is available through the unified `lt` command:
 - `lt status` - Show batch processing status
 - `lt report` - Generate failure report
 - `lt doctor` - Run environment diagnostics
+- `lt update` - Update the package (checks Deno requirement)
 
 ---
 
@@ -114,20 +115,29 @@ All functionality is available through the unified `lt` command:
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip ffmpeg pipx
 
-# 2. Install CUDA Toolkit (for GPU support)
+# 2. Install Deno (required for YouTube 2026 SABR support)
+curl -fsSL https://deno.land/install.sh | sh
+# Add Deno to PATH (add to ~/.bashrc for persistence)
+export DENO_INSTALL="$HOME/.deno"
+export PATH="$DENO_INSTALL/bin:$PATH"
+# Create symlink for system-wide access (optional but recommended)
+sudo ln -sf "$DENO_INSTALL/bin/deno" /usr/local/bin/deno
+
+# 3. Install CUDA Toolkit (for GPU support)
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt update
 sudo apt install -y cuda-toolkit
 
-# 3. Add CUDA to environment
+# 4. Add CUDA to environment
 echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
 echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
 source ~/.bashrc
 
-# 4. Verify CUDA
-nvcc --version
-nvidia-smi
+# 5. Verify installations
+deno --version  # Should show Deno version
+nvcc --version  # Should show CUDA version
+nvidia-smi      # Should show GPU info
 ```
 
 ### Installation Methods
@@ -362,3 +372,108 @@ A: Just run `lt batch --resume` - it picks up exactly where you left off.
 
 **Q: How do I check what's actually completed?**  
 A: Run `lt reconcile` - it checks actual transcript files vs. what's recorded in finished.dat and generates reports.
+
+---
+
+## Troubleshooting: YouTube 2026 SABR Throttling & 403 Forbidden Errors (2026-01-25)
+
+### Summary
+**Problem**: Downloads fail with `HTTP 403: Forbidden` errors when attempting to download YouTube videos.  
+**Root Cause**: YouTube's 2026 "SABR" (Server-Side Ad-Insertion and Rendering) protocol requires JavaScript-based signature generation via Deno runtime.  
+**Quick Fix**: Install Deno and ensure it's accessible in `/usr/local/bin/deno` or in your PATH.
+
+### Issue
+In early 2026, YouTube escalated its "SABR" protocol, introducing a strict **"n-challenge"**—a rotating JavaScript-based signature required to authorize media downloads.
+
+**Symptoms:**
+- Automated tools like `yt-dlp` and `local_transcribe` hit `HTTP 403: Forbidden` errors during fragment downloads
+- Only low-bitrate, fragmented HLS (m3u8) streams are available
+- Standard high-quality direct audio formats (like `itag 140`) disappear from available formats
+
+### Root Cause
+Without solving the JavaScript challenge, YouTube only serves low-quality fragmented streams. The modern "n-challenge" puzzles are:
+- Session-specific and dynamic
+- Require JavaScript execution to generate correct signatures
+- Cannot be solved with static cookies or user agents alone
+
+### Solution: The "Harmony 2026" Stable Strategy
+
+The solution relies on a combination of environment bridging and forcing the "Web" player client, which prioritizes JavaScript execution.
+
+**1. Install Deno (JavaScript Runtime):**
+```bash
+# Install Deno
+curl -fsSL https://deno.land/install.sh | sh
+
+# Add to PATH (add to ~/.bashrc for persistence)
+export DENO_INSTALL="$HOME/.deno"
+export PATH="$DENO_INSTALL/bin:$PATH"
+
+# Create system-wide symlink (recommended for pipx environments)
+sudo ln -sf "$DENO_INSTALL/bin/deno" /usr/local/bin/deno
+
+# Verify installation
+deno --version
+```
+
+**2. Verify Deno is Accessible:**
+```bash
+# Check if deno is in PATH
+which deno
+
+# Should show: /usr/local/bin/deno or ~/.deno/bin/deno
+
+# Test that pipx can see it
+pipx runpip local-transcribe which deno
+```
+
+**3. The System Configuration:**
+- **Runtime Dependency**: Deno linked to `/usr/local/bin` (ensures pipx virtual environments can access it)
+- **Strategy Order**: 
+  1. `stable-web`: Uses standard Web client headers + local Deno solver
+  2. `ios-fallback`: Standard fallback for restricted videos
+- **HTTP Backend**: Uses `requests` (stable) instead of `curl_cffi` (was causing silent crashes)
+
+### Verification
+Run diagnostics to verify your setup:
+```bash
+lt doctor
+```
+
+This will check:
+- Deno installation and accessibility
+- GPU detection (nvidia-smi)
+- CUDA toolkit (nvcc)
+- Python packages
+- FFmpeg availability
+- yt-dlp version
+
+### Expected Behavior After Fix
+```bash
+lt transcribe "$TARGET" --cookies-file ~/cookies.txt
+[info] Strategy: stable-web | client=['web']
+✓ Done.
+```
+
+The system should now:
+- ✅ Correctly identify direct m4a audio stream (Format 140)
+- ✅ Bypass fragmented HLS paths
+- ✅ Avoid 403 errors
+- ✅ Work reliably with the web client strategy
+
+### FAQ
+
+**Q: Why do I need Deno?**  
+A: YouTube's 2026 SABR protocol requires JavaScript execution to solve dynamic "n-challenge" signatures. Deno provides a high-performance JavaScript runtime that yt-dlp can use to solve these challenges.
+
+**Q: Can I use Node.js instead of Deno?**  
+A: While Node.js was tried, the pipx isolated virtual environment had difficulty reliably calling the local Node binary across the environment boundary. Deno with a system-wide symlink in `/usr/local/bin` ensures reliable access.
+
+**Q: What if I still get 403 errors?**  
+A: Ensure Deno is installed and accessible. Run `lt doctor` to verify. Also consider using `--cookies-file` or `--cookies-from-browser` to authenticate with YouTube.
+
+**Q: Do I need to update Deno regularly?**  
+A: Deno updates are independent of this project. You can update Deno with `deno upgrade` if needed, but the current version should work fine.
+
+**Q: What if Deno is not found in pipx environment?**  
+A: The system-wide symlink (`/usr/local/bin/deno`) ensures pipx can access Deno. If issues persist, verify the symlink exists and is executable.

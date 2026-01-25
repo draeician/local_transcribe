@@ -13,6 +13,24 @@ set -e
 
 GIT_URL="${1:-}"
 
+# Check for Deno (required for YouTube 2026 SABR support)
+if ! command -v deno &> /dev/null; then
+    echo "❌ Deno is not installed or not in PATH"
+    echo ""
+    echo "Deno is required for YouTube 2026 SABR support."
+    echo "Please install Deno first:"
+    echo ""
+    echo "  curl -fsSL https://deno.land/install.sh | sh"
+    echo "  export DENO_INSTALL=\"\$HOME/.deno\""
+    echo "  export PATH=\"\$DENO_INSTALL/bin:\$PATH\""
+    echo "  sudo ln -sf \"\$DENO_INSTALL/bin/deno\" /usr/local/bin/deno"
+    echo ""
+    echo "For more information, visit: https://deno.com/"
+    exit 1
+fi
+
+echo "✓ Deno found: $(deno --version)"
+
 # Check if local-transcribe is already installed
 if pipx list | grep -q "local-transcribe"; then
     echo "local-transcribe is already installed. Updating package..."

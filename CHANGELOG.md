@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-01-25
+
+### Fixed
+- Fixed YouTube 2026 "SABR" throttling issue that caused HTTP 403 Forbidden errors
+- Simplified download strategies to use stable-web (web client) with Deno support
+- Changed default HTTP backend from curl_cffi to requests for improved stability
+- Added proper handling for HTTP 403 Forbidden errors with retry logic
+
+### Changed
+- Downloader now uses web client strategy as primary method (requires Deno runtime)
+- Removed Safari UA header and complex multi-strategy fallbacks
+- Updated pipeline to handle 403 errors gracefully with retry suggestions
+
+### Added
+- `lt update` command for easy package updates with Deno verification
+- Deno runtime check in `lt doctor` diagnostics
+- Deno installation requirement in prerequisites and installation guides
+- Troubleshooting documentation for YouTube 2026 SABR throttling issue
+
 ## [0.1.3] - 2025-11-07
 
 ### Added

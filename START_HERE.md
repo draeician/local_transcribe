@@ -8,6 +8,9 @@ Get started with local YouTube transcription in under 10 commands.
 
 **Quick Install (with GPU support):**
 ```bash
+# First, ensure Deno is installed (see System Requirements above)
+deno --version  # Verify Deno is installed
+
 # From local directory
 ./install_with_gpu.sh
 
@@ -85,9 +88,27 @@ lt reconcile
 ## System Requirements
 
 - Python 3.10+
+- **Deno** (required for YouTube 2026 SABR support) - [Install Deno](https://deno.com/)
 - CUDA-capable GPU (optional, CPU works too)
 - FFmpeg
 - See [README.md](README.md) for full setup instructions
+
+### Installing Deno
+
+```bash
+# Install Deno
+curl -fsSL https://deno.land/install.sh | sh
+
+# Add to PATH (add to ~/.bashrc for persistence)
+export DENO_INSTALL="$HOME/.deno"
+export PATH="$DENO_INSTALL/bin:$PATH"
+
+# Create system-wide symlink (recommended for pipx environments)
+sudo ln -sf "$DENO_INSTALL/bin/deno" /usr/local/bin/deno
+
+# Verify installation
+deno --version
+```
 
 ## Next Steps
 
