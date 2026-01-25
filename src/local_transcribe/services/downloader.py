@@ -42,11 +42,7 @@ def make_base_ydl_opts(
         "concurrent_fragment_downloads": max(1, int(concurrent_frags)),
         "geo_bypass": True,
         "prefer_ipv4": True,
-        # Use the standard backend if curl_cffi is unstable in this venv
-        "http_backend": "requests", 
-        # Prefer local JavaScript runtime (Deno) for YouTube SABR challenge solving
-        # yt-dlp will auto-detect Deno from PATH if available
-        "esm_preference": "local",
+        # Let yt-dlp use default settings - it auto-detects Deno and uses best clients
     }
     if cookies_from_browser:
         opts["cookiesfrombrowser"] = (cookies_from_browser, None, None)
