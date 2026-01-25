@@ -13,7 +13,8 @@ authors = [
     {name = "Your Name"}
 ]
 dependencies = [
-    "yt-dlp>=2025.1.1",
+    # Core YT-DLP with 2026 SABR/Impersonation support
+    "yt-dlp[curl-cffi,default]>=2025.1.1",
     "faster-whisper>=1.0.3",
     "tqdm>=4.66.2",
     "soundfile>=0.12.1",
@@ -22,6 +23,7 @@ dependencies = [
     "rich>=13.0.0",
     "nvidia-cublas",
     "nvidia-cudnn",
+    # Standard Torch (CPU fallback) - CUDA version handled by pipx runpip if needed
     "torch",
     "torchvision",
     "torchaudio",
@@ -51,4 +53,3 @@ target-version = "py310"
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
-
