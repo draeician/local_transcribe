@@ -105,8 +105,24 @@ def check_cudnn_location() -> Tuple[bool, str]:
         import nvidia.cublas
         import os
         
-        cudnn_path = os.path.dirname(nvidia.cudnn.__file__) + '/lib'
-        cublas_path = os.path.dirname(nvidia.cublas.__file__) + '/lib'
+        # Handle namespace packages where __file__ might be None
+        cudnn_file = getattr(nvidia.cudnn, '__file__', None)
+        cublas_file = getattr(nvidia.cublas, '__file__', None)
+        
+        if cudnn_file is None or cublas_file is None:
+            # Try to find the package location using __path__
+            cudnn_paths = getattr(nvidia.cudnn, '__path__', [])
+            cublas_paths = getattr(nvidia.cublas, '__path__', [])
+            
+            if cudnn_paths and cublas_paths:
+                cudnn_path = str(Path(cudnn_paths[0]) / 'lib')
+                cublas_path = str(Path(cublas_paths[0]) / 'lib')
+                return True, f"cuDNN: {cudnn_path}, cuBLAS: {cublas_path}"
+            else:
+                return False, "nvidia.cudnn or nvidia.cublas __path__ not found"
+        
+        cudnn_path = os.path.dirname(cudnn_file) + '/lib'
+        cublas_path = os.path.dirname(cublas_file) + '/lib'
         return True, f"cuDNN: {cudnn_path}, cuBLAS: {cublas_path}"
     except ImportError:
         return False, "nvidia.cudnn or nvidia.cublas not found"
