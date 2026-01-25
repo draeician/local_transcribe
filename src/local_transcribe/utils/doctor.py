@@ -242,6 +242,204 @@ def check_deno() -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
+def get_deno_installation_guidance() -> str:
+    """Get installation instructions for Deno."""
+    return """Deno is required for YouTube 2026 SABR support.
+Install with:
+  curl -fsSL https://deno.land/install.sh | sh
+  export DENO_INSTALL="$HOME/.deno"
+  export PATH="$DENO_INSTALL/bin:$PATH"
+  sudo ln -sf "$DENO_INSTALL/bin/deno" /usr/local/bin/deno
+
+For more information, visit: https://deno.com/"""
+
+
+def check_deno_with_guidance() -> Tuple[bool, str]:
+    """Check if Deno is installed, returning guidance if missing."""
+    is_available, result = check_deno()
+    if is_available:
+        return True, result
+    return False, get_deno_installation_guidance()
+
+
+def check_pytorch_installed() -> Tuple[bool, str]:
+    """Check if PyTorch is installed (separate from full package check)."""
+    try:
+        import torch
+        version = torch.__version__
+        return True, f"PyTorch {version}"
+    except ImportError:
+        return False, "PyTorch not installed"
+
+
+def get_pytorch_installation_guidance() -> str:
+    """Get installation instructions for PyTorch with CUDA support."""
+    return """PyTorch is required for GPU/CUDA acceleration.
+Install with:
+  pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+Note: CPU mode works without PyTorch, but will be slower."""
+
+
+def check_pytorch_with_guidance() -> Tuple[bool, str]:
+    """Check if PyTorch is installed, returning guidance if missing."""
+    is_available, result = check_pytorch_installed()
+    if is_available:
+        return True, result
+    return False, get_pytorch_installation_guidance()
+
+
+def detect_cuda_availability() -> bool:
+    """Detect if CUDA is available on the system."""
+    # Check nvidia-smi first (most reliable)
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    
+    # Fallback: check nvcc
+    try:
+        result = subprocess.run(
+            ["nvcc", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    
+    return False
+
+
+def is_pipx_environment() -> bool:
+    """Detect if running in a pipx environment."""
+    # Check for pipx environment indicators
+    # pipx sets PIPX_HOME and PIPX_BIN_DIR, or we can check the Python path
+    if os.environ.get("PIPX_HOME") or os.environ.get("PIPX_BIN_DIR"):
+        return True
+    
+    # Check if Python executable is in a pipx venv
+    python_path = Path(sys.executable)
+    # pipx venvs are typically in ~/.local/pipx/venvs/ or similar
+    if "pipx" in str(python_path).lower() or ".local/pipx" in str(python_path):
+        return True
+    
+    # Check if we can find pipx metadata
+    try:
+        # Try to detect by checking if we're in a venv that pipx manages
+        venv_parent = python_path.parent.parent
+        if venv_parent.name == "venvs" and "pipx" in str(venv_parent):
+            return True
+    except Exception:
+        pass
+    
+    return False
+
+
+def get_pytorch_upgrade_marker_path() -> Path:
+    """Get the path to the PyTorch upgrade marker file."""
+    # Use XDG config dir if available, otherwise ~/.local/share
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        base_dir = Path(xdg_data_home)
+    else:
+        base_dir = Path.home() / ".local" / "share"
+    
+    marker_dir = base_dir / "local-transcribe"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    return marker_dir / "pytorch_cuda_upgraded"
+
+
+def has_pytorch_upgrade_marker() -> bool:
+    """Check if PyTorch upgrade marker file exists."""
+    marker_path = get_pytorch_upgrade_marker_path()
+    return marker_path.exists()
+
+
+def create_pytorch_upgrade_marker() -> None:
+    """Create the PyTorch upgrade marker file."""
+    marker_path = get_pytorch_upgrade_marker_path()
+    marker_path.touch()
+
+
+def ensure_pytorch_cuda() -> Tuple[bool, str]:
+    """
+    Ensure PyTorch with CUDA support is installed.
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    # Check if CUDA is available
+    if not detect_cuda_availability():
+        return False, "CUDA not available on this system"
+    
+    # Check if PyTorch is installed
+    pytorch_installed, _ = check_pytorch_installed()
+    if not pytorch_installed:
+        return False, "PyTorch not installed"
+    
+    # Check if PyTorch has CUDA support
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # CUDA is available, create marker if it doesn't exist
+            if not has_pytorch_upgrade_marker():
+                create_pytorch_upgrade_marker()
+            return True, "PyTorch with CUDA already installed"
+    except ImportError:
+        return False, "PyTorch import failed"
+    
+    # PyTorch is installed but doesn't have CUDA - upgrade needed
+    if not is_pipx_environment():
+        return False, "Not in pipx environment, cannot auto-upgrade"
+    
+    # Attempt to upgrade PyTorch to CUDA version
+    try:
+        import sys
+        # Use pipx runpip to upgrade
+        result = subprocess.run(
+            [
+                "pipx", "runpip", "local-transcribe", "install", "--upgrade",
+                "torch", "torchvision", "torchaudio",
+                "--index-url", "https://download.pytorch.org/whl/cu124"
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minutes timeout for PyTorch download
+        )
+        
+        if result.returncode == 0:
+            # Verify CUDA is now available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    # Success! Create marker file
+                    create_pytorch_upgrade_marker()
+                    return True, "PyTorch upgraded to CUDA version successfully"
+                else:
+                    return False, "PyTorch upgraded but CUDA not available (may need restart)"
+            except ImportError:
+                return False, "PyTorch upgrade completed but import failed"
+        else:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            return False, f"PyTorch upgrade failed: {error_msg[:200]}"
+    except subprocess.TimeoutExpired:
+        return False, "PyTorch upgrade timed out"
+    except FileNotFoundError:
+        return False, "pipx not found, cannot auto-upgrade"
+    except Exception as e:
+        return False, f"Error during PyTorch upgrade: {str(e)[:200]}"
+
+
 def run_diagnostics() -> Dict[str, Tuple[bool, str]]:
     """
     Run all diagnostic checks.

@@ -22,6 +22,9 @@ dependencies = [
     "rich>=13.0.0",
     "nvidia-cublas",
     "nvidia-cudnn",
+    "torch",
+    "torchvision",
+    "torchaudio",
 ]
 
 [project.optional-dependencies]
