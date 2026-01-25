@@ -84,7 +84,11 @@ def try_download_with_strategy(
     if extractor_args:
         opts["extractor_args"] = extractor_args
 
-    print(f"[info] Strategy: {label} | client={extractor_args.get('youtube', {}).get('player_client', 'default')}", file=sys.stderr)
+    # Get client info for logging (handle None case)
+    client_info = "default"
+    if extractor_args:
+        client_info = extractor_args.get('youtube', {}).get('player_client', 'default')
+    print(f"[info] Strategy: {label} | client={client_info}", file=sys.stderr)
 
     try:
         with YoutubeDL(opts) as ydl:
