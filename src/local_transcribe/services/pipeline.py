@@ -13,7 +13,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from local_transcribe.services.rate_limiter import RateLimiter
 from local_transcribe.services.status_store import JsonStatusStore, StatusStore, TranscriptStatus
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
-from local_transcribe.services.downloader import RateLimitError, VideoUnavailableError
+from local_transcribe.services.downloader import RateLimitError, VideoUnavailableError, ForbiddenError
 from local_transcribe.utils.files import safe_append_line, safe_read_lines, safe_write_lines, validate_transcript_file
 from local_transcribe.utils.youtube import extract_video_id, is_valid_youtube_url
 
@@ -327,6 +327,27 @@ class BatchPipeline:
             # Remove from pending file
             self._remove_from_pending_file(status.url)
             
+            return False
+        except ForbiddenError as e:
+            # Handle 403 Forbidden errors - retry if under max attempts, suggest cookies
+            duration = time.time() - start_time
+            status.duration_seconds = duration
+            status.error_message = f"HTTP 403 Forbidden: {str(e)[:500]}"
+            
+            # Log with suggestion
+            self.logger.warning(f"✗ HTTP 403 Forbidden {vid_id}: {status.error_message}")
+            if not self.config.cookies_from_browser and not self.config.cookies_file:
+                self.logger.warning(f"  Consider using --cookies-from-browser or --cookies-file to authenticate")
+            
+            # Mark for retry if under max attempts (403 might be temporary)
+            if status.attempts < self.config.max_retries:
+                status.status = "pending"
+                self.logger.info(f"  Will retry {vid_id} (attempt {status.attempts}/{self.config.max_retries})")
+            else:
+                status.status = "failed"
+                self.logger.error(f"  Max retries reached for {vid_id}")
+            
+            self.status_store.set(vid_id, status)
             return False
         except RateLimitError as e:
             # Re-raise rate limit errors to be handled in run()
