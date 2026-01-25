@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 
 def safe_read_json(path: Path) -> dict:
@@ -157,4 +157,28 @@ def validate_transcript_file(json_path: Path) -> bool:
         return "transcript" in data and "metadata" in data
     except Exception:
         return False
+
+
+def find_cookies_file() -> Optional[Path]:
+    """
+    Find cookies file in common locations.
+    
+    Checks in order:
+    1. ./cookies.txt (current directory)
+    2. ~/cookies.txt (home directory)
+    
+    Returns:
+        Path to cookies file if found, None otherwise
+    """
+    # Check current directory first
+    current_dir_cookies = Path("cookies.txt")
+    if current_dir_cookies.exists() and current_dir_cookies.is_file():
+        return current_dir_cookies
+    
+    # Check home directory
+    home_cookies = Path.home() / "cookies.txt"
+    if home_cookies.exists() and home_cookies.is_file():
+        return home_cookies
+    
+    return None
 

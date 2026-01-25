@@ -45,9 +45,8 @@ def make_base_ydl_opts(
         # Use the standard backend if curl_cffi is unstable in this venv
         "http_backend": "requests", 
         # Prefer local JavaScript runtime (Deno) for YouTube SABR challenge solving
+        # yt-dlp will auto-detect Deno from PATH if available
         "esm_preference": "local",
-        # Explicitly prefer Deno if available
-        "js_runtimes": ["deno", "node", "bun"],
     }
     if cookies_from_browser:
         opts["cookiesfrombrowser"] = (cookies_from_browser, None, None)

@@ -14,7 +14,7 @@ from local_transcribe.services.reconcile import reconcile as reconcile_service, 
 from local_transcribe.services.status_store import JsonStatusStore
 from local_transcribe.services.verify_status import verify_finished_dat, verify_full
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
-from local_transcribe.utils.files import safe_read_lines, safe_write_lines
+from local_transcribe.utils.files import safe_read_lines, safe_write_lines, find_cookies_file
 from local_transcribe.utils.youtube import is_valid_youtube_url
 
 app = typer.Typer(help="Local YouTube transcription with Whisper")
@@ -74,6 +74,13 @@ def transcribe(
     try:
         # Expand ~ in output_dir
         output_path = Path(output_dir).expanduser()
+        
+        # Auto-detect cookies file if not explicitly provided
+        if not cookies_file and not cookies_from_browser:
+            detected_cookies = find_cookies_file()
+            if detected_cookies:
+                cookies_file = str(detected_cookies)
+                logger.info(f"Auto-detected cookies file: {cookies_file}")
         
         cfg = TranscribeConfig(
             model=model,
@@ -162,6 +169,13 @@ def batch(
                 input_path = Path("inputfile.txt")
         else:
             input_path = Path(input).expanduser()
+        
+        # Auto-detect cookies file if not explicitly provided
+        if not cookies_file and not cookies_from_browser:
+            detected_cookies = find_cookies_file()
+            if detected_cookies:
+                cookies_file = str(detected_cookies)
+                logger.info(f"Auto-detected cookies file: {cookies_file}")
         
         # Status store and finished file will default to output_dir in BatchPipeline
         config = BatchConfig(
