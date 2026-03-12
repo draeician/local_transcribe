@@ -65,3 +65,16 @@ lt transcribe "$TARGET" --cookies-file ~/cookies.txt
 ```
 
 **System status is now: FULLY FUNCTIONAL (Production Ready)**
+
+# 2026-02-03 - issue is back
+draeician@nomnom ~/git $ yt-dlp https://www.youtube.com/watch?v=99xyy1nUpug
+[youtube] Extracting URL: https://www.youtube.com/watch?v=99xyy1nUpug
+[youtube] 99xyy1nUpug: Downloading webpage
+[youtube] 99xyy1nUpug: Downloading tv client config
+[youtube] 99xyy1nUpug: Downloading player 3510b6ff-main
+[youtube] 99xyy1nUpug: Downloading tv player API JSON
+[youtube] 99xyy1nUpug: Downloading android sdkless player API JSON
+WARNING: [youtube] 99xyy1nUpug: Some web client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details
+[info] 99xyy1nUpug: Downloading 1 format(s): 401+251-13
+[download] Destination: Early Retirement Expert： A House Vs Stocks... (Here Is The Truth) [99xyy1nUpug].f401.mp4
+[download]   1.5% of    1.25GiB at   97.47MiB/s ETA 00:12ERROR: unable to download video data: HTTP Error 403: Forbidden

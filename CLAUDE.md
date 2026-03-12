@@ -87,6 +87,10 @@ The project is split into several loosely coupled modules.
 
 # Claude Code Guide for local-transcribe
 
+
+## Default behavior: Generate only executable code files. 
+- Never create README, documentation, or explanation files unless explicitly requested.
+
 ## Build & Environment Commands
 - **Install/Update:** `pipx install . --force`
 - **Inject Dependencies:** `pipx inject local-transcribe "yt-dlp[curl-cffi,default]"`
