@@ -75,13 +75,6 @@ def transcribe(
         # Expand ~ in output_dir
         output_path = Path(output_dir).expanduser()
         
-        # Auto-detect cookies file if not explicitly provided
-        if not cookies_file and not cookies_from_browser:
-            detected_cookies = find_cookies_file()
-            if detected_cookies:
-                cookies_file = str(detected_cookies)
-                logger.info(f"Auto-detected cookies file: {cookies_file}")
-        
         cfg = TranscribeConfig(
             model=model,
             device=device,
@@ -170,12 +163,7 @@ def batch(
         else:
             input_path = Path(input).expanduser()
         
-        # Auto-detect cookies file if not explicitly provided
-        if not cookies_file and not cookies_from_browser:
-            detected_cookies = find_cookies_file()
-            if detected_cookies:
-                cookies_file = str(detected_cookies)
-                logger.info(f"Auto-detected cookies file: {cookies_file}")
+        # For batch, only use cookies when explicitly provided on the CLI.
         
         # Status store and finished file will default to output_dir in BatchPipeline
         config = BatchConfig(
