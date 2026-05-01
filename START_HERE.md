@@ -56,10 +56,18 @@ lt doctor
 
 ## Basic Usage
 
-### Single Video
+### Single Video or Local Audio
 
 ```bash
+# YouTube URL
 lt transcribe "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --model medium \
+  --device cuda \
+  --compute-type float16 \
+  --output-dir ./out
+
+# Local file (same JSON output shape; filename stem becomes the transcript id; ffmpeg on PATH for m4a/mp4 audio)
+lt transcribe "/path/to/recording.m4a" \
   --model medium \
   --device cuda \
   --compute-type float16 \

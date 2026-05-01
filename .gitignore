@@ -2,6 +2,8 @@ cookies.txt
 TODO.md
 .env
 venv/
+__pycache__/
+*.py[cod]
 
 # Build artifacts
 build/

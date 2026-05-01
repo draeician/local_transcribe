@@ -1,6 +1,8 @@
 """Transcription service with CUDA preflight and CPU fallback."""
 
+import json
 import os
+import re
 import sys
 import ctypes
 from dataclasses import dataclass
@@ -76,6 +78,53 @@ def build_output_json(meta: dict, transcript: str) -> dict:
             "published_at": published_iso,
         },
     }
+
+
+_UNSAFE_FOR_FILENAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+
+
+def _slug_for_local_id(stem: str) -> str:
+    """Stem safe for use as JSON filename id (cross-platform)."""
+    s = _UNSAFE_FOR_FILENAME.sub("_", stem.strip())
+    s = s.strip("._")
+    return s if s else "output"
+
+
+def local_file_metadata(audio_path: Path) -> dict:
+    """Minimal yt-dlp-shaped meta dict for build_output_json."""
+    resolved = audio_path.resolve()
+    return {
+        "id": _slug_for_local_id(resolved.stem),
+        "title": resolved.name,
+        "duration": 0,
+    }
+
+
+def transcribe_local_file(audio_path: Path, cfg: TranscribeConfig) -> Path:
+    """
+    Transcribe a local audio file and write transcript JSON (same shape as YouTube output).
+
+    Does not delete or modify the source file.
+    """
+    resolved = audio_path.resolve()
+    if not resolved.is_file():
+        raise ValueError(f"Not a regular file: {resolved}")
+
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    meta = local_file_metadata(resolved)
+    transcript = transcribe_audio(
+        audio_path=resolved,
+        model_name=cfg.model,
+        language=cfg.language,
+        device=cfg.device,
+        compute_type=cfg.compute_type,
+    )
+    output_obj = build_output_json(meta, transcript)
+    vid = output_obj["metadata"]["id"] or "output"
+    json_path = cfg.output_dir / f"{vid}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(output_obj, f, ensure_ascii=False, indent=2)
+    return json_path
 
 
 def _cuda_preflight() -> tuple[bool, str]:
@@ -221,8 +270,7 @@ def transcribe_url(url: str, cfg: TranscribeConfig, cleanup_callback=None) -> Pa
     output_obj = build_output_json(meta, transcript)
     vid = output_obj["metadata"]["id"] or "output"
     json_path = cfg.output_dir / f"{vid}.json"
-    
-    import json
+
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(output_obj, f, ensure_ascii=False, indent=2)
     

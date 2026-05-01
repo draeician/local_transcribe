@@ -70,19 +70,27 @@ lt status
 lt reconcile
 ```
 
-### Single Video
+### Single Video or Local Audio File
 ```bash
+# YouTube (HTTPS URL)
 lt transcribe "https://youtube.com/watch?v=VIDEO_ID" \
   --model medium \
   --device cuda \
   --compute-type float16
+
+# Local file (output: `<output-dir>/<slug-from-filename>.json`; ffmpeg should be on PATH for formats like m4a)
+lt transcribe "/path/to/recording.m4a" \
+  --model medium \
+  --device cuda \
+  --compute-type float16 \
+  --output-dir ./out
 ```
 
 ### Using the CLI
 All functionality is available through the unified `lt` command:
 - `lt` or `lt --help` - Show help screen
 - `lt --version` - Show version information
-- `lt transcribe` - Transcribe a single video
+- `lt transcribe` - Transcribe a single YouTube video or local audio file
 - `lt batch` - Process multiple videos
 - `lt reconcile` - Reconcile input with finished transcripts
 - `lt status` - Show batch processing status
@@ -211,11 +219,14 @@ lt doctor
 ### Quick Test
 
 ```bash
-# Test single video transcription
+# Test single video transcription (YouTube)
 lt transcribe "https://www.youtube.com/watch?v=DMQ_HcNSOAI" \
   --model medium \
   --device cuda \
   --compute-type float16
+
+# Test local audio (writes ./out/<stem-slug>.json)
+lt transcribe "/path/to/sample.m4a" --output-dir ./out --device cuda --compute-type float16
 
 # Test batch processing
 lt batch --input inputfile.txt
@@ -292,7 +303,7 @@ python3 -c "import torch; print('CUDA available:', torch.cuda.is_available()); p
 The `lt` CLI handles CUDA/cuDNN setup automatically:
 
 ```bash
-# Single video
+# Single video (URL or path to an audio file on disk)
 lt transcribe "https://youtube.com/watch?v=VIDEO_ID" --device cuda
 
 # Batch processing with resume capability

@@ -13,11 +13,11 @@ from local_transcribe.services.pipeline import BatchConfig, BatchPipeline
 from local_transcribe.services.reconcile import reconcile as reconcile_service, write_reconcile_outputs
 from local_transcribe.services.status_store import JsonStatusStore
 from local_transcribe.services.verify_status import verify_finished_dat, verify_full
-from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
+from local_transcribe.services.transcriber import TranscribeConfig, transcribe_local_file, transcribe_url
 from local_transcribe.utils.files import safe_read_lines, safe_write_lines, find_cookies_file
 from local_transcribe.utils.youtube import is_valid_youtube_url
 
-app = typer.Typer(help="Local YouTube transcription with Whisper")
+app = typer.Typer(help="Local transcription with Whisper (YouTube URLs or audio files)")
 console = Console(force_terminal=True)
 
 # Default values
@@ -38,59 +38,99 @@ def version_cmd():
 
 @app.command()
 def transcribe(
-    url: str = typer.Argument(..., help="YouTube video URL"),
+    source: str = typer.Argument(
+        ...,
+        metavar="URL_OR_PATH",
+        help="YouTube video URL or path to a local audio file (e.g. m4a, mp3; ffmpeg should be available)",
+    ),
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
     device: str = typer.Option(DEFAULT_DEVICE, help="Device (cpu/cuda/auto)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
     output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), help="Output directory"),
-    keep_audio: bool = typer.Option(False, help="Keep downloaded audio"),
-    cookies_from_browser: str = typer.Option(None, help="Browser to extract cookies from"),
-    cookies_file: str = typer.Option(None, help="Path to cookies.txt file"),
-    limit_rate: str = typer.Option(None, "--limit-rate", help="Max download rate (e.g., 200K, 4.2M)"),
-    sleep_interval_requests: float = typer.Option(None, "--sleep-interval-requests", help="Seconds to sleep between yt-dlp requests"),
+    keep_audio: bool = typer.Option(
+        False,
+        help="Keep downloaded audio after transcription (no-op for local files)",
+    ),
+    cookies_from_browser: str = typer.Option(
+        None,
+        help="Browser to extract cookies from (YouTube only)",
+    ),
+    cookies_file: str = typer.Option(None, help="Path to cookies.txt file (YouTube only)"),
+    limit_rate: str = typer.Option(
+        None,
+        "--limit-rate",
+        help="Max download rate, e.g. 200K, 4.2M (YouTube only)",
+    ),
+    sleep_interval_requests: float = typer.Option(
+        None,
+        "--sleep-interval-requests",
+        help="Seconds to sleep between yt-dlp requests (YouTube only)",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
-    """Transcribe a single YouTube video."""
+    """Transcribe one YouTube video or one local audio file."""
+    raw = source.strip()
+    expanded = Path(raw).expanduser()
+
+    if expanded.exists():
+        if expanded.is_dir():
+            console.print(f"[red]✗[/red] Error: Path is a directory, not an audio file: {expanded}")
+            raise typer.Exit(1)
+        if expanded.is_file():
+            is_local = True
+        else:
+            console.print(f"[red]✗[/red] Error: Not a regular file: {expanded}")
+            raise typer.Exit(1)
+    elif is_valid_youtube_url(raw):
+        is_local = False
+    else:
+        console.print(
+            "[red]✗[/red] Error: Not an existing file path and not a valid HTTPS YouTube URL."
+        )
+        console.print(f"[dim]{raw}[/dim]")
+        raise typer.Exit(1)
+
     logger = configure_logging(verbose=verbose, log_file_prefix="transcribe")
-    
-    # Check prerequisites
+
     from local_transcribe.utils.doctor import check_deno_with_guidance, check_pytorch_with_guidance
-    
-    # Always check Deno (required for YouTube downloads)
-    deno_available, deno_info = check_deno_with_guidance()
-    if not deno_available:
-        console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
-        console.print(f"[dim]{deno_info}[/dim]")
-        console.print("[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n")
-    
-    # Check PyTorch if using CUDA
+
+    if not is_local:
+        deno_available, deno_info = check_deno_with_guidance()
+        if not deno_available:
+            console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
+            console.print(f"[dim]{deno_info}[/dim]")
+            console.print("[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n")
+
     if device.lower() in ("cuda", "gpu"):
         pytorch_available, pytorch_info = check_pytorch_with_guidance()
         if not pytorch_available:
             console.print("\n[yellow]⚠️  Warning: PyTorch not detected[/yellow]")
             console.print(f"[dim]{pytorch_info}[/dim]")
             console.print("[dim]GPU acceleration requires PyTorch. Falling back to CPU mode.[/dim]\n")
-    
+
     try:
-        # Expand ~ in output_dir
-        output_path = Path(output_dir).expanduser()
-        
+        output_dir_path = Path(output_dir).expanduser()
+
         cfg = TranscribeConfig(
             model=model,
             device=device,
             compute_type=compute_type,
-            output_dir=output_path,
+            output_dir=output_dir_path,
             keep_audio=keep_audio,
             cookies_from_browser=cookies_from_browser,
             cookies_file=cookies_file,
             limit_rate=limit_rate,
             sleep_interval_requests=sleep_interval_requests if sleep_interval_requests is not None else None,
         )
-        
-        logger.info(f"Transcribing: {url}")
-        output_path = transcribe_url(url, cfg)
-        console.print(f"[green]✓[/green] Done. Wrote: {output_path}")
-        
+
+        if is_local:
+            logger.info(f"Transcribing local file: {expanded.resolve()}")
+            result_path = transcribe_local_file(expanded, cfg)
+        else:
+            logger.info(f"Transcribing: {raw}")
+            result_path = transcribe_url(raw, cfg)
+        console.print(f"[green]✓[/green] Done. Wrote: {result_path}")
+
     except Exception as e:
         logger.error(f"Transcription failed: {e}", exc_info=verbose)
         console.print(f"[red]✗[/red] Error: {e}")
@@ -816,7 +856,7 @@ def main(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show version and exit"),
 ):
-    """Local YouTube transcription with Whisper."""
+    """Local transcription with Whisper (YouTube URLs or audio files)."""
     global _startup_warnings_shown
     
     # Handle --version flag

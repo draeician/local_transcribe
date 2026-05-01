@@ -47,6 +47,16 @@ jq -r '.[] | select(.status=="failed") | .url' batch_status.json > failed.txt
 lt batch --input failed.txt --max-retries 5
 ```
 
+### Single file (YouTube or local audio)
+
+```bash
+# HTTPS YouTube URL — uses yt-dlp + Deno when downloading
+lt transcribe "https://www.youtube.com/watch?v=VIDEO_ID" --output-dir ./out
+
+# Existing audio file — no download; output is ./out/<slug-from-stem>.json (ffmpeg recommended for m4a etc.)
+lt transcribe ./recording.m4a --output-dir ./out
+```
+
 ---
 
 ## 📁 File Structure

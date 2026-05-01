@@ -1,7 +1,7 @@
 # Claude Code Documentation
 
 ## Overview
-`local-transcribe` is a Python CLI for downloading and transcribing YouTube videos locally using the Whisper speech‑to‑text model.  The tool is written in pure Python with a minimal dependency set and is designed to be run on Linux, macOS, and Windows.
+`local-transcribe` is a Python CLI for transcribing audio locally with the Whisper speech‑to‑text model (via faster-whisper).  It can download and transcribe YouTube videos or transcribe audio files already on disk.  The tool is written in pure Python with a minimal dependency set and is designed to be run on Linux, macOS, and Windows.
 
 ## Command‑Line Interface
 The entry point is the Typer app defined in `src/local_transcribe/cli.py`.  All commands are available via the `lt` alias (the `local-transcribe` package installs a console script called `lt`).  The following commands are supported:
@@ -9,7 +9,7 @@ The entry point is the Typer app defined in `src/local_transcribe/cli.py`.  All 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `lt version` | Show package version | `lt version` |
-| `lt transcribe URL [options]` | Transcribe a single YouTube video | `lt transcribe https://youtu.be/dQw4w9WgXcQ --model large --device cuda` |
+| `lt transcribe URL_OR_PATH [options]` | Transcribe one YouTube video (HTTPS URL) or one local audio file | `lt transcribe https://youtu.be/dQw4w9WgXcQ --model large --device cuda` · `lt transcribe ~/recordings/talk.m4a -o ./out` |
 | `lt batch [options]` | Process a list of URLs from a file, with resume support | `lt batch --input urls.txt --resume` |
 | `lt reconcile [options]` | Compare an input file, `finished.dat` and transcript files; generates summary reports | `lt reconcile --input urls.txt` |
 | `lt verify [options]` | Verify that every completed URL has an associated transcript | `lt verify --mode quick` |
@@ -29,10 +29,12 @@ The entry point is the Typer app defined in `src/local_transcribe/cli.py`.  All 
 | `--model` | Whisper model to use (`tiny`, `base`, `small`, `medium`, `large`). Default `medium`.
 | `--device` | Target device (`cpu`, `cuda`, `auto`). Default `cuda`.
 | `--compute-type` | Precision (`float16`, `int8`).
-| `--keep-audio` | Preserve the downloaded audio file after transcription.
-| `--cookies-from-browser` / `--cookies-file` | Provide browser cookies to bypass YouTube restrictions.
-| `--limit-rate` | Max download speed, e.g. `200K` or `4.2M`.
-| `--sleep-interval-requests` | Pause between yt‑dl requests.
+| `--keep-audio` | Preserve the downloaded audio file after transcription (no‑op when the source is a local file).
+| `--cookies-from-browser` / `--cookies-file` | Provide browser cookies to bypass YouTube restrictions (ignored for local files).
+| `--limit-rate` | Max download speed, e.g. `200K` or `4.2M` (YouTube only).
+| `--sleep-interval-requests` | Pause between yt‑dl requests (YouTube only).
+
+Local paths are detected when `Path.expanduser` resolves to an existing regular file; otherwise the argument must be a valid HTTPS YouTube URL.  Container formats such as m4a typically require **ffmpeg** on PATH for decoding.
 
 ### Batch Options
 | Option | Description |
@@ -54,7 +56,7 @@ The project is split into several loosely coupled modules.
 | Module | Responsibility |
 |--------|----------------|
 | `services.pipeline` | Implements `BatchPipeline` – the orchestration layer for batch jobs. Handles resume logic, status tracking, rate limiting, and graceful shutdown.
-| `services.transcriber` | Wrapper around Whisper (via the `openai-whisper` package). Performs the actual speech‑to‑text conversion.
+| `services.transcriber` | Wrapper around faster‑whisper. Performs speech‑to‑text for downloaded or local audio; `transcribe_local_file` writes the same JSON shape as YouTube runs.
 | `services.downloader` | Uses `yt-dlp` (executed via `subprocess`) to download audio. Includes custom rate‑limit and error handling logic.
 | `services.rate_limiter` | Persists request counts to `rate_limits.json` to avoid exceeding YouTube limits.
 | `services.status_store` | Persists per‑video status (`batch_status.json`). Uses a simple dataclass `TranscriptStatus`.
@@ -66,12 +68,12 @@ The project is split into several loosely coupled modules.
 * `utils.youtube` – YouTube URL parsing and validation.
 
 ## Data Flow
-1. **Input** – `batch` reads URLs from an input file.
+1. **Input** – `batch` reads URLs from an input file; `transcribe` takes either a YouTube URL or a path to a local audio file.
 2. **Preparation** – `BatchPipeline` initializes `TranscriptStatus` objects, checking for existing transcripts.
-3. **Processing** – For each pending video:
-   * Download audio via `services.downloader`.
-   * Transcribe with `services.transcriber`.
-   * Save the transcript JSON and update status.
+3. **Processing** – For each pending video (batch), or once for `transcribe`:
+   * YouTube: download audio via `services.downloader`; local file: use the path as‑is.
+   * Transcribe with `services.transcriber` and write transcript JSON.
+   * Batch runs also update `batch_status.json` per video.
 4. **Post‑processing** – `verify` or `reconcile` generate reports and update `batch_status.json`.
 5. **Reporting** – `status` and `report` provide quick status views.
 
