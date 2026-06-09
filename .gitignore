@@ -2,6 +2,7 @@ cookies.txt
 TODO.md
 .env
 venv/
+.venv/
 __pycache__/
 *.py[cod]
 
