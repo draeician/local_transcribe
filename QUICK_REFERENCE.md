@@ -73,6 +73,8 @@ lt worker restart
 ### Import / repair / retry
 
 ```bash
+# Usually automatic: worker watches transcript-pending.md and imports it.
+# Manual one-shot if needed:
 lt queue import ~/references/transcripts/transcript-pending.md
 lt queue retry --source youtube:VIDEO_ID
 lt queue cancel <execution_id>         # pending only

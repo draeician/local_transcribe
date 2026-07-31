@@ -16,6 +16,11 @@ from local_transcribe.services.atomic_files import (
 )
 from local_transcribe.services.config import load_config
 from local_transcribe.services.download_admission import DownloadAdmission
+from local_transcribe.services.legacy_import import (
+    LegacyPendingWatchState,
+    default_legacy_pending_path,
+    maybe_import_legacy_pending,
+)
 from local_transcribe.services.mount_validation import validate_queue_mount
 from local_transcribe.services.queue_models import (
     TERMINAL_STATUSES,
@@ -289,6 +294,8 @@ def run_worker(
     max_jobs: int | None = None,
     transcripts_root: Path | None = None,
     until_execution_id: str | None = None,
+    legacy_pending_file: Path | None = None,
+    watch_legacy_pending: bool | None = None,
 ) -> int:
     """Run the worker loop. Returns number of jobs processed.
 
@@ -316,7 +323,10 @@ def run_worker(
     else:
         resolved = Path(queue_dir).expanduser()
         # Never create layout/queue.id from the worker — init is operator-owned.
-        verify_queue_identity(resolved, expected_uuid=queue_cfg.expected_uuid)
+        # Unit tests pass validate_nfs=False with disposable queues; do not
+        # enforce the operator's configured UUID against those paths.
+        expected = queue_cfg.expected_uuid if validate_nfs else None
+        verify_queue_identity(resolved, expected_uuid=expected)
 
     mount_result = validate_queue_mount(
         resolved,
@@ -327,8 +337,13 @@ def run_worker(
     if validate_nfs:
         mount_result.raise_if_failed()
 
-    queue_uuid = verify_queue_identity(resolved, expected_uuid=queue_cfg.expected_uuid)
-    local_lock = LocalRuntimeLock()
+    expected_uuid = queue_cfg.expected_uuid if validate_nfs else None
+    queue_uuid = verify_queue_identity(resolved, expected_uuid=expected_uuid)
+    # Keep unit-test workers off the live XDG runtime lock held by systemd.
+    if validate_nfs:
+        local_lock = LocalRuntimeLock()
+    else:
+        local_lock = LocalRuntimeLock(resolved / "worker" / "local-runtime.lock")
     try:
         local_lock.acquire()
     except WorkerAlreadyActive:
@@ -354,6 +369,30 @@ def run_worker(
     interactive_streak = 0
     host = socket.gethostname()
 
+    watch_pending = (
+        queue_cfg.watch_legacy_pending
+        if watch_legacy_pending is None
+        else watch_legacy_pending
+    )
+    pending_path = legacy_pending_file
+    if pending_path is None:
+        pending_path = queue_cfg.legacy_pending_file
+    # Default home pending path only in production (validate_nfs=True) so unit
+    # tests with fake queues never touch the operator's real file.
+    if pending_path is None and watch_pending and validate_nfs:
+        pending_path = default_legacy_pending_path()
+    pending_watch = LegacyPendingWatchState()
+
+    def _import_legacy_pending(*, force: bool = False) -> None:
+        if not watch_pending or pending_path is None:
+            return
+        maybe_import_legacy_pending(
+            resolved,
+            pending_path,
+            state=pending_watch,
+            force=force,
+        )
+
     def _done_for_target() -> bool:
         return bool(
             until_execution_id
@@ -362,9 +401,11 @@ def run_worker(
 
     try:
         recover_processing(resolved)
+        _import_legacy_pending(force=True)
         while True:
             if _done_for_target():
                 break
+            _import_legacy_pending()
             promote_retries(resolved)
             job = select_next_execution(
                 resolved, hostname=host, interactive_streak=interactive_streak

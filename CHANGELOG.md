@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Worker auto-imports `~/references/transcripts/transcript-pending.md` (configurable) so ref-cli can enqueue without installing `local-transcribe`
+
 ## [0.5.0] - 2026-07-30
 
 ### Added

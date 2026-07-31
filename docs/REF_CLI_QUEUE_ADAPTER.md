@@ -1,5 +1,10 @@
 # ref-cli queue adapter contract (task 026 / 035)
 
+Full handoff for the ref repo (what/why/how + user messaging for already-queued sources):
+
+`../ref/docs/LOCAL_TRANSCRIBE_QUEUE_INTEGRATION.md`  
+(path relative when both repos are checked out under the same parent).
+
 `local-transcribe` exposes a safe enqueue API for `ref-cli`:
 
 ```python

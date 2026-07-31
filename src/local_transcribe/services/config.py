@@ -32,6 +32,9 @@ class QueueConfig:
     expected_server: Optional[str] = None
     expected_export: Optional[str] = None
     default_auth_profile: Optional[str] = None
+    # Auto-import ref-cli's transcript-pending.md into the durable queue.
+    legacy_pending_file: Optional[Path] = None
+    watch_legacy_pending: bool = True
 
 
 @dataclass
@@ -69,6 +72,19 @@ def _queue_from_mapping(data: Mapping[str, Any] | None) -> QueueConfig:
     if default_auth is not None:
         default_auth = str(default_auth).strip() or None
 
+    watch_legacy = data.get("watch_legacy_pending", True)
+    if not isinstance(watch_legacy, bool):
+        watch_legacy = str(watch_legacy).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    legacy_pending = data.get("legacy_pending_file")
+    if legacy_pending is not None:
+        legacy_pending = str(legacy_pending).strip() or None
+
     return QueueConfig(
         path=_expand_path(data.get("path")),
         expected_uuid=expected_uuid,
@@ -84,6 +100,8 @@ def _queue_from_mapping(data: Mapping[str, Any] | None) -> QueueConfig:
             else None
         ),
         default_auth_profile=default_auth,
+        legacy_pending_file=_expand_path(legacy_pending),
+        watch_legacy_pending=bool(watch_legacy),
     )
 
 

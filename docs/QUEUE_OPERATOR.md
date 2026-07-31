@@ -76,9 +76,32 @@ bash scripts/nfs_lab_destructive_virindi.sh # RO remount + umount on side mount
 Full checklist: [QUEUE_NFS_LAB.md](QUEUE_NFS_LAB.md).  
 Evidence: [QUEUE_NFS_LAB_EVIDENCE.md](QUEUE_NFS_LAB_EVIDENCE.md).
 
+## Legacy `transcript-pending.md` auto-import
+
+The worker (NLM lock holder) watches the historical ref-cli pending file and
+imports new URLs into the durable queue automatically. Ref does **not** need
+`local-transcribe` installed — it can keep appending to:
+
+`~/references/transcripts/transcript-pending.md`
+
+Defaults (production worker):
+
+```yaml
+queue:
+  watch_legacy_pending: true
+  # optional override; default is ~/references/transcripts/transcript-pending.md
+  # legacy_pending_file: /path/to/transcript-pending.md
+```
+
+Idle polls skip unchanged mtime/size. Imported YouTube URLs are removed from
+the file; non-URL lines and `requires_force` rows are preserved. Concurrent
+appends from ref during an import pass are kept.
+
+Manual one-shot remains available: `lt queue import ~/references/transcripts/transcript-pending.md`.
+
 ## Upgrade / rollback
 
-- **Upgrade:** configure queue, `lt queue import` for `transcript-pending.md`, run worker, use default `lt transcribe` / `lt batch` enqueue mode.
+- **Upgrade:** configure queue, run worker (auto-imports pending file), use default `lt transcribe` / `lt batch` enqueue mode. Ref can keep writing `transcript-pending.md`.
 - **Rollback:** `lt transcribe --direct` / `lt batch --direct` for emergency in-process behavior; queue files remain on disk.
 
 ## Security

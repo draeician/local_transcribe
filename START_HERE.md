@@ -106,7 +106,11 @@ journalctl --user -u local-transcribe-worker.service -f
 
 Logs also land under `~/.local/state/local-transcribe/logs/`.
 
-### Import a legacy pending file
+### Legacy pending file (ref-cli)
+
+The worker auto-imports `~/references/transcripts/transcript-pending.md` when
+that file changes — ref does not need `local-transcribe` installed. Manual
+one-shot if needed:
 
 ```bash
 lt queue import ~/references/transcripts/transcript-pending.md
