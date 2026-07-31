@@ -894,7 +894,10 @@ def report(
         "-o",
         help=f"Transcript / compat output directory (defaults to {DEFAULT_OUTPUT_DIR})",
     ),
-    out: str = typer.Option("logs/failed_videos.txt", help="Output report file"),
+    out: str = typer.Option(
+        str(Path.home() / ".local" / "state" / "local-transcribe" / "failed_videos.txt"),
+        help="Output report file",
+    ),
     queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
     write_compat: bool = typer.Option(
         True,
@@ -1108,29 +1111,20 @@ def main(
         console.print(f"local-transcribe version {__version__}")
         raise typer.Exit(0)
     
-    # First-run check: Auto-upgrade PyTorch to CUDA version if needed
-    # Only run for actual commands (not --help), in pipx environment, and if marker doesn't exist
+    # First-run: auto-install CUDA torch when NVIDIA hardware is present.
     if ctx.invoked_subcommand is not None:
         from local_transcribe.utils.doctor import (
-            is_pipx_environment,
-            has_pytorch_upgrade_marker,
+            detect_cuda_availability,
             ensure_pytorch_cuda,
+            has_pytorch_upgrade_marker,
         )
-        
-        # Only attempt auto-upgrade in pipx environment and if marker doesn't exist
-        if is_pipx_environment() and not has_pytorch_upgrade_marker():
-            # Attempt to upgrade PyTorch to CUDA version if CUDA is available
+
+        if not has_pytorch_upgrade_marker() and detect_cuda_availability():
             success, message = ensure_pytorch_cuda()
-            if success:
-                # Silent success - PyTorch was upgraded or already has CUDA
-                pass
-            elif "CUDA not available" in message:
-                # CUDA not available - this is fine, keep CPU version
-                pass
-            elif "PyTorch not installed" in message:
-                # PyTorch not installed yet - will be installed by dependencies
-                pass
-            # Other errors are logged but don't block execution
+            if success and "already" not in message.lower():
+                console.print(f"[green]✓[/green] {message}")
+            elif not success and "CUDA not available" not in message:
+                console.print(f"[yellow]![/yellow] CUDA torch: {message}")
     
     # Show startup warnings once per session (only for actual commands, not --help)
     if not _startup_warnings_shown and ctx.invoked_subcommand is not None:

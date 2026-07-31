@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-30
+
+### Added
+- NFSv3/NLM background transcription queue with durable pending/processing/completed/failed/retry states
+- CLI: `lt queue` (init, enqueue, list, stats, import, purge, wait) and `lt worker` (run, install systemd user unit)
+- Config-driven queue path/UUID/NFS identity checks, auth profiles (`default_auth_profile` + cookies), XDG rotating logs
+- Producer-safe enqueue/reservations, legacy pending import, download admission, ModelCache-backed worker job runner
+- NVIDIA CUDA torch auto-install hooks for doctor/worker setup; real NFSv3 lab scripts and operator docs
+
+### Changed
+- Queue init writes `~/.config/local-transcribe/config.yaml`; doctor validates mount identity and NLM locks
+- Mount validation prefers real NFS mounts over autofs placeholders when both are present
+
 ## [0.4.0] - 2026-04-30
 
 ### Added

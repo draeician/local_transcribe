@@ -1,4 +1,4 @@
-"""Permanent source reservations under keys/ (SPEC §6.4)."""
+"""Permanent source reservations under keys/ (SPEC §6.4–6.5)."""
 
 from __future__ import annotations
 
@@ -35,8 +35,14 @@ def read_reservation(queue_dir: Path, source_key: str) -> Optional[SourceReserva
     path = reservation_path(queue_dir, source_key)
     if not path.is_file():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return SourceReservation.from_dict(data)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    try:
+        return SourceReservation.from_dict(data)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def create_reservation_if_absent(
@@ -82,10 +88,7 @@ def advance_generation(
     *,
     new_execution_id: str,
 ) -> SourceReservation:
-    """Bump generation and point reservation at a new execution (force).
-
-    Uses atomic_write_json replace of the existing reservation file.
-    """
+    """Bump generation and point reservation at a new execution (force)."""
     current = read_reservation(queue_dir, source_key)
     if current is None:
         raise ReservationError(f"No reservation for source_key={source_key!r}")
@@ -100,6 +103,43 @@ def advance_generation(
     )
     atomic_write_json(reservation_path(queue_dir, source_key), updated.to_dict())
     return updated
+
+
+def try_advance_generation(
+    queue_dir: Path,
+    source_key: str,
+    *,
+    expected_generation: int,
+    new_execution_id: str,
+) -> SourceReservation | None:
+    """Advance generation only if current generation still matches expectation.
+
+    After the write, re-reads and returns the reservation only when this
+    caller's ``new_execution_id`` is the current pointer (won the race).
+    """
+    current = read_reservation(queue_dir, source_key)
+    if current is None:
+        return None
+    if current.generation != expected_generation:
+        return None
+    updated = SourceReservation(
+        source_key=current.source_key,
+        source_type=current.source_type,
+        current_execution_id=new_execution_id,
+        generation=current.generation + 1,
+        created_at=current.created_at,
+        updated_at=utc_now_iso(),
+        schema_version=current.schema_version,
+    )
+    atomic_write_json(reservation_path(queue_dir, source_key), updated.to_dict())
+    after = read_reservation(queue_dir, source_key)
+    if after is None:
+        return None
+    # Pointer ownership is the win condition. Generation may move again under
+    # concurrent force; still treat matching current_execution_id as success.
+    if after.current_execution_id == new_execution_id:
+        return after
+    return None
 
 
 def update_current_execution(
@@ -124,3 +164,41 @@ def update_current_execution(
     )
     atomic_write_json(reservation_path(queue_dir, source_key), updated.to_dict())
     return updated
+
+
+def try_update_current_execution(
+    queue_dir: Path,
+    source_key: str,
+    *,
+    expected_execution_id: str,
+    new_execution_id: str,
+    expected_generation: int | None = None,
+) -> SourceReservation | None:
+    """Point reservation at ``new_execution_id`` if still at ``expected_execution_id``.
+
+    Returns the updated reservation on win, else None (lost race / changed).
+    """
+    current = read_reservation(queue_dir, source_key)
+    if current is None:
+        return None
+    if current.current_execution_id != expected_execution_id:
+        return None
+    if (
+        expected_generation is not None
+        and current.generation != expected_generation
+    ):
+        return None
+    updated = SourceReservation(
+        source_key=current.source_key,
+        source_type=current.source_type,
+        current_execution_id=new_execution_id,
+        generation=current.generation,
+        created_at=current.created_at,
+        updated_at=utc_now_iso(),
+        schema_version=current.schema_version,
+    )
+    atomic_write_json(reservation_path(queue_dir, source_key), updated.to_dict())
+    after = read_reservation(queue_dir, source_key)
+    if after is None or after.current_execution_id != new_execution_id:
+        return None
+    return after

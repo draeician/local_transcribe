@@ -170,8 +170,14 @@ class ProductionJobRunner:
         meta: dict[str, Any]
 
         if execution.source_type == "youtube":
+            profile = opts.auth_profile
+            if not profile and self.config is not None:
+                profile = self.config.queue.default_auth_profile
+            if not profile:
+                # Reload in case config was created after worker start.
+                profile = load_config().queue.default_auth_profile
             browser, cookies_file = resolve_auth_profile(
-                opts.auth_profile, config=self.config
+                profile, config=self.config
             )
             audio_path, meta = self.download_fn(
                 url=execution.source,

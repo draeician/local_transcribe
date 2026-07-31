@@ -55,11 +55,34 @@ def queue_init(
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
-    """Create queue layout and queue.id at an explicit path."""
+    """Create queue layout, write queue.id, and update user config.yaml."""
+    from local_transcribe.services.config import default_config_path, write_queue_config
+
     configure_logging(verbose=verbose, log_file_prefix="queue")
     uuid = initialize_queue_layout(queue_dir)
     console.print(f"[green]✓[/green] Queue initialized at {queue_dir}")
     console.print(f"Queue UUID: {uuid}")
+
+    server: str | None = None
+    export: str | None = None
+    mount = validate_queue_mount(queue_dir, validate_nfs=True, require_statd=False)
+    if mount.mount is not None and mount.mount.is_nfs:
+        server, export = mount.mount.split_source()
+
+    cfg_path = write_queue_config(
+        queue_dir=queue_dir,
+        queue_uuid=uuid,
+        expected_nfs_version=3,
+        expected_server=server,
+        expected_export=export,
+    )
+    console.print(f"[green]✓[/green] Wrote config: {cfg_path}")
+    console.print(
+        "[dim]Verify queue.path / expected_server / expected_export in that file "
+        f"(defaults from {default_config_path()}).[/dim]"
+    )
+    if server:
+        console.print(f"[dim]Detected NFS: {server}:{export or ''}[/dim]")
 
 
 @queue_app.command("path")

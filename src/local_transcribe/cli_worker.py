@@ -111,12 +111,27 @@ def worker_doctor(
 @worker_app.command("install")
 def worker_install() -> None:
     """Install a systemd --user unit (does not enable linger)."""
+    from local_transcribe.logging_setup import default_log_dir
+    from local_transcribe.utils.doctor import (
+        detect_cuda_availability,
+        ensure_pytorch_cuda,
+    )
+
+    if detect_cuda_availability():
+        console.print("[dim]NVIDIA GPU detected — ensuring CUDA PyTorch…[/dim]")
+        ok, message = ensure_pytorch_cuda()
+        if ok:
+            console.print(f"[green]✓[/green] {message}")
+        else:
+            console.print(f"[yellow]![/yellow] CUDA torch setup: {message}")
+
     lt_path = shutil.which("lt") or os.path.expanduser("~/.local/bin/lt")
     unit_dir = Path.home() / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     unit_path = unit_dir / SERVICE_NAME
     unit_path.write_text(render_systemd_unit(lt_path), encoding="utf-8")
     console.print(f"[green]✓[/green] Wrote {unit_path}")
+    console.print(f"[dim]Logs: {default_log_dir()} (also journalctl --user -u {SERVICE_NAME})[/dim]")
     console.print("Run: systemctl --user daemon-reload")
     console.print(f"Then: systemctl --user enable --now {SERVICE_NAME}")
     console.print("Optional logged-out runs: loginctl enable-linger $USER")

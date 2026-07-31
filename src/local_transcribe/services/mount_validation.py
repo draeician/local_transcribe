@@ -168,8 +168,22 @@ def mount_info_from_findmnt_filesystem(fs: Mapping[str, object]) -> MountInfo:
     )
 
 
+def _prefer_mount(candidates: Sequence[MountInfo]) -> MountInfo | None:
+    """Prefer a real NFS mount over autofs/bind overlays at the same path."""
+    if not candidates:
+        return None
+    nfs = [m for m in candidates if m.is_nfs]
+    if nfs:
+        # Last NFS entry wins (findmnt/mountinfo often list autofs then nfs).
+        return nfs[-1]
+    non_autofs = [m for m in candidates if m.fstype.lower() != "autofs"]
+    if non_autofs:
+        return non_autofs[-1]
+    return candidates[-1]
+
+
 def parse_findmnt_json(payload: str | bytes | Mapping[str, object]) -> MountInfo | None:
-    """Parse ``findmnt -J`` output and return the first filesystem entry."""
+    """Parse ``findmnt -J`` output; prefer NFS over autofs when both appear."""
     if isinstance(payload, (str, bytes)):
         data = json.loads(payload)
     else:
@@ -179,10 +193,11 @@ def parse_findmnt_json(payload: str | bytes | Mapping[str, object]) -> MountInfo
     filesystems = data.get("filesystems")
     if not isinstance(filesystems, list) or not filesystems:
         return None
-    first = filesystems[0]
-    if not isinstance(first, Mapping):
-        return None
-    return mount_info_from_findmnt_filesystem(first)
+    mounts: list[MountInfo] = []
+    for entry in filesystems:
+        if isinstance(entry, Mapping):
+            mounts.append(mount_info_from_findmnt_filesystem(entry))
+    return _prefer_mount(mounts)
 
 
 def _probe_findmnt(path: Path) -> MountInfo | None:
@@ -245,13 +260,17 @@ def parse_mountinfo(
     text: str,
     path: Path,
 ) -> MountInfo | None:
-    """Select the longest mount-point prefix covering ``path`` from mountinfo text."""
+    """Select the mount covering ``path`` from mountinfo text.
+
+    Longest mount-point prefix wins. Ties prefer NFS over autofs (common
+    when systemd automounts sit under the same target as the NFS overlay).
+    """
     try:
         resolved = path.resolve()
     except OSError:
         resolved = path
 
-    best: MountInfo | None = None
+    covering: list[MountInfo] = []
     best_len = -1
     for line in text.splitlines():
         line = line.strip()
@@ -262,16 +281,17 @@ def parse_mountinfo(
             continue
         mount_path = Path(info.target)
         try:
-            # path under mount
             resolved.relative_to(mount_path)
         except ValueError:
             if resolved != mount_path:
                 continue
         length = len(str(mount_path))
         if length > best_len:
-            best = info
+            covering = [info]
             best_len = length
-    return best
+        elif length == best_len:
+            covering.append(info)
+    return _prefer_mount(covering)
 
 
 def _probe_mountinfo(path: Path, mountinfo_path: Path | None = None) -> MountInfo | None:

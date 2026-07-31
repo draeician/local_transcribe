@@ -14,7 +14,7 @@ from local_transcribe.services.mount_validation import (
     parse_findmnt_json,
     parse_mountinfo,
     validate_queue_mount,
-)
+)  # parse_* used by autofs preference tests
 from local_transcribe.services.queue_paths import QueueMountError
 
 
@@ -123,6 +123,41 @@ def test_non_nfs_rejected(tmp_path: Path) -> None:
     result = validate_queue_mount(tmp_path, mount=mount, proc_dir=tmp_path / "no-proc")
     assert result.ok is False
     assert any("expected NFS" in e for e in result.errors)
+
+
+def test_findmnt_prefers_nfs_over_autofs() -> None:
+    payload = {
+        "filesystems": [
+            {
+                "target": "/opt/md1",
+                "source": "systemd-1",
+                "fstype": "autofs",
+                "options": "rw,relatime",
+            },
+            {
+                "target": "/opt/md1",
+                "source": "nas.example.internal:/exports/transcripts",
+                "fstype": "nfs",
+                "options": "rw,vers=3,proto=tcp,hard,local_lock=none",
+            },
+        ]
+    }
+    mount = parse_findmnt_json(payload)
+    assert mount is not None
+    assert mount.fstype == "nfs"
+    assert mount.source.startswith("nas.example.internal:")
+
+
+def test_mountinfo_prefers_nfs_over_autofs(tmp_path: Path) -> None:
+    text = (
+        "46 31 0:36 / /opt/md1 rw,relatime - autofs systemd-1 rw,fd=1\n"
+        "958 46 0:183 / /opt/md1 rw,noatime - nfs nas:/export "
+        "rw,vers=3,proto=tcp,hard,local_lock=none\n"
+    )
+    path = Path("/opt/md1/queue")
+    mount = parse_mountinfo(text, path)
+    assert mount is not None
+    assert mount.fstype == "nfs"
 
 
 def test_server_export_mismatch(tmp_path: Path) -> None:

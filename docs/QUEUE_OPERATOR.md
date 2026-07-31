@@ -39,12 +39,16 @@ queue:
 
 ```bash
 lt queue init --queue-dir /path/to/transcription-queue
-# put path + uuid into config.yaml
+# writes ~/.config/local-transcribe/config.yaml (path + UUID + detected NFS identity)
+# verify that file, then:
 lt queue doctor
-lt worker install
+lt worker install   # also ensures CUDA torch when nvidia-smi is present
 systemctl --user daemon-reload
 systemctl --user enable --now local-transcribe-worker.service
 ```
+
+Logs live under ``~/.local/state/local-transcribe/logs/`` (override with
+``LOCAL_TRANSCRIBE_LOG_DIR``). The systemd worker also logs to the user journal.
 
 ## Two-client NLM lock checklist (lab)
 
@@ -54,11 +58,17 @@ systemctl --user enable --now local-transcribe-worker.service
 4. Repeat after client reboot and server reboot; note grace periods.
 5. Confirm firewalls do not block lock/statd traffic.
 
-Mark automated tests with `@pytest.mark.nfs` when env is available:
+Automated + scripted lab:
 
 ```bash
+export LT_NFS_QUEUE_DIR=/opt/md1/git/tmp/local-transcribe-queue-lab
 pytest -q -m nfs
+bash scripts/nfs_lab_twohost.sh            # nomnom + virindi + localai
+bash scripts/nfs_lab_destructive_virindi.sh # RO remount + umount on side mount
 ```
+
+Full checklist: [QUEUE_NFS_LAB.md](QUEUE_NFS_LAB.md).  
+Evidence: [QUEUE_NFS_LAB_EVIDENCE.md](QUEUE_NFS_LAB_EVIDENCE.md).
 
 ## Upgrade / rollback
 

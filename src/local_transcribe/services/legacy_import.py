@@ -1,19 +1,43 @@
-"""Legacy transcript-pending.md import (task 025)."""
+"""Legacy transcript-pending.md import (task 025 / 035)."""
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any
 
+from local_transcribe.services.atomic_files import fsync_directory, unique_tmp_path
 from local_transcribe.services.queue_store import QueueStore
 from local_transcribe.utils.youtube import is_valid_youtube_url
+
+
+def _atomic_rewrite_text(path: Path, body: str) -> None:
+    """Write ``body`` via tmp + fsync + replace (no in-place truncate)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = unique_tmp_path(path)
+    payload = body.encode("utf-8")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.write(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+        fsync_directory(path.parent)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def import_pending_file(queue_dir: Path, pending_file: Path) -> dict[str, Any]:
     """Import YouTube URLs from a pending file into the queue.
 
-    Backs up the source file, rewrites unparseable lines preserved.
+    Backs up the source file, rewrites remaining lines via atomic helpers.
     """
     pending_file = Path(pending_file)
     text = pending_file.read_text(encoding="utf-8")
@@ -32,7 +56,6 @@ def import_pending_file(queue_dir: Path, pending_file: Path) -> dict[str, Any]:
         if not stripped or stripped.startswith("#"):
             kept.append(line)
             continue
-        # markdown list bullets
         url = stripped.lstrip("-* ").strip()
         if not is_valid_youtube_url(url) and "youtu" not in url:
             kept.append(line)
@@ -50,13 +73,10 @@ def import_pending_file(queue_dir: Path, pending_file: Path) -> dict[str, Any]:
         else:
             kept.append(line)
 
-    # Atomic-ish rewrite of remaining unparseable/unhandled lines
     new_body = "\n".join(kept)
     if kept and not new_body.endswith("\n"):
         new_body += "\n"
-    tmp = pending_file.with_suffix(pending_file.suffix + ".tmp")
-    tmp.write_text(new_body, encoding="utf-8")
-    tmp.replace(pending_file)
+    _atomic_rewrite_text(pending_file, new_body)
 
     return {
         "enqueued": enqueued,
