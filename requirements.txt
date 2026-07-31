@@ -8,3 +8,6 @@ torchvision
 torchaudio
 nvidia-cublas
 nvidia-cudnn
+PyYAML>=6.0
+typer>=0.9.0
+rich>=13.0.0

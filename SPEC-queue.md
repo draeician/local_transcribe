@@ -1,12 +1,35 @@
-# Background Transcription Queue Feature Specification
+# Background Transcription Queue Feature Specification (v3)
 
-**Project:** `local-transcribe`
-**Related project:** `ref-cli`
-**Document type:** Development specification
-**Status:** Proposed
-**Target platform:** Linux, including Linux Mint 22
-**Primary storage:** NFS-mounted transcript directory
-**Execution model:** One background transcription worker per environment
+**Project:** `local-transcribe`  
+**Related project:** `ref-cli`  
+**Document type:** Development specification  
+**Status:** Proposed (revision 3)  
+**Supersedes:** SPEC-queue.md (v1, v2)  
+**Target platform:** Linux, including Linux Mint 22  
+**Primary storage:** Shared NFSv3 transcript filesystem  
+**Execution model:** File-based durable queue with one NLM-locked worker active across all hosts  
+
+**Companion documents:**
+
+* [`docs/QUEUE_DESIGN_DECISIONS.md`](docs/QUEUE_DESIGN_DECISIONS.md) — terminology and decision summary  
+* Architectural review (2026-07-18) — NLM lock model, source reservations, mount validation  
+
+---
+
+## Changes from v2
+
+1. **Worker ownership replaced.** v2 used a JSON heartbeat lease (`O_CREAT|O_EXCL`, timestamp staleness, rename-to-steal). v3 uses an **NLM-backed POSIX record lock** on a stable `worker/worker.lock` file via `fcntl.lockf()` (`LOCK_EX | LOCK_NB`). The lock file is never renamed or replaced while held.
+2. **Removed** `lease_renew_seconds`, `stale_lease_seconds`, lock-file heartbeat renewal, host-clock ownership, rename-to-steal, and JSON-content fencing.
+3. **NFSv3 environment validation** required before the worker starts (`lt queue doctor` / `lt worker doctor` / worker startup fail-closed).
+4. **Exactly-once claim softened.** Spec guarantees at-most-one cooperative owner while the NLM lock is valid, plus idempotent recovery; it does **not** claim absolute exactly-once CPU/GPU work across partitions and reboots.
+5. **Permanent source reservations** under `keys/<source-key>.json`. Execution IDs are separate from source keys. Hard-link publication alone on `pending/` is no longer sufficient for lifetime dedup.
+6. **Queue path is explicit.** Candidate auto-discovery (`~/references/...` then `/opt/md2/...`) is removed. Configured `queue.path` + `expected_uuid` (and optional NFS identity checks) are required. No silent multi-path fall-through.
+7. **Local-file portability.** Shared roots and/or `required_host` affinity. Cookie paths replaced by **auth profiles** resolved locally on each worker.
+8. **Generation-aware transcript publication.** Stale executions must not overwrite newer valid outputs.
+9. **Priority aging / fairness.** Interactive work cannot starve batch/`ref` indefinitely.
+10. **Downloader hardening** for daemon use (process groups, timeouts, structured errors, no broad `--ignore-errors`).
+11. **`lt transcribe --direct`** for emergency/dev bypass; queue mode remains default.
+12. Tests, phases, acceptance criteria, modules list, and architecture diagram updated accordingly.
 
 ---
 
@@ -24,7 +47,23 @@ ref <youtube-url>
 
 All YouTube downloads must pass through the same worker and obey the same shared download pacing and rate-limit state.
 
-The queue and completed transcripts reside on an NFS-mounted filesystem. Therefore, the design must remain file-based and must not depend on SQLite, SQLite WAL, local-only database locks, or a single mutable queue document.
+The queue and completed transcripts reside on a shared **NFSv3** filesystem. The design remains file-based and must not depend on SQLite, SQLite WAL, or a single mutable queue document as authority.
+
+### 1.1 Architectural division of responsibility
+
+| Layer | Responsibility |
+|-------|----------------|
+| **NFSv3** | Durable shared files, same-filesystem atomic rename and hard-link semantics |
+| **NLM / NSM** | Cooperative cross-host exclusive ownership of the worker role |
+| **Queue application** | Source identity, reservations, generations, idempotent recovery, retries, admission control, artifact validation |
+
+The resulting design:
+
+> Producers on any host atomically publish jobs to an NFSv3 spool. Every worker competes for one NLM-backed POSIX lock. Only the lock holder may download, transcribe, modify queue state, or publish transcripts.
+
+Idempotent recovery remains mandatory. No filesystem lock guarantees that a long-running local transcription is executed exactly once across every crash, server restart, process freeze, or network failure. The correct guarantee is:
+
+> At most one cooperative worker owns the queue while the NLM lock is valid, and all queue transitions and outputs are recoverable and idempotent.
 
 ---
 
@@ -39,7 +78,8 @@ The queue and completed transcripts reside on an NFS-mounted filesystem. Therefo
 * Adds affected YouTube URLs to `transcript-pending.md`.
 * Prevents duplicate URLs from being appended.
 * Avoids queueing a video when a valid transcript already exists.
-  The current queue operation reads the pending file, checks for an existing URL, and appends a new line. This is acceptable for one process but is not safe when a worker may simultaneously rewrite or consume the same file.
+
+The current queue operation reads the pending file, checks for an existing URL, and appends a new line. This is acceptable for one process but is not safe when a worker may simultaneously rewrite or consume the same file.
 
 ### 2.2 `local-transcribe`
 
@@ -54,144 +94,211 @@ The queue and completed transcripts reside on an NFS-mounted filesystem. Therefo
 * Downloading through `yt-dlp`
 * Local transcription through `faster-whisper`
 
-The current batch pipeline processes jobs sequentially and writes status to `batch_status.json`. It creates its own rate limiter under the configured output directory.
-The current `lt transcribe` command directly calls `transcribe_url()` or `transcribe_local_file()`. It does not submit work to `BatchPipeline`, so it does not share the batch pipeline’s rate-limit state or execution serialization.
+Verified against the current code:
+
+* `lt transcribe` calls `transcribe_url()` / `transcribe_local_file()` directly, bypassing `BatchPipeline`, so it shares neither rate-limit state nor serialization with batch work.
+* `BatchPipeline` creates `batch_status.json` and `rate_limits.json` under the configured **output directory**. Different output dirs (or hosts) maintain independent state.
+* `RateLimiter` is advisory only: `check_limits()` returns a warning and `get_recommended_delay()` suggests a delay; nothing blocks execution. Attempt counts are recorded after processing rather than reserved before `yt-dlp`.
+* `safe_write_json()` writes JSON **in place** with no temporary file or rename; concurrent readers can observe truncated documents. Unsuitable for authoritative multi-host queue state.
+* `JsonStatusStore` rewrites the entire shared status dictionary on each job change.
+* `transcribe_audio()` constructs a new `WhisperModel` for every call.
+* `transcribe_url()` places downloaded media under the final output directory (often NFS).
+* Transcript JSON is written directly to the final path (not atomic publish + revalidate).
+* The batch pipeline verifies transcript output before appending to `finished.dat`; that verify-before-complete discipline must be preserved and generalized.
 
 ---
 
 ## 3. Design Principles
 
-The implementation must follow these rules:
-
-1. **Files remain authoritative.**
-2. **The queue must work on an NFS-mounted filesystem.**
-3. **Use one file per job.**
-4. **Never use one shared mutable pending file as the authoritative queue.**
-5. **Only one worker may execute transcription jobs.**
+1. **Files remain authoritative** for queue and job state.
+2. **The queue must work on shared NFSv3** with functional NLM.
+3. **One execution file per generation**, plus **one permanent reservation per source**.
+4. **Never use one shared mutable pending file** as the authoritative queue.
+5. **Only the NLM lock holder** may execute transcription jobs or modify authoritative queue state.
 6. **CLI commands submit work; the worker executes work.**
-7. **`lt transcribe` must not bypass the worker.**
+7. **`lt transcribe` defaults to the queue**; `--direct` is explicit emergency/dev only.
 8. **Final transcript files may reside on NFS.**
-9. **Temporary downloaded media should remain on local storage.**
-10. **State transitions must use same-filesystem atomic rename operations.**
-11. **A completed job is valid only after its transcript JSON passes validation.**
-12. **Existing files such as `transcript-pending.md`, `finished.dat`, and `batch_status.json` are compatibility artifacts, not queue authorities.**
+9. **Temporary downloaded media remains on local storage**, keyed by execution id.
+10. **State transitions use same-filesystem atomic rename**; job and reservation creation use atomic hard-link publication.
+11. **A completed execution is valid only after its transcript JSON passes validation.**
+12. **`transcript-pending.md`, `finished.dat`, and `batch_status.json` are compatibility artifacts**, not queue authorities.
+13. **Worker ownership is NLM POSIX locking**, not application timestamps or rename-to-steal.
+14. **Do not claim absolute exactly-once external work**; claim cooperative single ownership + idempotent publication.
+15. **Queue path is configured explicitly**; no multi-candidate silent discovery.
+16. **All mutable JSON (except the open lock file contents after lock) uses tmp + fsync + rename (or link for create-if-absent).**
+17. **Never use `safe_write_json()` for queue, worker, rate, reservation, or transcript authority.**
 
 ---
 
 ## 4. Queue Location Resolution
 
-All queue producers, consumers, status commands, migration commands, and worker processes must use one shared queue resolver.
+All producers, consumers, status commands, migration commands, and workers must use one shared resolver.
 
-### 4.1 Candidate locations
+### 4.1 Explicit path only (no candidate search)
 
-Queue locations must be checked in this exact order:
+v2 candidate auto-discovery is **removed**. Selecting the first existing directory independently on every host can create split-brain (one host local `~/references/...`, another NFS `/opt/md2/...`).
 
-1. `~/references/transcripts/transcription-queue`
-2. `/opt/md2/music/youtube/transcripts/transcription-queue`
+Configuration (required for normal operation):
 
-### 4.2 Resolution behavior
-
-The resolver must:
-
-1. Expand `~` using the home directory of the account executing the command.
-2. Return the first candidate that exists as a directory.
-3. Never merge jobs from both locations.
-4. Never silently select the second location if the first exists but is unreadable or malformed.
-5. Report a clear error if the selected path cannot be accessed.
-6. When initialization is explicitly requested and neither path exists, create:
-
-```text
-~/references/transcripts/transcription-queue
+```yaml
+queue:
+  path: /opt/md2/music/youtube/transcripts/transcription-queue
+  expected_uuid: b6c1e0f2-0000-0000-0000-000000000000
+  expected_nfs_version: 3
+  expected_server: nas.example.internal
+  expected_export: /exports/transcripts
 ```
 
-7. Log or display the selected queue directory at worker startup and in status output.
+### 4.2 Resolution precedence
+
+1. Explicit CLI `--queue-dir`, when provided.
+2. Configured `queue.path`.
+3. **No fallback.** Error if neither is set.
+
+Normal commands must not search multiple unrelated locations.
+
+`lt queue init --queue-dir PATH` creates the queue only at an explicitly selected path and writes `queue.id` once.
 
 ### 4.3 Required resolver interface
 
-Create a central module such as:
-
 ```text
 src/local_transcribe/services/queue_paths.py
+src/local_transcribe/services/mount_validation.py
 ```
-
-Recommended interface:
 
 ```python
 from pathlib import Path
-
-
-QUEUE_CANDIDATES = (
-    Path.home() / "references" / "transcripts" / "transcription-queue",
-    Path("/opt/md2/music/youtube/transcripts/transcription-queue"),
-)
 
 
 class QueuePathError(RuntimeError):
     pass
 
 
-def resolve_queue_dir(*, create: bool = False) -> Path:
-    """Resolve the authoritative transcription queue directory."""
+class QueueIdentityError(QueuePathError):
+    pass
 
 
-def initialize_queue_layout(queue_dir: Path) -> None:
-    """Create and validate all required queue directories."""
+class QueueMountError(QueuePathError):
+    pass
+
+
+def resolve_queue_dir(*, queue_dir: Path | None = None) -> Path:
+    """Resolve the configured queue directory; no multi-candidate search."""
+
+
+def verify_queue_identity(queue_dir: Path, *, expected_uuid: str | None) -> str:
+    """Read queue.id; fail if missing, unparseable, or UUID mismatch."""
+
+
+def initialize_queue_layout(queue_dir: Path) -> str:
+    """Create layout and write queue.id once; return the new UUID."""
 ```
 
-Every component must import this resolver. No command may independently recreate the resolution logic.
+Every component must import this resolver. No command may independently recreate path logic.
+
+### 4.4 Queue identity marker
+
+```text
+transcription-queue/queue.id
+```
+
+```json
+{
+  "queue_uuid": "b6c1e0f2-...-generated-once",
+  "created_at": "2026-07-18T08:00:00-05:00",
+  "created_by": "nomnom"
+}
+```
+
+1. Written exactly once at init; never modified.
+2. Every resolve must verify `queue.id` exists and is parseable.
+3. If `expected_uuid` is configured, it must match.
+4. A directory without a valid `queue.id` is an error, not a soft warning to continue.
+
+### 4.5 `lt queue path` output
+
+Must display:
+
+* Configured path  
+* Resolved path  
+* Queue UUID  
+* Mountpoint  
+* Filesystem type  
+* NFS version  
+* Server  
+* Export  
+* Mount options  
+* Read/write status  
+* NLM lock test status  
 
 ---
 
 ## 5. Queue Directory Structure
 
-The resolved queue must use this structure:
-
 ```text
 transcription-queue/
+├── queue.id
+├── keys/
+│   └── <source-key>.json
 ├── pending/
+│   └── <execution-id>.json
 ├── processing/
+│   └── <execution-id>.json
 ├── retry/
+│   └── <execution-id>.json
 ├── completed/
+│   └── <execution-id>.json
 ├── failed/
+│   └── <execution-id>.json
 ├── cancelled/
+│   └── <execution-id>.json
 ├── tmp/
 └── worker/
-    ├── rate-limit.json
-    └── state.json
+    ├── worker.lock
+    ├── state.json
+    └── rate-limit.json
 ```
 
-### 5.1 Directory purposes
+### 5.1 Directory and file purposes
 
-| Directory     | Purpose                                                    |
-| ------------- | ---------------------------------------------------------- |
-| `pending/`    | Jobs eligible for immediate processing                     |
-| `processing/` | The job currently claimed by the worker                    |
-| `retry/`      | Jobs waiting until a future retry time                     |
-| `completed/`  | Successfully completed job records                         |
-| `failed/`     | Permanently failed or retry-exhausted jobs                 |
-| `cancelled/`  | Jobs explicitly cancelled by the user                      |
-| `tmp/`        | Temporary queue metadata files used during atomic creation |
-| `worker/`     | Worker state and shared rate-limit state                   |
+| Entry | Purpose | Authority |
+| ----- | ------- | --------- |
+| `queue.id` | Queue identity marker | Authoritative identity |
+| `keys/` | One permanent reservation per canonical source | Authoritative identity + current generation |
+| `pending/` | Executions eligible for processing | Authoritative execution state |
+| `processing/` | Executions claimed by the current worker | Authoritative execution state |
+| `retry/` | Executions waiting until `available_at` | Authoritative execution state |
+| `completed/` | Successfully completed executions | Authoritative execution state |
+| `failed/` | Permanently failed or retry-exhausted executions | Authoritative execution state |
+| `cancelled/` | Explicitly cancelled executions | Authoritative execution state |
+| `tmp/` | Temporary files for atomic create / replace | Transient |
+| `worker/worker.lock` | Stable file for NLM POSIX exclusive lock | Ownership target (lock state, not JSON contents) |
+| `worker/state.json` | Diagnostic worker heartbeat / current job | **Informational only** |
+| `worker/rate-limit.json` | Shared download admission state | Authoritative, worker-lock-holder only |
 
-Only the worker may move files between processing states.
+Only the NLM lock holder may move execution files between processing states or write rate-limit / reservation generation advances that imply execution ownership.
 
-Producers may only create jobs under `pending/` through the queue service.
+Producers may create reservations and publish executions under `keys/` and `pending/` through the queue service using atomic publication primitives.
 
 ---
 
-## 6. Job Identity and Deduplication
+## 6. Source Identity, Reservations, and Deduplication
 
-### 6.1 YouTube jobs
+### 6.1 Source keys vs execution IDs
 
-The canonical job key for a YouTube source is the YouTube video ID.
+| Concept | Role | Example |
+| ------- | ---- | ------- |
+| **Source key** | Permanent identity of a logical source | `youtube:abcd1234567`, `local:<hash>` |
+| **Execution ID** | One attempt generation (UUIDv7 recommended) | `0190dc1a-43c4-7c28-bcb3-5980d90a28c2` |
+| **Generation** | Monotonic integer on the reservation | `1`, `2`, … |
 
-Example:
+v2 used the video ID as the pending filename. That fails once the job leaves `pending/`: another producer can publish a second pending job for the same source. Claim-time dedup alone does not close enqueues after the claim-time check.
 
-```text
-pending/abcd1234567.json
-```
+### 6.2 YouTube source keys
 
-Different URL forms for the same video must resolve to the same job:
+Canonical key: `youtube:<video_id>`.
+
+Different URL forms must resolve to the same key:
 
 ```text
 https://www.youtube.com/watch?v=abcd1234567
@@ -199,9 +306,9 @@ https://youtu.be/abcd1234567
 https://www.youtube.com/watch?v=abcd1234567&feature=shared
 ```
 
-### 6.2 Local-file jobs
+### 6.3 Local-file source keys
 
-Local audio files must use a stable source key derived from:
+Derived from:
 
 ```text
 canonical absolute path
@@ -209,64 +316,139 @@ file size
 modification timestamp
 ```
 
-The resulting key should be hashed to produce a filesystem-safe filename.
+Hashed into a filesystem-safe key, e.g. `local:1c7d80b50d12e37c`.
 
-Example:
-
-```text
-pending/local-1c7d80b50d12e37c.json
-```
-
-### 6.3 Duplicate rules
-
-Before creating a job, check:
+### 6.4 Permanent source reservation
 
 ```text
-pending/
-processing/
-retry/
-completed/
-failed/
-cancelled/
+keys/<source-key-safe>.json
 ```
 
-Behavior:
-
-* Existing valid transcript: return `already_completed`.
-* Existing active job: return the existing job.
-* Existing completed job with valid transcript: return the existing result.
-* Existing failed job: require `--retry` or `--force`.
-* Existing cancelled job: require `--force`.
-* `--force`: create a new execution generation or reset the existing job safely.
-
-A duplicate submission must never create parallel work for the same source.
-
----
-
-## 7. Job File Format
-
-Each job is represented by one JSON document.
-
-Example:
+Filename encoding must be filesystem-safe (escape `:` and other reserved characters as needed; document the codec in `source_reservations.py`).
 
 ```json
 {
   "schema_version": 1,
-  "job_id": "abcd1234567",
+  "source_key": "youtube:abcd1234567",
+  "source_type": "youtube",
+  "current_execution_id": "0190dc1a-43c4-7c28-bcb3-5980d90a28c2",
+  "generation": 1,
+  "created_at": "2026-07-18T12:00:00-05:00",
+  "updated_at": "2026-07-18T12:00:00-05:00"
+}
+```
+
+Rules:
+
+1. Never release the reservation merely because an execution moved between queue states.
+2. `--force` creates a **new generation** under the existing reservation (new execution id, incremented generation), not a second unrelated key.
+3. Duplicate submissions resolve to the existing reservation and its current execution when still active or already successfully completed with a valid transcript.
+
+### 6.5 Enqueue sequence
+
+1. Normalize the source key.
+2. Check for a valid existing final transcript for the source (advisory + then authoritative checks).
+3. Try to publish `keys/<source-key>.json` atomically via tmp + `link()` (create-if-absent).
+4. If the reservation already exists, resolve its `current_execution_id` and generation.
+5. If a new execution is required, write the execution document under `tmp/` and publish to `pending/<execution-id>.json` via `link()`.
+6. Update the reservation’s `current_execution_id` / `generation` only through worker-safe or carefully ordered atomic replace rules so incomplete pairs can be repaired.
+7. If execution publication fails after creating a brand-new reservation, repair or remove the incomplete reservation **only when ownership of that incomplete state can be proven** (same producer cleanup of its own tmp; worker repair under NLM lock for abandoned incomplete pairs).
+8. Never treat “no file in pending/” as “source is free.”
+
+### 6.6 Duplicate rules (producer-facing)
+
+| Situation | Behavior |
+| --------- | -------- |
+| Valid final transcript exists | Return `already_completed` with transcript path |
+| Active execution (pending/processing/retry) | Return existing execution |
+| Failed execution | Require `--retry` or `--force` (new generation) |
+| Cancelled execution | Require `--force` (new generation) |
+| `--force` | New execution generation on the same reservation |
+
+### 6.7 Local-file portability
+
+A path such as `/home/user/recordings/interview.m4a` may not exist on another worker host. Every local-file execution must use one of:
+
+#### Shared source
+
+File is under an approved shared root:
+
+```yaml
+sources:
+  shared_roots:
+    - /opt/md2/music/audio-input
+```
+
+Any worker may claim it.
+
+#### Host-affined source
+
+```json
+{
+  "required_host": "nomnom"
+}
+```
+
+Only that hostname may claim the execution. Other workers skip it.
+
+#### Staged source (future)
+
+Producer copies into an approved shared staging directory before publish. Not required in the first implementation.
+
+First version: **shared roots + host affinity**. Automatic staging later.
+
+### 6.8 Authentication profiles (not host cookie paths)
+
+Jobs must not embed host-specific cookie file paths as the portable contract.
+
+```json
+{
+  "options": {
+    "auth_profile": "youtube-personal"
+  }
+}
+```
+
+Each worker resolves the profile from local config:
+
+```yaml
+auth_profiles:
+  youtube-personal:
+    cookies_file: ~/.config/local-transcribe/cookies/youtube.txt
+```
+
+Cookie **contents** must never be written to NFS job metadata or logs.
+
+---
+
+## 7. Execution File Format
+
+Each execution is one JSON document named by execution id:
+
+```text
+pending/0190dc1a-43c4-7c28-bcb3-5980d90a28c2.json
+```
+
+```json
+{
+  "schema_version": 1,
+  "execution_id": "0190dc1a-43c4-7c28-bcb3-5980d90a28c2",
+  "source_key": "youtube:abcd1234567",
+  "generation": 1,
   "source": "https://www.youtube.com/watch?v=abcd1234567",
   "source_type": "youtube",
-  "source_key": "abcd1234567",
   "origin": "ref",
   "priority": 20,
   "status": "pending",
-  "created_at": "2026-07-17T08:15:00-05:00",
-  "updated_at": "2026-07-17T08:15:00-05:00",
-  "available_at": "2026-07-17T08:15:00-05:00",
+  "created_at": "2026-07-18T08:15:00-05:00",
+  "updated_at": "2026-07-18T08:15:00-05:00",
+  "available_at": "2026-07-18T08:15:00-05:00",
   "started_at": null,
   "completed_at": null,
   "attempts": 0,
   "max_attempts": 3,
   "worker": null,
+  "required_host": null,
   "output_path": null,
   "error": null,
   "options": {
@@ -275,8 +457,7 @@ Example:
     "compute_type": "float16",
     "language": null,
     "keep_audio": false,
-    "cookies_file": null,
-    "cookies_from_browser": null,
+    "auth_profile": null,
     "limit_rate": null,
     "sleep_interval_requests": null
   }
@@ -285,34 +466,32 @@ Example:
 
 ### 7.1 Required fields
 
-| Field            | Requirement                                                      |
-| ---------------- | ---------------------------------------------------------------- |
-| `schema_version` | Queue schema version                                             |
-| `job_id`         | Filesystem-safe unique job identifier                            |
-| `source`         | Original source URL or path                                      |
-| `source_type`    | `youtube` or `local_file`                                        |
-| `source_key`     | Canonical deduplication key                                      |
-| `origin`         | Producer such as `ref`, `lt-transcribe`, `lt-batch`, or `import` |
-| `priority`       | Numeric processing priority                                      |
-| `status`         | Current queue state                                              |
-| `created_at`     | ISO 8601 timestamp                                               |
-| `updated_at`     | ISO 8601 timestamp                                               |
-| `available_at`   | Earliest time the worker may claim the job                       |
-| `attempts`       | Number of execution attempts                                     |
-| `max_attempts`   | Maximum allowed execution attempts                               |
-| `options`        | Complete immutable transcription options                         |
+| Field | Requirement |
+| ----- | ----------- |
+| `schema_version` | Queue schema version |
+| `execution_id` | Filesystem-safe unique execution identifier |
+| `source_key` | Canonical source identity |
+| `generation` | Reservation generation this execution belongs to |
+| `source` | Original source URL or path |
+| `source_type` | `youtube` or `local_file` |
+| `origin` | Producer: `ref`, `lt-transcribe`, `lt-batch`, `import`, … |
+| `priority` | Base processing priority |
+| `status` | Current queue state |
+| `created_at` / `updated_at` / `available_at` | ISO 8601 timestamps |
+| `attempts` / `max_attempts` | Retry accounting |
+| `options` | Transcription options (immutable for this execution) |
+
+Optional: `required_host` for host-affined local files.
 
 ### 7.2 Error object
-
-Failure information must be structured:
 
 ```json
 {
   "category": "rate_limited",
   "message": "HTTP 429 returned by yt-dlp",
   "retryable": true,
-  "occurred_at": "2026-07-17T08:40:00-05:00",
-  "next_retry_at": "2026-07-17T09:00:00-05:00"
+  "occurred_at": "2026-07-18T08:40:00-05:00",
+  "next_retry_at": "2026-07-18T09:00:00-05:00"
 }
 ```
 
@@ -320,13 +499,18 @@ Recommended categories:
 
 ```text
 rate_limited
-forbidden
+temporary_forbidden
 authentication_required
+private_video
 video_unavailable
 download_failed
+extractor_failure
+network_failure
+postprocessing_failure
 transcription_failed
 output_validation_failed
 invalid_source
+source_not_accessible
 worker_interrupted
 internal_error
 ```
@@ -335,231 +519,447 @@ internal_error
 
 ## 8. Safe File Operations
 
-### 8.1 Enqueue operation
+### 8.1 Atomic JSON helper
 
-A producer must not write directly to the final `pending/` path.
-
-Required sequence:
-
-1. Construct and validate the job object.
-2. Write it under `tmp/` using a unique name:
+All mutable JSON **except** ownership of the open `worker.lock` descriptor must use temporary file + fsync + validate + rename. Implement:
 
 ```text
-tmp/abcd1234567.<hostname>.<pid>.<random>.json
+src/local_transcribe/services/atomic_files.py
 ```
 
-3. Flush the file.
-4. Call `fsync()` on the file where supported.
-5. Rename it into:
+```python
+def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """Write via unique tmp, fsync, parse-validate, os.replace, fsync parent dir."""
+```
+
+Do **not** silently change the existing global `safe_write_json()`; create explicit helpers for queue authority. Do not use `safe_write_json()` for queue records, worker state, rate state, source reservations, or transcript output.
+
+### 8.2 Create-if-absent publication (`link()`)
+
+POSIX `rename()` **silently replaces** an existing destination. Enqueue and reservation create use:
+
+1. Write unique file under `tmp/` (hostname, pid, random).
+2. Flush and `fsync()` where supported.
+3. `os.link(tmp_path, dest_path)` — fails with `EEXIST` if destination exists.
+4. Unlink tmp on success or failure paths.
+
+Applies to:
+
+* `keys/<source-key>.json` first publication  
+* `pending/<execution-id>.json` publication  
+
+```python
+try:
+    os.link(tmp_path, dest_path)
+except FileExistsError:
+    os.unlink(tmp_path)
+    return existing_record(dest_path)
+os.unlink(tmp_path)
+```
+
+### 8.3 State transitions (`rename()`)
+
+Performed **only** by the NLM lock holder, same filesystem:
 
 ```text
-pending/abcd1234567.json
+pending/<execution-id>.json    -> processing/<execution-id>.json
+processing/<execution-id>.json -> completed/<execution-id>.json
+processing/<execution-id>.json -> retry/<execution-id>.json
+processing/<execution-id>.json -> failed/<execution-id>.json
+pending/<execution-id>.json    -> cancelled/<execution-id>.json
 ```
 
-6. Treat an existing destination as a duplicate submission.
-7. Remove the temporary file on failure.
+Do not copy-and-delete as the normal mechanism. Claim = rename into `processing/`; loser sees `ENOENT`.
 
-### 8.2 State transitions
+### 8.4 Metadata updates owned by the worker
 
-State changes must use rename within the same resolved queue filesystem:
+1. Write replacement under `tmp/`.
+2. Flush, fsync, validate.
+3. `os.replace` onto the current path in the same state directory (or rename across state dirs when status changes).
 
-```text
-pending/job.json   -> processing/job.json
-processing/job.json -> completed/job.json
-processing/job.json -> retry/job.json
-processing/job.json -> failed/job.json
-pending/job.json    -> cancelled/job.json
-```
+### 8.5 NFS assumptions
 
-Do not copy and delete as the normal transition mechanism.
+Required:
 
-### 8.3 Metadata updates
+* Atomic same-filesystem `rename()` / `os.replace`
+* Atomic `link()` with correct `EEXIST`
+* Functional NLM for POSIX record locks on NFSv3
 
-When job contents must change:
+Must **not** depend on:
 
-1. Write a replacement document under `tmp/`.
-2. Flush and validate it.
-3. Replace the current state file atomically.
-4. Keep the file in the same state directory unless the state itself is changing.
+* SQLite locking  
+* Application-level timestamp leases  
+* `rename()` failing when destination exists  
+* Atomic append to a shared queue file  
+* Strict cross-client attribute cache coherence for correctness (RFC 1813)  
 
-### 8.4 NFS assumption
-
-The queue requires the NFS server and mount configuration to provide reliable same-directory or same-filesystem rename semantics.
-
-The implementation must not depend on:
-
-* SQLite locking
-* `flock()` across different clients
-* POSIX advisory locks being consistently honored by NFS
-* Atomic append to a shared queue file
+Cross-host **reads** may be stale up to mount attribute-cache timeouts. Correctness comes from atomic write primitives and NLM; directory listings are advisory.
 
 ---
 
 ## 9. Worker Architecture
 
-Create:
+### 9.1 Modules
 
 ```text
 src/local_transcribe/services/worker.py
+src/local_transcribe/services/worker_lock.py
+src/local_transcribe/services/worker_state.py
+src/local_transcribe/services/source_reservations.py
+src/local_transcribe/services/queue_store.py
+src/local_transcribe/services/queue_models.py
+src/local_transcribe/services/model_cache.py
+src/local_transcribe/services/download_admission.py
+src/local_transcribe/services/mount_validation.py
+src/local_transcribe/services/atomic_files.py
 ```
 
-The worker is the only component allowed to:
+Only the NLM lock holder may:
 
-* Claim jobs.
-* Run `yt-dlp`.
-* Run `faster-whisper`.
-* Move jobs into retry, completed, or failed states.
-* Update shared rate-limit state.
+* Claim executions  
+* Run `yt-dlp`  
+* Run `faster-whisper`  
+* Move executions into retry / completed / failed  
+* Update shared rate-limit state  
+* Publish final transcripts  
+* Advance reservation generations that imply completed/failed outcomes (as specified)  
 
-### 9.1 Processing model
+Producers may: validate sources, normalize identity, create reservations, publish pending executions, read status.
 
-The worker processes one job at a time.
+Producers must **not**: run `yt-dlp`, load Whisper, change processing state, write rate state, or publish final transcripts.
 
-Required loop:
+### 9.2 Processing loop
 
 ```text
-resolve queue
-validate layout
-acquire worker ownership
-recover abandoned processing jobs
-promote eligible retry jobs
-select next pending job
-claim job
-wait for rate admission
-download or open local media
-transcribe
-write and validate transcript
-move job to completed
+resolve configured queue path
+verify queue UUID
+verify NFSv3 mount and options
+verify rpc.statd / NLM environment
+acquire optional local runtime lock
+open stable worker.lock file
+acquire NLM POSIX record lock (nonblocking exclusive)
+write worker/state.json (diagnostic)
+clean stale tmp files
+recover processing records
+promote eligible retry records
+select next eligible execution
+claim through rename to processing/
+verify source reservation generation is current
+check for valid existing transcript
+enforce shared rate admission (YouTube)
+download into local scratch storage
+transcribe using cached model
+write and validate transcript atomically (generation-aware)
+verify execution is still current on the reservation
+move execution record to completed/
+update compatibility artifacts if enabled
+update diagnostic state
 repeat
 ```
 
-### 9.2 Selection order
+### 9.3 Selection order and fairness
 
-Pending jobs must be sorted by:
+Base priorities (suggested):
 
-1. Highest priority.
-2. Oldest `created_at`.
-3. Stable filename ordering.
+| Origin | Base priority |
+| ------ | ------------: |
+| Interactive `lt transcribe` | 100 |
+| Explicit `lt queue add --priority high` | 75 |
+| Manual queue addition | 50 |
+| `ref` submission | 20 |
+| `lt batch` submission | 10 |
 
-Suggested priority values:
+Strict priority alone allows interactive work to starve batch/`ref`. Use **effective priority** or weighted fairness:
 
-| Origin                                  |                   Priority |
-| --------------------------------------- | -------------------------: |
-| Interactive `lt transcribe`             |                        100 |
-| Explicit `lt queue add --priority high` |                         75 |
-| Manual queue addition                   |                         50 |
-| `ref` submission                        |                         20 |
-| `lt batch` submission                   |                         10 |
-| Retried job                             | Original priority or lower |
+```text
+effective_priority = base_priority + waiting_age_bonus
+```
 
-An interactive job may move ahead of pending work but must not interrupt the currently running job.
+Simpler first implementation (acceptable):
 
-### 9.3 Worker ownership
+* At most `max_interactive_streak` (default **5**) interactive executions consecutively.
+* Then process the oldest eligible noninteractive execution.
+* **Never interrupt** an active execution.
 
-The normal deployment must use one local systemd user service.
+Local-file jobs: skip if `required_host` is set and does not match; skip if path is not under an allowed shared root and not host-affined for this host.
 
-Also implement a local runtime lock to prevent accidental duplicate workers on the same machine.
+### 9.4 Local runtime lock
 
-Suggested local runtime path:
+Optional fast-fail against duplicate workers on the **same** machine:
 
 ```text
 ${XDG_RUNTIME_DIR}/local-transcribe/worker.lock
 ```
 
-The lock may use:
+Uses local `fcntl`/`flock` with PID validation. Convenience only. Authoritative cross-host exclusion is §9.5.
 
-* `fcntl.flock()` locally
-* PID validation
-* Hostname and process metadata
+### 9.5 NLM-backed POSIX worker lock (authoritative)
 
-Do not place the authoritative worker lock on NFS.
+Replace the v2 JSON lease entirely.
 
-### 9.4 Cross-host worker protection
+#### Implementation rules
 
-The supported architecture is one designated worker host per queue.
+1. Open one **stable** file:
 
-Write informational worker state to:
+```text
+<queue>/worker/worker.lock
+```
+
+2. Acquire a **nonblocking exclusive POSIX record lock** (`fcntl.lockf` with `LOCK_EX | LOCK_NB`).
+3. Keep the file descriptor open for the **full worker lifetime**.
+4. **Never** replace, rename, or unlink the lock file while the lock is held.
+5. Release by unlock + close.
+6. On `EACCES` / `EAGAIN`: standby or exit with a clear message.
+
+Reference implementation (normative shape):
+
+```python
+from __future__ import annotations
+
+import errno
+import fcntl
+import json
+import os
+import socket
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import IO
+
+
+class WorkerLockError(RuntimeError):
+    pass
+
+
+class WorkerAlreadyActive(WorkerLockError):
+    pass
+
+
+@dataclass
+class WorkerLock:
+    path: Path
+    file: IO[str]
+
+    @classmethod
+    def acquire(cls, path: Path) -> "WorkerLock":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file = path.open("a+", encoding="utf-8")
+        try:
+            fcntl.lockf(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            file.close()
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise WorkerAlreadyActive(
+                    "Another worker currently owns the queue lock"
+                ) from exc
+            raise WorkerLockError(f"Unable to obtain NFS worker lock: {exc}") from exc
+
+        metadata = {
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+            "acquired_at": datetime.now(timezone.utc).isoformat(),
+        }
+        file.seek(0)
+        file.truncate()
+        json.dump(metadata, file, indent=2)
+        file.write("\n")
+        file.flush()
+        os.fsync(file.fileno())
+        return cls(path=path, file=file)
+
+    def release(self) -> None:
+        try:
+            fcntl.lockf(self.file.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.file.close()
+```
+
+Use `fcntl.lockf()` (POSIX record locking) explicitly rather than relying on `flock()` behavioral differences across clients.
+
+#### Critical lock-file rule
+
+Do **not** “renew” the lock by writing a temporary file and renaming it over `worker.lock`. The lock is associated with the open file and lock state. Replacing the pathname creates a different file identity and can allow another process to lock the replacement while the original still holds a lock on the old inode.
+
+Diagnostic heartbeat / current job information belongs **only** in:
 
 ```text
 worker/state.json
 ```
 
-Example:
+written with `atomic_write_json`. That file is **never** the ownership authority.
+
+#### Removed from v2
+
+* `O_CREAT|O_EXCL` lease acquisition as ownership  
+* Timestamp renewal of the lock file  
+* `stale_lease_seconds` / host-clock comparison  
+* Rename-to-steal / delete-and-recreate takeover  
+* Fencing by re-reading JSON ownership fields  
+
+### 9.6 Diagnostic worker state
 
 ```json
 {
   "worker_id": "nomnom-28451",
   "hostname": "nomnom",
   "pid": 28451,
-  "started_at": "2026-07-17T08:00:00-05:00",
-  "heartbeat_at": "2026-07-17T08:25:10-05:00",
-  "current_job": "abcd1234567"
+  "queue_uuid": "b6c1e0f2-...",
+  "started_at": "2026-07-18T08:00:00-05:00",
+  "heartbeat_at": "2026-07-18T08:25:10-05:00",
+  "current_execution_id": "0190dc1a-43c4-7c28-bcb3-5980d90a28c2",
+  "active": true
 }
 ```
 
-This file supports diagnostics and stale-worker warnings. It must not be treated as a fully reliable distributed lock.
+Status commands may display this, but **only successful or failed NLM lock acquisition** determines authority.
 
-Running active workers on multiple hosts against the same NFS queue is unsupported in the first implementation.
+### 9.7 Standby behavior
+
+```bash
+lt worker run --standby
+```
+
+If NLM lock acquisition fails:
+
+* Exit clearly, or  
+* Remain in standby and retry at `standby_retry_seconds` (default 30)
+
+Standby workers must **not** inspect `worker/state.json` to decide availability. They only retry the NLM lock.
+
+Useful when the systemd user service is installed on multiple hosts.
+
+### 9.8 Post-claim checks
+
+After rename into `processing/` and before external work:
+
+1. Confirm the reservation’s `current_execution_id` and `generation` still match this execution (else cancel/supersede this execution without publishing).
+2. If a valid final transcript already exists for the source at the required generation policy, complete without re-download when safe.
+3. Enforce host affinity / shared-root accessibility for local files.
+4. Proceed to rate admission (YouTube only).
 
 ---
 
-## 10. Crash Recovery
+## 10. NFSv3 Environment Validation
 
-### 10.1 Processing recovery
+The worker must **fail closed** unless the queue mount meets required conditions.
 
-When the worker starts and finds files in `processing/`:
+### 10.1 Required checks
 
-1. Read each job.
-2. Check the recorded worker hostname and PID where meaningful.
-3. Check whether a valid final transcript already exists.
-4. If a valid transcript exists:
+* Filesystem is NFS  
+* Negotiated version is **NFSv3**  
+* Mount is **not** `nolock`  
+* POSIX locking is **not** local-only (`local_lock=posix` or `local_lock=all` rejected)  
+* Mount uses **`hard`**, not `soft` or `softerr`  
+* **TCP** transport  
+* Mount is **read-write**  
+* Queue path resides on the **expected server and export** when configured  
+* Queue UUID matches `expected_uuid` when configured  
+* Mountpoint is not an empty local directory under an **unmounted** NFS path  
+* `rpc.statd` is active on the client (where observable)  
+* NLM service reachable on the server (where observable)  
+* A **functional** lock acquisition test has passed (two-client lab; single-client self-test where possible)  
 
-   * Mark the job completed.
-5. Otherwise:
-
-   * Record `worker_interrupted`.
-   * Increment attempts only if processing had actually begun.
-   * Return it to `pending/` or `retry/`.
-
-Because only one worker is supported, more than one file in `processing/` indicates an inconsistent queue and must be logged.
-
-### 10.2 Temporary files
-
-At startup, remove stale files under:
+Example expected characteristics (defaults may be omitted from `findmnt` output):
 
 ```text
-transcription-queue/tmp/
+vers=3,proto=tcp,hard,lock,local_lock=none,rw
 ```
 
-Only remove files older than a configurable safety threshold, such as one hour.
+Validation must reject explicitly unsafe options and perform a functional lock test where practical.
 
-### 10.3 Temporary media
+### 10.2 `rpc.statd`, firewalls, and ports
 
-Downloaded media must use local storage, for example:
+For NFSv3, `lockd` implements NLM and `rpc.statd` supports reboot detection and lock recovery. Linux normally starts these when an NFSv3 filesystem is mounted.
 
-```text
-~/.cache/local-transcribe/jobs/<job-id>/
-```
+Firewalls must allow (as applicable):
 
-or:
+* NFS  
+* `rpcbind`  
+* `mountd`  
+* NLM / `nlockmgr`  
+* `rpc.statd`  
 
-```text
-${XDG_CACHE_HOME}/local-transcribe/jobs/<job-id>/
-```
+Static ports should be used where firewall predictability is required.
 
-On worker startup:
+The application cannot repair infrastructure automatically. `lt doctor`, `lt queue doctor`, and `lt worker doctor` diagnose it.
 
-* Remove abandoned media directories older than the recovery threshold.
-* Preserve media for an active processing job.
-* Never place large temporary audio files in the NFS queue by default.
+### 10.3 Why hard mounts
+
+Soft NFS timeouts can produce I/O failures and, in some cases, silent data corruption. Hard mounts may block until the server returns; that is preferable to misleading success on authoritative queue writes.
 
 ---
 
-## 11. Transcript Output
+## 11. Crash Recovery
 
-The final transcript directory remains environment-dependent and may be on NFS.
+### 11.1 Normal worker exit
 
-The transcript JSON must retain the existing schema:
+* Unlock and close `worker.lock`  
+* Mark `worker/state.json` inactive (or remove)  
+* Leave no execution only in ambiguous in-memory state  
+
+### 11.2 Worker process crash
+
+The OS closes the lock descriptor. NLM releases or recovers lock state per client/server condition.
+
+The next worker that obtains the NLM lock:
+
+1. Scans `processing/`  
+2. For each execution, checks whether a valid final transcript exists  
+3. Checks whether the execution remains current on `keys/`  
+4. Marks completed if publication already succeeded  
+5. Otherwise records `worker_interrupted`, schedules retry or pending, increments attempts only if processing had begun  
+6. Logs if more than one processing file exists (inconsistent / multi-crash residue)  
+
+### 11.3 Client reboots
+
+`rpc.statd`, NSM, and `lockd` participate in NFSv3 lock recovery after reboots. The queue **still** performs processing recovery because application state may diverge from lock state.
+
+### 11.4 NFS server reboots
+
+After the mount resumes, the worker must:
+
+1. Confirm the same mount source  
+2. Confirm the same queue UUID  
+3. Confirm it still owns or can reacquire the NLM lock  
+4. Reopen queue metadata  
+5. Perform processing recovery  
+6. Resume only after those checks pass  
+
+### 11.5 Network partition
+
+With a hard mount, NFS operations may block until the server returns. Do **not** infer lock loss from heartbeat age of `state.json`.
+
+### 11.6 Temporary files
+
+At startup (under lock), remove stale `tmp/` files older than `stale_tmp_seconds` (default 3600). Surviving tmp files indicate crashed producers or interrupted atomic writes.
+
+### 11.7 Temporary media
+
+```text
+${XDG_CACHE_HOME:-$HOME/.cache}/local-transcribe/jobs/<execution-id>/
+```
+
+On worker startup under lock:
+
+* Remove abandoned media directories older than the recovery threshold  
+* Preserve media for executions still in `processing/` if this worker continues them  
+* Never place large temporary audio in the NFS queue by default  
+
+### 11.8 Exactly-once scope
+
+The design does **not** claim absolute exactly-once Whisper/download CPU work across all failure modes. It claims:
+
+> The queue maintains one authoritative execution generation per source. Only the current NLM lock holder may publish queue state or transcript output. Recovery is idempotent, and duplicate computation cannot create duplicate authoritative completion records.
+
+Generation-aware transcript publication and reservation checks prevent a stale process from overwriting a newer generation’s output.
+
+---
+
+## 12. Transcript Output
+
+Final transcript directory is environment-dependent and may be on NFS (`transcripts.root` config).
+
+Existing schema is preserved:
 
 ```json
 {
@@ -575,58 +975,64 @@ The transcript JSON must retain the existing schema:
 }
 ```
 
-### 11.1 Safe transcript writing
+### 12.1 Atomic generation-aware publication
 
-Required sequence:
+1. Write a unique temporary file in the final transcript directory.  
+2. Flush and `fsync()` the file.  
+3. Parse and validate JSON (non-empty transcript unless an explicitly supported empty outcome exists; expected source identity present).  
+4. Publish atomically (`os.replace` only when generation policy allows).  
+5. `fsync` parent directory where supported.  
+6. Reopen and re-validate the published transcript.  
+7. Verify the execution is still the reservation’s current generation.  
+8. Only then move the execution to `completed/`.  
 
-1. Write locally or to a temporary file in the final transcript directory.
-2. Flush and close.
-3. Validate the JSON schema.
-4. Confirm the transcript field is a non-empty string.
-5. Rename to the final filename.
-6. Confirm the final file remains readable and valid.
-7. Only then mark the job completed.
-
-Recommended temporary name:
+Preferred generation strategy:
 
 ```text
-VIDEO_ID.json.tmp.<hostname>.<pid>
+transcripts/VIDEO_ID.json                  # current pointer / latest
+transcripts/.generations/VIDEO_ID/000001.json
 ```
 
-The temporary file and final transcript must be on the same filesystem when atomic rename is required.
+Or refuse replacement of an existing valid transcript unless the active execution’s generation is still current and explicitly superseding. A stale process must not replace a newer valid output.
 
 ---
 
-## 12. Shared Rate-Limit Controller
+## 13. Shared Download Admission Controller
 
-The current rate limiter stores hourly and daily counts and warnings in `rate_limits.json`.
-
-The new worker must replace advisory rate warnings with an admission controller that can delay execution.
-
-Create or refactor:
+Replace advisory `RateLimiter` with an admission controller owned exclusively by the NLM lock holder.
 
 ```text
-src/local_transcribe/services/rate_limiter.py
+src/local_transcribe/services/download_admission.py
 ```
 
-Shared state path:
+State path:
 
 ```text
-<resolved-queue>/worker/rate-limit.json
+<queue>/worker/rate-limit.json
 ```
 
-Only the worker writes this file.
+### 13.1 Admission sequence (before each YouTube download)
 
-### 12.1 State format
+1. Confirm NLM lock is held (same process / open lock object).  
+2. Read and normalize rate state.  
+3. Calculate earliest permitted download time.  
+4. Wait **while retaining** worker ownership.  
+5. Persist the admitted attempt (atomic write) **before** launching `yt-dlp`.  
+6. Re-confirm lock still held.  
+7. Launch `yt-dlp`.  
+
+Counts represent **download attempts**, not completed transcriptions. Local-file jobs do not consume YouTube download allowance.
+
+### 13.2 State format
 
 ```json
 {
   "schema_version": 1,
-  "last_download_started_at": "2026-07-17T08:00:00-05:00",
+  "last_download_started_at": "2026-07-18T08:00:00-05:00",
   "download_attempts_this_hour": 7,
   "download_attempts_today": 28,
-  "hour_window_started_at": "2026-07-17T08:00:00-05:00",
-  "day_window_started_at": "2026-07-17T00:00:00-05:00",
+  "hour_window_started_at": "2026-07-18T08:00:00-05:00",
+  "day_window_started_at": "2026-07-18T00:00:00-05:00",
   "blocked_until": null,
   "consecutive_throttle_failures": 0,
   "last_429_at": null,
@@ -636,84 +1042,61 @@ Only the worker writes this file.
 }
 ```
 
-### 12.2 Admission behavior
+### 13.3 Throttle handling
 
-Before each YouTube download:
-
-1. Reset expired hourly and daily windows.
-2. Check `blocked_until`.
-3. Enforce minimum time between download starts.
-4. Enforce hourly download-attempt budget.
-5. Enforce daily download-attempt budget.
-6. Sleep until admission is permitted.
-7. Persist the admitted attempt before launching `yt-dlp`.
-
-Local-file transcription does not consume YouTube download allowance.
-
-### 12.3 Throttle handling
-
-For HTTP 429:
-
-1. Record the event.
-2. Use `Retry-After` when available.
-3. Otherwise apply exponential backoff with jitter.
-4. Move the job to `retry/`.
-5. Set `available_at`.
-6. Set global `blocked_until`.
+**HTTP 429:** record event; honor `Retry-After` when available; else exponential backoff with jitter; move execution to `retry/`; set `available_at`; set global `blocked_until`.
 
 Suggested fallback delays:
 
 ```text
-first event:   5 minutes
-second event: 15 minutes
-third event:  60 minutes
-later events: exponential increase capped at 6 hours
+first: 5 minutes
+second: 15 minutes
+third: 60 minutes
+later: exponential, cap 6 hours
 ```
 
-For HTTP 403:
+**HTTP 403:** permanent private/unavailable → fail; auth required → fail with cookie/profile guidance; suspected temporary throttle → retry backoff. Do not classify every 403 as rate-limit without downloader category.
 
-* Permanent private or unavailable video: fail immediately.
-* Authentication-required content: fail with clear cookie guidance.
-* Suspected temporary YouTube throttling: use retry backoff.
-* Do not classify every 403 as a rate-limit event without examining the downloader error category.
+### 13.4 Guarantee
 
-### 12.4 Rate-limit guarantee
-
-Because `ref`, `lt batch`, and `lt transcribe` only enqueue jobs, and only the worker runs `yt-dlp`, all commands necessarily share the same rate-limit controller.
+Because `ref`, `lt batch`, and `lt transcribe` only enqueue, and only the NLM lock holder runs `yt-dlp`, all commands share one admission controller regardless of which host holds the lock.
 
 ---
 
-## 13. CLI Changes
+## 14. Downloader Hardening (daemon use)
 
-## 13.1 `lt transcribe`
+Before using the downloader as a long-lived worker dependency, it must:
 
-Existing syntax must remain valid:
+1. Remove broad `--ignore-errors` unless a specific tested case requires it.  
+2. Accept a job-local scratch directory (`.../jobs/<execution-id>/`).  
+3. Launch `yt-dlp` in its own process group.  
+4. Stream logs rather than retaining unlimited output in memory.  
+5. Apply a timeout.  
+6. Terminate the process group on cancellation.  
+7. Return a structured result.  
+8. Classify errors (rate limited, temporary forbidden, authentication required, private, unavailable, extractor failure, network failure, postprocessing failure).  
+9. Rely on admission controller having persisted the attempt before launch.  
+10. Preserve enough sanitized stderr for diagnostics.  
+
+---
+
+## 15. CLI Changes
+
+### 15.1 `lt transcribe`
+
+Default (queue mode):
 
 ```bash
 lt transcribe <source>
 ```
 
-New behavior:
-
-1. Resolve the queue.
-2. Validate the source.
-3. Create or locate the queue job.
-4. Give the job interactive priority.
-5. Start or wake the worker.
-6. Wait for the requested job unless `--no-wait` is used.
-7. Display status changes.
-8. Return the final transcript path or failure.
-
-Example:
-
-```text
-Queue: /opt/md2/music/youtube/transcripts/transcription-queue
-Queued: abcd1234567
-Waiting behind 1 active job
-Downloading
-Transcribing
-Done. Wrote: /opt/md2/music/youtube/transcripts/abcd1234567.json
-```
+1. Validate source.  
+2. Resolve configured queue.  
+3. Create or find the source reservation.  
+4. Enqueue an interactive-priority execution if required.  
+5. Attempt to start the local worker service.  
+6. Wait for the requested execution unless `--no-wait`.  
+7. Return final transcript path or terminal error.  
 
 Required options:
 
@@ -723,67 +1106,67 @@ Required options:
 --retry
 --priority
 --timeout
+--queue-dir
+--direct
 ```
 
-Existing transcription options must be saved into the job’s `options` object.
+* `--force` creates a new execution **generation**. It must not bypass the queue.  
+* `--direct` runs download/transcribe in-process **without** the queue (dev/emergency only). Must log a clear warning. Must not be the default.  
+* Existing model/device options are stored on the execution’s `options` object in queue mode.  
 
-`lt transcribe` must never call `transcribe_url()` directly when operating in queue mode.
+**NFS latency note:** when waiting from a non-worker host, poll specific expected execution paths (open-to-close revalidation) rather than relying solely on directory listings; do not treat brief attribute-cache staleness as failure.
 
-## 13.2 `lt batch`
+### 15.2 `lt batch`
 
-`lt batch` becomes a bulk queue producer.
+Becomes a bulk producer:
 
-```bash
-lt batch --input urls.txt
-```
+1. Parse and normalize input.  
+2. Deduplicate within the input.  
+3. Resolve source reservations.  
+4. Skip valid existing transcripts.  
+5. Enqueue missing executions.  
+6. Print enqueue summary.  
+7. Optionally `--wait` for submitted execution IDs.  
 
-Required behavior:
+`--resume` becomes unnecessary (queue state is durable). May remain temporarily as a compatibility no-op/alias with a deprecation notice.
 
-* Validate each URL.
-* Normalize each video ID.
-* Deduplicate within the input.
-* Deduplicate against queue state.
-* Skip valid existing transcripts.
-* Enqueue remaining jobs.
-* Return an enqueue summary.
-
-Optional behavior:
-
-```bash
-lt batch --input urls.txt --wait
-```
-
-`--wait` waits until every newly submitted job reaches a terminal state.
-
-## 13.3 Worker commands
-
-Add:
+### 15.3 Worker commands
 
 ```bash
 lt worker run
 lt worker run --once
+lt worker run --standby
 lt worker install
 lt worker start
 lt worker stop
 lt worker restart
 lt worker status
 lt worker logs
+lt worker doctor
 ```
 
-`lt worker run --once` processes at most one eligible job and exits.
+`lt worker status` must distinguish:
 
-## 13.4 Queue commands
+```text
+NLM lock acquired locally
+NLM lock held elsewhere
+NLM environment unavailable
+queue mounted but unsafe
+worker state active but lock status unknown
+```
 
-Add:
+### 15.4 Queue commands
 
 ```bash
-lt queue init
+lt queue init --queue-dir PATH
 lt queue path
+lt queue doctor
 lt queue add <source>
 lt queue list
-lt queue show <job-id>
-lt queue retry <job-id>
-lt queue cancel <job-id>
+lt queue show <execution-id>
+lt queue show-source <source-key>
+lt queue retry <execution-id>
+lt queue cancel <execution-id>
 lt queue import <pending-file>
 lt queue export-pending
 lt queue repair
@@ -791,47 +1174,23 @@ lt queue purge
 lt queue stats
 ```
 
-### `lt queue path`
+* `lt queue repair` must acquire the NLM worker lock before mutating queue state.  
+* `lt queue purge` requires explicit filters (e.g. `--completed --older-than 30d`) and never deletes transcript JSON.  
+* `lt queue list` filters: `--status`, `--origin`, `--limit`, `--json`.  
 
-Must display:
+### 15.5 Status and report
 
-* Every candidate path.
-* Whether it exists.
-* Which path is selected.
-* Whether it is readable and writable.
-
-### `lt queue list`
-
-Filters:
-
-```text
---status
---origin
---limit
---json
-```
-
-### `lt queue purge`
-
-Must require explicit filters such as:
-
-```bash
-lt queue purge --completed --older-than 30d
-```
-
-It must never delete transcript JSON files.
+`lt status` / `lt report` become queue-aware (and may still emit compatibility views). They must not treat `batch_status.json` as authority.
 
 ---
 
-## 14. Background Service
+## 16. Background Service
 
-Install a user-level systemd service:
+User-level systemd unit:
 
 ```text
 ~/.config/systemd/user/local-transcribe-worker.service
 ```
-
-Conceptual unit:
 
 ```ini
 [Unit]
@@ -841,7 +1200,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/lt worker run
+ExecStart=%h/.local/bin/lt worker run --standby
 Restart=on-failure
 RestartSec=10
 
@@ -849,250 +1208,137 @@ RestartSec=10
 WantedBy=default.target
 ```
 
-### 14.1 Installation command
+`--standby` allows multi-host install: non-holders poll for the NLM lock.
 
-```bash
-lt worker install
-```
+### 16.1 Installation
 
-It must:
+`lt worker install` must:
 
-1. Resolve the installed `lt` executable.
-2. Create the service file.
-3. Run `systemctl --user daemon-reload`.
-4. Print the commands required to enable the service.
-5. Not enable lingering automatically.
-
-Normal activation:
+1. Resolve the installed `lt` executable.  
+2. Create the service file.  
+3. Run `systemctl --user daemon-reload`.  
+4. Print enable instructions.  
+5. Not enable lingering automatically.  
 
 ```bash
 systemctl --user enable --now local-transcribe-worker.service
-```
-
-Optional logged-out execution:
-
-```bash
+# optional:
 loginctl enable-linger "$USER"
 ```
 
-The user must explicitly choose lingering.
+### 16.2 Foreground fallback from `lt transcribe`
 
-### 14.2 Worker fallback
+When a job is submitted and no active worker is detected:
 
-When `lt transcribe` submits a job and no active worker is detected:
+1. Attempt to start the systemd user service if installed.  
+2. Wait briefly for NLM lock activity / progress.  
+3. If still none, acquire local runtime lock + NLM lock and process until the requested execution reaches a terminal state.  
+4. Release locks and exit.  
 
-1. Attempt to start the systemd user service if installed.
-2. Wait for a worker heartbeat.
-3. If no service is available, acquire the local worker lock.
-4. Process queue jobs in the foreground until the requested job reaches a terminal state.
-5. Exit.
-
-This fallback must still use the queue and shared rate-limit state.
+Fallback still uses the queue and shared admission state (not a side-channel direct path unless the user passed `--direct`).
 
 ---
 
-## 15. `ref-cli` Integration
+## 17. `ref-cli` Integration
 
 `ref-cli` owns reference records. `local-transcribe` owns transcription execution.
 
-### 15.1 Preferred enqueue flow
+### 17.1 Preferred enqueue flow
 
-When transcript API retrieval is blocked or no transcript is available:
+When transcript API retrieval is blocked or unavailable:
 
-1. Determine whether a valid local transcript already exists.
-2. Invoke the `local-transcribe` queue adapter.
-3. Enqueue the YouTube URL with:
+1. Check for a valid local transcript.  
+2. Invoke the `local-transcribe` queue adapter.  
+3. Enqueue with `origin = ref`, base priority 20.  
+4. Record a pending transcript marker in `references.md`.  
+5. Continue without waiting for local transcription.  
 
-```text
-origin = ref
-priority = 20
-```
+Adapter preference: in-process Python API if installed → `lt queue add` → append `transcript-pending.md` fallback.
 
-4. Record a pending transcript marker in `references.md`.
-5. Continue processing the reference without waiting for local transcription.
+### 17.2 Failure isolation
 
-The adapter may:
+`ref` must continue when `lt` is missing, queue cannot resolve, NFS is unavailable, or the worker is stopped. Log the integration failure; preserve pending-file fallback; do not fail reference capture.
 
-* Import a Python API from `local_transcribe`, when installed.
-* Fall back to invoking `lt queue add`.
-* Fall back to appending `transcript-pending.md` when `local-transcribe` is unavailable.
-
-### 15.2 Failure isolation
-
-`ref` must continue working when:
-
-* `lt` is not installed.
-* The queue cannot be resolved.
-* The NFS mount is unavailable.
-* The worker is stopped.
-
-In those cases:
-
-* Log the integration failure.
-* Preserve the current `transcript-pending.md` fallback.
-* Do not fail reference capture solely because local queue integration failed.
-
-### 15.3 Completion reconciliation
-
-Add a `ref` command such as:
+### 17.3 Completion reconciliation
 
 ```bash
 ref reconcile-transcripts
 ```
 
-It must:
+Read pending markers, match valid transcript JSON, update only the transcript field in `references.md`, preserve order, default dry-run, support `--apply`.
 
-1. Read reference entries with pending or unavailable transcript markers.
-2. Extract the video ID.
-3. Find a valid completed transcript JSON.
-4. Update only the transcript field in `references.md`.
-5. Preserve line order and unrelated fields.
-6. Default to dry-run if consistent with existing repair tools.
-7. Support `--apply`.
-
-`local-transcribe` must not directly rewrite `references.md`.
+`local-transcribe` must not rewrite `references.md`.
 
 ---
 
-## 16. Legacy Pending-File Compatibility
+## 18. Legacy Pending-File Compatibility
 
-The existing file remains:
+`transcript-pending.md` remains non-authoritative after migration.
 
-```text
-transcript-pending.md
-```
-
-It is not the authoritative queue after migration.
-
-### 16.1 Import
+### 18.1 Import
 
 ```bash
 lt queue import ~/references/transcripts/transcript-pending.md
 ```
 
-Import rules:
+Rules: ignore blanks/comments; normalize YouTube URLs; skip valid transcripts; skip sources with active reservations/executions as specified; enqueue with `origin = import`; preserve unparseable lines; back up source; rewrite via atomic replace.
 
-* Ignore blank lines.
-* Ignore comments.
-* Normalize YouTube URLs.
-* Skip valid completed transcripts.
-* Skip jobs already present in any queue state.
-* Enqueue new jobs with `origin = import`.
-* Preserve lines that could not be parsed or imported.
-* Back up the source file before rewriting.
-* Rewrite through a temporary file and atomic rename.
+### 18.2 Export
 
-### 16.2 Export
+`lt queue export-pending` — human-readable report from pending/retry/processing. Report only.
 
-```bash
-lt queue export-pending
-```
+### 18.3 Transition
 
-Generate a human-readable pending file from:
-
-```text
-pending/
-retry/
-processing/
-```
-
-The export is a report only.
-
-### 16.3 Transition period
-
-During migration, `lt batch` may continue detecting `transcript-pending.md`, but it should import the file into the queue rather than process it directly.
+`lt batch` may detect `transcript-pending.md` and import into the queue rather than process it directly.
 
 ---
 
-## 17. Existing Status Compatibility
+## 19. Existing Status Compatibility
 
-The current project uses:
-
-```text
-batch_status.json
-finished.dat
-```
-
-These may be retained temporarily for compatibility.
+`batch_status.json` and `finished.dat` may be retained temporarily.
 
 Rules:
 
-* Queue state directories are authoritative.
-* `batch_status.json` should be generated from job files.
-* `finished.dat` should be generated or appended only after verified completion.
-* A URL in `finished.dat` without a valid transcript does not count as completed.
-* Reconciliation should repair compatibility artifacts from the queue and transcript files.
-
-The existing pipeline already verifies transcript output before appending to `finished.dat`; that behavior must be preserved.
+* `keys/` + execution directories are authoritative.  
+* Compatibility files may be generated from reservations, executions, and validated transcripts.  
+* A URL in `finished.dat` without a valid transcript does not count as completed.  
+* Verify-before-append behavior for `finished.dat` is preserved.  
+* `status_store.py` may remain for import/compat/reporting but must not control execution.  
 
 ---
 
-## 18. Model Lifecycle
+## 20. Model Lifecycle
 
-The worker should avoid reloading the same Whisper model for every job.
+Worker-scoped cache keyed by `(model, effective_device, effective_compute_type)`:
 
-Implement a worker-scoped model cache keyed by:
+* Reuse when the next job matches.  
+* Reload on configuration change.  
+* Preserve CUDA preflight and CPU fallback.  
+* Log effective device/compute type.  
+* Optional unload after `model_idle_unload_seconds`.  
 
-```text
-model
-device
-compute_type
-```
-
-Behavior:
-
-* Reuse the loaded model when the next job uses the same configuration.
-* Release and reload when configuration changes.
-* Preserve existing CUDA preflight and CPU fallback behavior.
-* Record the effective device and compute type in logs.
-* Optionally unload after a configurable idle timeout.
-
-The existing transcriber initializes `WhisperModel` during each transcription call; this should be refactored behind a reusable transcriber instance.
+Refactor `transcriber.py` to separate model construction from transcription and accept a reusable model or provider. Atomic transcript publication moves into the shared publisher path.
 
 ---
 
-## 19. Logging and Status
+## 21. Logging and Status
 
-### 19.1 Local logs
-
-Worker logs should remain local:
+### 21.1 Local logs
 
 ```text
-${XDG_STATE_HOME}/local-transcribe/logs/worker.log
+${XDG_STATE_HOME:-$HOME/.local/state}/local-transcribe/logs/worker.log
 ```
 
-Fallback:
+Each job entry should include: `execution_id`, `source_key`, `generation`, `origin`, `priority`, `state`, `attempt`, `model`, `requested_device`, `effective_device`, `download_strategy`, `duration`, `error_category`, `next_retry_at`. Log NLM lock acquire/release/contention and recovery events.
 
-```text
-~/.local/state/local-transcribe/logs/worker.log
-```
-
-Each job log entry should include:
-
-```text
-job_id
-source_key
-origin
-priority
-state
-attempt
-model
-requested_device
-effective_device
-download_strategy
-duration
-error_category
-next_retry_at
-```
-
-### 19.2 Status output
-
-Example:
+### 21.2 Status output (example)
 
 ```text
 Queue: /opt/md2/music/youtube/transcripts/transcription-queue
-Worker: active on nomnom, PID 28451
-Current job: abcd1234567
+Queue ID: b6c1e0f2
+NFS: vers=3 proto=tcp hard (server nas.example.internal)
+Worker lock: held locally (PID 28451) | held elsewhere | unavailable
+Worker state: nomnom PID 28451, execution 0190dc1a-...
 Stage: transcribing
 Pending: 14
 Retrying: 3
@@ -1104,355 +1350,321 @@ Next download allowed: 38 seconds
 Model: medium / cuda / float16
 ```
 
-### 19.3 Health warnings
+### 21.3 Health warnings
 
-Report:
-
-* Both candidate queue directories exist.
-* Selected queue is not writable.
-* NFS mount is unavailable.
-* More than one processing job exists.
-* Worker heartbeat is stale.
-* A valid transcript exists for a pending job.
-* A completed job has a missing or invalid transcript.
-* Temporary files are stale.
-* Rate-limit state is malformed.
+* Configured path missing or not a directory  
+* UUID mismatch  
+* Unsafe mount options (`nolock`, `local_lock=*`, `soft`, `softerr`)  
+* Wrong NFS version/server/export  
+* Read-only mount  
+* NLM / `rpc.statd` unavailable  
+* More than one processing execution  
+* Valid transcript exists for a still-pending execution  
+* Completed execution missing or invalid transcript  
+* Stale temporary files  
+* Malformed rate state  
+* Local-file job not accessible on this host  
 
 ---
 
-## 20. Configuration
-
-Add queue configuration to `local-transcribe` configuration without overriding the required fallback order unless the user explicitly configures a path.
-
-Suggested file:
+## 22. Configuration
 
 ```text
 ~/.config/local-transcribe/config.yaml
 ```
 
-Example:
-
 ```yaml
 queue:
-  path: null
-  candidates:
-    - ~/references/transcripts/transcription-queue
-    - /opt/md2/music/youtube/transcripts/transcription-queue
+  path: /opt/md2/music/youtube/transcripts/transcription-queue
+  expected_uuid: b6c1e0f2-0000-0000-0000-000000000000
+  expected_nfs_version: 3
+  expected_server: nas.example.internal
+  expected_export: /exports/transcripts
+
+transcripts:
+  root: /opt/md2/music/youtube/transcripts
+
+sources:
+  shared_roots:
+    - /opt/md2/music/audio-input
 
 worker:
   poll_interval_seconds: 5
+  standby_retry_seconds: 30
   stale_processing_seconds: 3600
   stale_tmp_seconds: 3600
   model_idle_unload_seconds: 1800
+  max_interactive_streak: 5
 
 rate_limit:
   minimum_download_interval_seconds: 30
   max_download_attempts_per_hour: 60
   max_download_attempts_per_day: 500
   maximum_backoff_seconds: 21600
+
+auth_profiles:
+  youtube-personal:
+    cookies_file: ~/.config/local-transcribe/cookies/youtube.txt
 ```
 
-Resolution precedence:
+**Removed vs v2:** `lease_renew_seconds`, `stale_lease_seconds`, multi-path `candidates` auto-discovery.
 
-1. Explicit CLI `--queue-dir`, when supported.
-2. Explicit configured `queue.path`.
-3. Required candidate discovery order.
-4. Creation of the first candidate only when initialization is requested.
+Queue and transcript roots may use NFS. Cookie files and temporary media remain local.
 
-Normal commands should not create a queue silently unless their documented behavior requires enqueueing.
+Resolution precedence: CLI `--queue-dir` → `queue.path` → error.
 
 ---
 
-## 21. Security and Privacy
+## 23. Security and Privacy
 
-* Queue job files may contain URLs and local file paths.
-* Queue directories must not be world-writable.
-* Cookie contents must never be copied into job JSON.
-* Job files may store cookie file paths or browser profile names only.
-* Logs must not print cookie values.
-* Temporary audio directories should be user-private.
-* Validate job JSON before executing it.
-* Reject unknown `source_type` values.
-* Do not execute arbitrary shell strings from job metadata.
-* Pass downloader arguments as argument arrays, not shell-formatted commands.
-* Resolve and validate local file paths before transcription.
-* Reject local directories and non-regular files.
-* Do not follow untrusted job-specified output paths outside approved transcript roots without an explicit override.
+* Queue files may contain URLs and local paths.  
+* Queue directories must not be world-writable.  
+* Cookie contents never enter job JSON or logs.  
+* Auth profile names only on the wire/NFS; paths resolve locally.  
+* Validate job JSON before execution.  
+* Reject unknown `source_type` values.  
+* Do not execute shell strings from job metadata.  
+* Pass downloader arguments as argv arrays.  
+* Validate local file paths; reject directories and non-regular files.  
+* Do not follow untrusted job-specified output paths outside approved roots without override.  
 
 ---
 
-## 22. Testing Requirements
+## 24. Required Repository Changes
 
-### 22.1 Queue path tests
+### 24.1 New modules
 
-1. First candidate exists: select it.
-2. First missing, second exists: select second.
-3. Both exist: select first and warn.
-4. Neither exists, `create=False`: return clear error.
-5. Neither exists, `create=True`: create first.
-6. First exists but is unreadable: error; do not fall through.
-7. `~` resolves correctly under a systemd user service.
+```text
+src/local_transcribe/services/queue_paths.py
+src/local_transcribe/services/queue_models.py
+src/local_transcribe/services/queue_store.py
+src/local_transcribe/services/source_reservations.py
+src/local_transcribe/services/worker.py
+src/local_transcribe/services/worker_lock.py
+src/local_transcribe/services/worker_state.py
+src/local_transcribe/services/atomic_files.py
+src/local_transcribe/services/model_cache.py
+src/local_transcribe/services/download_admission.py
+src/local_transcribe/services/mount_validation.py
+```
 
-### 22.2 Enqueue tests
+### 24.2 Modify `cli.py`
 
-1. Enqueue a new YouTube URL.
-2. Enqueue an alternate URL for the same video.
-3. Concurrent duplicate enqueue attempts produce one final job.
-4. Existing transcript prevents enqueue.
-5. `--force` behaves according to specification.
-6. Temporary file is removed after failed enqueue.
-7. Malformed source is rejected.
-8. Local files produce stable hashed job IDs.
+* Add `queue` and `worker` Typer apps.  
+* Convert `transcribe` to enqueue-and-wait; keep `--direct`.  
+* Convert `batch` to bulk enqueue.  
+* Stop treating `batch_status.json` as authoritative.  
 
-### 22.3 Worker tests
+### 24.3 Modify `transcriber.py`
 
-1. Worker processes one job at a time.
-2. Second local worker refuses to start.
-3. Highest-priority pending job runs first.
-4. Equal-priority jobs run oldest first.
-5. Interactive job does not interrupt the active job.
-6. Successful job produces valid transcript and completed record.
-7. Output validation failure prevents completion.
-8. Graceful termination returns active work to a recoverable state.
-9. Startup recovers abandoned processing jobs.
-10. Worker reuses the same Whisper model.
-11. Worker reloads the model when options change.
+* Separate model construction from transcription.  
+* Accept reusable model / provider.  
+* Atomic transcript publisher.  
+* Stop using shared output dir as media scratch.  
+* Structured result including effective device/compute type.  
 
-### 22.4 Rate-limit tests
+### 24.4 Modify `downloader.py`
 
-1. Background and interactive jobs use one rate state file.
-2. Local-file jobs do not consume download allowance.
-3. Minimum download interval is enforced.
-4. Hourly limit delays processing.
-5. Daily limit delays processing.
-6. 429 sets global `blocked_until`.
-7. Retry-After is honored.
-8. Exponential fallback backoff works.
-9. Malformed rate state is recovered safely.
-10. Only the worker writes rate state.
+* Job-local scratch directory.  
+* Structured metadata and categorized errors.  
+* Process-group cancellation and timeouts.  
+* Stream sanitized logs.  
+* Remove broad `--ignore-errors`.  
 
-### 22.5 Integration tests
+### 24.5 Replace rate limiter role
 
-1. `ref` and `lt transcribe` submit the same URL simultaneously.
-2. Only one job is created.
-3. Only one transcription runs.
-4. `lt transcribe` waits for an existing `ref` job and returns its output.
-5. `lt batch` deduplicates against jobs submitted by `ref`.
-6. `ref` continues when queue integration is unavailable.
-7. Pending-file import is idempotent.
-8. Reconciliation updates only the transcript field.
+New admission controller exclusively for the NLM lock holder; atomic persist before each YouTube download.
 
-### 22.6 NFS tests
+### 24.6 Deprecate `status_store.py` as authority
 
-Run integration tests against the actual NFS mount:
-
-1. Temporary-to-pending rename.
-2. Pending-to-processing rename.
-3. Processing-to-completed rename.
-4. Concurrent job visibility.
-5. Final transcript temporary rename.
-6. Recovery after worker termination.
-7. Mount interruption and restoration.
-8. Behavior when the mount becomes read-only.
+Retain for legacy import, compatibility generation, and reporting only.
 
 ---
 
-## 23. Acceptance Criteria
+## 25. Testing Requirements
 
-The implementation is complete when all of the following are true:
+Unit tests alone are insufficient. Correctness depends on server, client, mount, firewall, NLM, and NSM behavior.
 
-1. `ref` can enqueue blocked YouTube transcripts.
-2. `lt batch` can enqueue multiple jobs.
-3. `lt transcribe <source>` uses the same queue.
-4. Only one worker executes jobs.
-5. The worker processes exactly one job at a time.
-6. All YouTube downloads share one rate-limit controller.
-7. Interactive submissions receive higher pending priority.
-8. Interactive submissions do not bypass or interrupt active work.
-9. The queue works from either required environment path.
-10. The first existing candidate path is always selected.
-11. No authoritative queue state depends on SQLite.
-12. No authoritative queue state depends on `transcript-pending.md`.
-13. Job state transitions use atomic same-filesystem renames.
-14. Temporary media remains local by default.
-15. Final transcripts may be stored on NFS.
-16. Duplicate sources do not create duplicate active jobs.
-17. Worker crashes do not permanently strand jobs.
-18. A job is never completed before transcript validation.
-19. Existing pending files can be imported safely.
-20. Existing workflows remain usable during migration.
+### 25.1 Two-client NLM lock tests
+
+From two NFS clients:
+
+1. Client A opens `worker.lock` and obtains nonblocking exclusive POSIX lock.  
+2. Client B attempts the same; must see contention.  
+3. Client A exits without explicit unlock; B eventually acquires.  
+4. Repeat with client A rebooted.  
+5. Repeat with NFS server restarted (grace periods).  
+6. Confirm firewalls do not block lock/statd traffic.  
+
+### 25.2 Mount validation tests
+
+Startup must fail for: `nolock`; `local_lock=posix`; `local_lock=all`; `soft` / `softerr`; wrong server/export; wrong queue UUID; unmounted mountpoint with local dir; read-only; NLM unavailable.
+
+### 25.3 Queue race tests
+
+* Two hosts enqueue the same source → one reservation, one current generation.  
+* Enqueue races pending→processing.  
+* Enqueue races completion.  
+* Force generation races normal enqueue.  
+* Stale processing recovery does not overwrite a newer generation.  
+* Stale process cannot publish over a newer transcript.  
+
+### 25.4 Worker tests
+
+* Only one worker obtains the NLM lock.  
+* Standby obtains ownership after active exit.  
+* Worker never replaces the lock file pathname.  
+* Multiple processing files → health warning.  
+* Recovery for completed transcript + leftover processing record.  
+* Recovery for invalid transcript.  
+* Model cache reuse and reload.  
+* Local-file shared-root and host-affinity rules.  
+
+### 25.5 Interruption tests
+
+Kill worker during download, transcription, transcript temp write, and after transcript publish before queue completion. Interrupt NFS during transitions. Restore and verify deterministic recovery.
+
+### 25.6 Admission and integration tests
+
+* Shared rate state for all origins.  
+* Local files do not consume download budget.  
+* Interval and hourly/daily budgets.  
+* 429 / temporary 403 classification.  
+* `ref` + `lt transcribe` same URL → one reservation.  
+* `ref` continues when queue unavailable.  
+* Pending import idempotent.  
+
+### 25.7 Atomic publication tests
+
+* `link()` create-if-absent for keys and pending.  
+* Concurrent duplicate key publication → one winner.  
+* `atomic_write_json` never leaves truncated durable files.  
 
 ---
 
-## 24. Implementation Phases
+## 26. Acceptance Criteria
 
-### Phase 1: Queue foundation
+1. Every normal transcription request is represented by a durable execution record.  
+2. `lt transcribe`, `lt batch`, and `ref-cli` share the same queue.  
+3. One permanent source reservation exists per canonical source.  
+4. Duplicate submissions resolve to the existing source reservation.  
+5. Only the holder of the NLM-backed POSIX worker lock may execute or modify authoritative queue state.  
+6. Worker ownership does not depend on timestamps, JSON heartbeat age, or rename-to-steal.  
+7. The worker lock file is never renamed or replaced while locked.  
+8. All clients use NFSv3 with functional NLM and NSM support.  
+9. Unsafe mounts using `nolock`, local-only POSIX locks, or soft timeout behavior are rejected.  
+10. All YouTube downloads share one enforced admission controller.  
+11. Temporary media stays on local worker storage.  
+12. Final transcripts may be stored on NFS.  
+13. Transcript output is published atomically and validated before completion.  
+14. A stale execution cannot overwrite a newer generation.  
+15. Worker crashes leave recoverable state.  
+16. Client and server reboot recovery is tested on the actual NFS environment.  
+17. The same Whisper model is reused across compatible jobs.  
+18. Local-file jobs are processed only on a host that can access the source (shared root or affinity).  
+19. Cookie contents never enter queue metadata or logs.  
+20. Legacy files remain compatibility artifacts, not queue authorities.  
+21. Duplicate computation around a failure cannot create duplicate authoritative completion records.  
+22. The design does not claim absolute exactly-once execution where the underlying systems cannot provide it.  
+23. Queue path is explicit; multi-candidate silent discovery is not used.  
+24. Default `lt transcribe` uses the queue; `--direct` is opt-in only.  
 
-Create:
+---
 
-```text
-queue_paths.py
-job.py
-queue_store.py
-```
+## 27. Implementation Phases
 
-Implement:
+### Phase 1: Atomic file foundation
 
-* Queue resolution.
-* Directory initialization.
-* Job schema.
-* Safe enqueue.
-* Deduplication.
-* Queue listing.
-* Atomic metadata replacement.
+Queue path configuration, UUID validation, mount validation, atomic JSON writing, atomic transcript publication, source reservations, one-file-per-execution schema. **Do not change normal CLI behavior yet.**
 
-### Phase 2: Worker execution
+### Phase 2: NFSv3 worker ownership
 
-Create:
+Stable `worker.lock`, POSIX record locking via `fcntl`, NLM environment diagnostics, standby retry, worker state reporting, two-client integration tests. **No heartbeat lease or stale lock stealing.**
 
-```text
-worker.py
-worker_state.py
-```
+### Phase 3: Worker execution
 
-Implement:
+Claiming, processing recovery, local scratch dirs, structured downloader results, model cache, transcript validation, terminal state transitions, generation checks.
 
-* Local singleton lock.
-* Worker heartbeat.
-* Job selection.
-* Job claim.
-* Sequential processing.
-* State transitions.
-* Startup recovery.
-* Local temporary media management.
+### Phase 4: Shared download admission
 
-### Phase 3: Shared rate admission
+Minimum interval, hourly/daily budgets, global backoff, 429 handling, temporary 403 classification, persistent `blocked_until`.
 
-Refactor:
+### Phase 5: CLI migration
 
-```text
-rate_limiter.py
-```
-
-Implement:
-
-* Shared worker-owned state.
-* Hard admission delays.
-* 429 and 403 classification.
-* Retry scheduling.
-* Global backoff.
-
-### Phase 4: CLI migration
-
-Modify:
-
-```text
-cli.py
-```
-
-Implement:
-
-* Queue commands.
-* Worker commands.
-* `lt transcribe` enqueue-and-wait.
-* `lt batch` bulk enqueue.
-* Foreground worker fallback.
-* Queue-aware status.
-
-### Phase 5: systemd integration
-
-Implement:
-
-* User service generation.
-* Install/start/stop/status/log commands.
-* Executable path detection.
-* Explicit lingering guidance.
+Convert `lt transcribe`, `lt batch`, `lt status`, `lt report`. Add `lt queue` and `lt worker`. Retain `--direct` only as explicit override.
 
 ### Phase 6: Legacy migration
 
-Implement:
-
-* Pending-file import.
-* Pending-file export.
-* Compatibility generation for `finished.dat`.
-* Compatibility generation for `batch_status.json`.
-* Queue repair command.
+Pending-file import/export, `finished.dat` / `batch_status.json` generation, reconciliation against reservations, executions, and transcripts.
 
 ### Phase 7: `ref-cli` integration
 
-Implement:
-
-* Queue adapter.
-* Graceful fallback.
-* Pending marker handling.
-* Transcript reconciliation command.
-* Cross-project tests.
+Enqueue without waiting; graceful fallback when the queue is unavailable; reconcile-transcripts.
 
 ### Phase 8: Hardening
 
-Complete:
-
-* Real NFS integration testing.
-* Mount interruption testing.
-* Security review.
-* Logging review.
-* Upgrade and rollback documentation.
-* Final acceptance tests.
+Real two-host NFSv3 race tests, client/server reboot tests, firewall validation, security review, upgrade/rollback documentation.
 
 ---
 
-## 25. Non-Goals
+## 28. Non-Goals
 
 The first implementation will not support:
 
-* Multiple active workers across multiple hosts.
-* Distributed consensus.
-* Parallel transcription.
-* Parallel downloading.
-* A web-based queue interface.
-* Remote worker APIs.
-* Automatic cookie synchronization.
-* Automatic modification of `references.md` by `local-transcribe`.
-* Replacing the transcript JSON format.
-* Storing temporary downloaded media permanently on NFS.
-* SQLite or another embedded database as authoritative queue storage.
+* Multiple simultaneously active workers (single NLM lock holder only; multi-host standby OK)  
+* Distributed consensus beyond NLM  
+* Parallel transcription or parallel downloading  
+* Web UI or remote worker APIs  
+* Automatic cookie synchronization  
+* Automatic modification of `references.md` by `local-transcribe`  
+* Replacing the transcript JSON format  
+* Storing temporary downloaded media permanently on NFS  
+* SQLite or another embedded DB as authoritative queue storage  
+* Application-level timestamp leases or rename-to-steal ownership  
+* Multi-path automatic queue discovery  
+* Automatic local-file staging (host affinity + shared roots only for v1)  
 
 ---
 
-## 26. Final Architecture
+## 29. Final Architecture
 
 ```text
-                         NFS transcript environment
+                         NFSv3 transcript environment
 ┌───────────────────────────────────────────────────────────────────┐
 │                                                                   │
-│  resolved transcription-queue/                                    │
-│  ├── pending/                                                      │
-│  ├── processing/                                                   │
-│  ├── retry/                                                        │
-│  ├── completed/                                                    │
-│  ├── failed/                                                       │
-│  └── worker/rate-limit.json                                        │
+│  configured transcription-queue/                                  │
+│  ├── queue.id                     (identity marker)               │
+│  ├── keys/                        (permanent source reservations) │
+│  ├── pending/                     (execution files)               │
+│  ├── processing/                                                  │
+│  ├── retry/                                                       │
+│  ├── completed/                                                   │
+│  ├── failed/                                                      │
+│  └── worker/                                                      │
+│      ├── worker.lock              (NLM POSIX lock target)         │
+│      ├── state.json               (diagnostic only)               │
+│      └── rate-limit.json          (admission; lock holder only)   │
 │                                                                   │
-│  final transcript JSON files                                      │
+│  final transcript JSON (+ optional generation history)            │
 │                                                                   │
 └───────────────────────────────────────────────────────────────────┘
-                ▲                         ▲
-                │ enqueue                 │ final validated output
-                │                         │
-       ┌────────┴────────┐       ┌────────┴────────────┐
-       │                 │       │                     │
-   ref-cli         lt commands   │ single worker       │
-                  transcribe     │ systemd --user      │
-                  batch          │                     │
-                  queue          │ yt-dlp              │
-                                 │ faster-whisper      │
-                                 │ local temp audio    │
-                                 └─────────────────────┘
+        ▲                ▲                        ▲
+        │ link() publish │ link() publish        │ NLM lock + renames
+        │ keys + pending │ keys + pending        │ + validated output
+   ┌────┴─────┐    ┌─────┴─────────┐    ┌────────┴────────────┐
+   │          │    │               │    │ single NLM holder   │
+   │ ref-cli  │    │ lt commands   │    │ (any one host)      │
+   │          │    │  transcribe   │    │ systemd --user      │
+   │          │    │  batch        │    │ yt-dlp              │
+   │          │    │  queue        │    │ faster-whisper      │
+   │          │    │               │    │ local temp audio    │
+   └──────────┘    └───────────────┘    └─────────────────────┘
 ```
 
-The architectural boundary is:
+Boundary:
 
-> Producers submit durable job files. One worker performs every download and transcription.
+> Producers on any host publish durable reservations and executions atomically. Exactly one NLM lock holder, on any host, performs every download and transcription and is the sole publisher of authoritative completion state.
 
-This boundary guarantees sequential work, shared pacing, consistent queue discovery, NFS-compatible durability, and predictable recovery.
+NFS stores durable shared files. NLM provides cooperative cross-host exclusion. The queue application owns source identity, generations, idempotent recovery, retries, admission, and artifact validation.
 
+That division is simpler, easier to test, and safer than an application-managed stale heartbeat lease.
