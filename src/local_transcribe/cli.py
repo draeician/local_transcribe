@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -19,6 +20,13 @@ from local_transcribe.utils.youtube import is_valid_youtube_url
 
 app = typer.Typer(help="Local transcription with Whisper (YouTube URLs or audio files)")
 console = Console(force_terminal=True)
+
+# Queue / worker sub-apps (SPEC-queue v3)
+from local_transcribe.cli_queue import queue_app  # noqa: E402
+from local_transcribe.cli_worker import worker_app  # noqa: E402
+
+app.add_typer(queue_app, name="queue")
+app.add_typer(worker_app, name="worker")
 
 # Default values
 DEFAULT_MODEL = "medium"
@@ -66,9 +74,30 @@ def transcribe(
         "--sleep-interval-requests",
         help="Seconds to sleep between yt-dlp requests (YouTube only)",
     ),
+    direct: bool = typer.Option(
+        False,
+        "--direct",
+        help="Emergency/dev: run in-process without the queue (not the default)",
+    ),
+    no_wait: bool = typer.Option(
+        False,
+        "--no-wait",
+        help="Enqueue and return without waiting for the worker (queue mode)",
+    ),
+    timeout: Optional[float] = typer.Option(
+        None,
+        "--timeout",
+        help="Seconds to wait for queue completion (default: wait indefinitely)",
+    ),
+    force: bool = typer.Option(False, "--force", help="Force a new queue generation"),
+    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
-    """Transcribe one YouTube video or one local audio file."""
+    """Transcribe one YouTube video or one local audio file.
+
+    Default: enqueue into the transcription queue (interactive priority) and wait.
+    Use --direct for legacy in-process execution.
+    """
     raw = source.strip()
     expanded = Path(raw).expanduser()
 
@@ -123,6 +152,88 @@ def transcribe(
             sleep_interval_requests=sleep_interval_requests if sleep_interval_requests is not None else None,
         )
 
+        if not direct:
+            # Queue mode (default)
+            from local_transcribe.services.queue_models import ExecutionOptions
+            from local_transcribe.services.queue_paths import (
+                QueuePathError,
+                resolve_queue_dir,
+            )
+            from local_transcribe.services.queue_store import QueueStore
+
+            try:
+                qdir = resolve_queue_dir(
+                    queue_dir=Path(queue_dir) if queue_dir else None
+                )
+            except QueuePathError as exc:
+                console.print(f"[red]✗[/red] Queue not configured: {exc}")
+                console.print(
+                    "[dim]Configure queue.path or pass --queue-dir, "
+                    "or use --direct for emergency in-process mode.[/dim]"
+                )
+                raise typer.Exit(1) from exc
+
+            store = QueueStore(qdir)
+            opts = ExecutionOptions(
+                model=model,
+                device=device,
+                compute_type=compute_type,
+                keep_audio=keep_audio,
+            )
+            result = store.enqueue(
+                str(expanded.resolve()) if is_local else raw,
+                origin="lt-transcribe",
+                priority=100,
+                force=force,
+                options=opts,
+            )
+            console.print(
+                f"[green]✓[/green] Queue {result.kind}: {result.source_key}"
+            )
+            if result.execution:
+                console.print(f"  execution_id={result.execution.execution_id}")
+            if result.kind == "already_completed":
+                if result.transcript_path:
+                    console.print(f"[green]✓[/green] Done. Wrote: {result.transcript_path}")
+                else:
+                    console.print("[green]✓[/green] Already completed (transcript on record)")
+                return
+            if no_wait:
+                if result.transcript_path:
+                    console.print(f"  transcript={result.transcript_path}")
+                console.print("[dim]--no-wait: not waiting for worker[/dim]")
+                return
+            if result.execution is None:
+                console.print(
+                    f"[red]✗[/red] Nothing to wait for ({result.kind}): {result.message}"
+                )
+                raise typer.Exit(1)
+
+            from local_transcribe.services.queue_wait import wait_for_execution
+
+            console.print("[dim]Waiting for worker…[/dim]")
+            outcome = wait_for_execution(
+                qdir,
+                result.execution.execution_id,
+                timeout_seconds=timeout,
+                ensure_worker=True,
+                validate_nfs=True,
+            )
+            if outcome.ok:
+                path = outcome.output_path or (
+                    str(result.transcript_path) if result.transcript_path else None
+                )
+                if path:
+                    console.print(f"[green]✓[/green] Done. Wrote: {path}")
+                else:
+                    console.print("[green]✓[/green] Done (execution completed)")
+                return
+            console.print(f"[red]✗[/red] {outcome.message}")
+            raise typer.Exit(1)
+
+        console.print(
+            "[yellow]![/yellow] --direct: bypassing queue (dev/emergency only)"
+        )
         if is_local:
             logger.info(f"Transcribing local file: {expanded.resolve()}")
             result_path = transcribe_local_file(expanded, cfg)
@@ -141,30 +252,136 @@ def transcribe(
 def batch(
     input: str = typer.Option(None, "--input", "-i", help="Input file with URLs (defaults to inputfile.txt in current directory)"),
     resume: bool = typer.Option(False, help="Resume from previous run"),
-    max_retries: int = typer.Option(2, help="Max retry attempts"),
+    max_retries: int = typer.Option(2, help="Max retry attempts (maps to queue max_attempts)"),
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
     device: str = typer.Option(DEFAULT_DEVICE, help="Device (cpu/cuda/auto)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
+    language: Optional[str] = typer.Option(None, "--language", help="Whisper language hint (queue mode)"),
+    keep_audio: bool = typer.Option(False, "--keep-audio", help="Keep downloaded audio (queue mode)"),
+    auth_profile: Optional[str] = typer.Option(
+        None, "--auth-profile", help="Auth/cookies profile name stored on the execution"
+    ),
     output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
     cookies_from_browser: str = typer.Option(None, help="Browser to extract cookies from"),
     cookies_file: str = typer.Option(None, help="Path to cookies.txt file"),
     sleep_interval: float = typer.Option(1.0, "--sleep-interval", help="Seconds to sleep between videos"),
     limit_rate: str = typer.Option(None, "--limit-rate", help="Max download rate (e.g., 200K, 4.2M)"),
     sleep_interval_requests: float = typer.Option(None, "--sleep-interval-requests", help="Seconds to sleep between yt-dlp requests"),
+    wait: bool = typer.Option(
+        False,
+        "--wait",
+        help="Wait for enqueued/active executions to finish (queue mode)",
+    ),
+    timeout: Optional[float] = typer.Option(
+        None,
+        "--timeout",
+        help="Seconds to wait per execution when using --wait (default: indefinite)",
+    ),
+    direct: bool = typer.Option(
+        False,
+        "--direct",
+        help="Legacy in-process batch pipeline (bypass queue)",
+    ),
+    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """
     Process multiple videos in batch.
-    
-    Transcribes all URLs from an input file, with automatic resume capability.
-    Status is tracked in batch_status.json and completed URLs are logged to finished.dat.
-    
-    Examples:
-        lt batch --input urls.txt              # Process URLs from file
-        lt batch --input urls.txt --resume     # Resume from previous run
-        lt batch --input urls.txt --model large # Use larger model
+
+    Default: bulk-enqueue URLs into the transcription queue.
+    Use --direct for the legacy BatchPipeline (in-process).
+    --resume is a compatibility no-op in queue mode (state is durable).
     """
     logger = configure_logging(verbose=verbose)
+
+    if not direct:
+        from local_transcribe.services.queue_models import ExecutionOptions
+        from local_transcribe.services.queue_paths import QueuePathError, resolve_queue_dir
+        from local_transcribe.services.queue_store import QueueStore
+        from local_transcribe.services.queue_wait import wait_for_execution
+
+        input_path = Path(input).expanduser() if input else Path("inputfile.txt")
+        if not input_path.is_file():
+            console.print(f"[red]✗[/red] Input file not found: {input_path}")
+            raise typer.Exit(1)
+        try:
+            qdir = resolve_queue_dir(queue_dir=Path(queue_dir) if queue_dir else None)
+        except QueuePathError as exc:
+            console.print(f"[red]✗[/red] Queue not configured: {exc}")
+            console.print("[dim]Use --direct for legacy batch, or configure queue.path[/dim]")
+            raise typer.Exit(1) from exc
+        if resume:
+            console.print("[dim]--resume ignored in queue mode (queue state is durable)[/dim]")
+
+        opts = ExecutionOptions(
+            model=model,
+            device=device,
+            compute_type=compute_type,
+            language=language,
+            keep_audio=keep_audio,
+            auth_profile=auth_profile,
+            limit_rate=limit_rate,
+            sleep_interval_requests=(
+                sleep_interval_requests if sleep_interval_requests is not None else None
+            ),
+        )
+        # Historical --max-retries is retries after the first attempt.
+        max_attempts = max(1, int(max_retries) + 1)
+        store = QueueStore(qdir)
+        urls = safe_read_lines(input_path)
+        counts = {
+            "enqueued": 0,
+            "existing_active": 0,
+            "already_completed": 0,
+            "requires_force": 0,
+            "other": 0,
+        }
+        wait_ids: list[str] = []
+        for url in urls:
+            url = url.strip()
+            if not url or url.startswith("#"):
+                continue
+            result = store.enqueue(
+                url,
+                origin="lt-batch",
+                priority=10,
+                options=opts,
+                max_attempts=max_attempts,
+            )
+            key = result.kind if result.kind in counts else "other"
+            counts[key] = counts.get(key, 0) + 1
+            if result.execution and result.kind in {"enqueued", "existing_active"}:
+                wait_ids.append(result.execution.execution_id)
+
+        console.print(f"[green]✓[/green] Batch enqueue summary: {counts}")
+
+        if wait and wait_ids:
+            console.print(
+                f"[dim]Waiting for {len(wait_ids)} execution(s)…[/dim]"
+            )
+            failures = 0
+            for eid in wait_ids:
+                outcome = wait_for_execution(
+                    qdir,
+                    eid,
+                    timeout_seconds=timeout,
+                    ensure_worker=True,
+                    validate_nfs=True,
+                )
+                if outcome.ok:
+                    console.print(
+                        f"  [green]✓[/green] {eid}: {outcome.output_path or 'completed'}"
+                    )
+                else:
+                    failures += 1
+                    console.print(f"  [red]✗[/red] {eid}: {outcome.message}")
+            if failures:
+                console.print(f"[red]✗[/red] Batch wait finished with {failures} failure(s)")
+                raise typer.Exit(1)
+            console.print("[green]✓[/green] Batch wait complete")
+        elif wait and not wait_ids:
+            console.print("[dim]--wait: nothing active to wait for[/dim]")
+        return
     
     # Check prerequisites
     from local_transcribe.utils.doctor import check_deno_with_guidance, check_pytorch_with_guidance
@@ -536,37 +753,119 @@ def verify(
 
 @app.command()
 def status(
-    store: str = typer.Option(None, help="Status store file (defaults to output_dir/batch_status.json)"),
-    output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Transcript output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
+    store: str = typer.Option(
+        None,
+        help="Legacy status store file (compat only; ignored when queue is available)",
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help=f"Transcript / compat output directory (defaults to {DEFAULT_OUTPUT_DIR})",
+    ),
+    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    write_compat: bool = typer.Option(
+        True,
+        "--write-compat/--no-write-compat",
+        help="Regenerate batch_status.json from queue authority (compatibility only)",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
-    """Show batch processing status."""
+    """Show queue-authoritative status (worker lock + execution counts).
+
+    ``batch_status.json`` is compatibility output only, not authority.
+    """
     logger = configure_logging(verbose=verbose, log_file_prefix="status")
-    
+
     try:
-        # Handle defaults properly
         if output_dir is None or not isinstance(output_dir, str):
             output_path = Path(DEFAULT_OUTPUT_DIR).expanduser()
         else:
             output_path = Path(output_dir).expanduser()
-        
+
+        from local_transcribe.services.queue_paths import QueuePathError, resolve_queue_dir
+        from local_transcribe.services.queue_reporting import (
+            summarize_queue,
+            write_compat_batch_status,
+        )
+
+        qdir: Path | None = None
+        try:
+            qdir = resolve_queue_dir(
+                queue_dir=Path(queue_dir) if queue_dir else None
+            )
+        except QueuePathError:
+            qdir = None
+
+        if qdir is not None:
+            summary = summarize_queue(qdir)
+            console.print("\n[bold]Queue Status[/bold] (authoritative)")
+            console.print(f"[dim]queue: {qdir}[/dim]")
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("State")
+            table.add_column("Count")
+            table.add_row("Total", str(summary.total))
+            for name in (
+                "pending",
+                "processing",
+                "retry",
+                "completed",
+                "failed",
+                "cancelled",
+            ):
+                table.add_row(name, str(summary.counts.get(name, 0)))
+            table.add_row(
+                "completed (validated transcript)",
+                f"[green]{summary.completed_validated}[/green]",
+            )
+            if summary.completed_missing_transcript:
+                table.add_row(
+                    "completed (missing transcript)",
+                    f"[yellow]{summary.completed_missing_transcript}[/yellow]",
+                )
+            console.print(table)
+            console.print(f"Worker NLM lock: {summary.worker_lock}")
+            if summary.worker_state_active:
+                console.print(
+                    f"Worker state: active"
+                    + (
+                        f" (execution={summary.worker_current_execution_id})"
+                        if summary.worker_current_execution_id
+                        else ""
+                    )
+                )
+            else:
+                console.print("Worker state: inactive / none")
+
+            if write_compat:
+                compat_path = output_path / "batch_status.json"
+                write_compat_batch_status(qdir, compat_path)
+                console.print(
+                    f"[dim]Wrote compatibility batch_status.json → {compat_path}[/dim]"
+                )
+            return
+
+        # Legacy fallback — not authoritative
+        console.print(
+            "[yellow]![/yellow] Queue not configured; showing legacy "
+            "batch_status.json (not authoritative)"
+        )
         if store is None or not isinstance(store, str):
             store_path = output_path / "batch_status.json"
         else:
             store_path = Path(store).expanduser()
         status_store = JsonStatusStore(store_path)
         statuses = status_store.load()
-        
+
         if not statuses:
             console.print("[yellow]No status data found[/yellow]")
             return
-        
-        # Count by status
+
         counts = {"pending": 0, "processing": 0, "completed": 0, "failed": 0}
         for s in statuses.values():
             counts[s.status] = counts.get(s.status, 0) + 1
-        
-        console.print("\n[bold]Batch Status[/bold]")
+
+        console.print("\n[bold]Batch Status[/bold] (legacy compat)")
         table = Table(show_header=True, header_style="bold")
         table.add_column("Status")
         table.add_column("Count")
@@ -576,7 +875,7 @@ def status(
         table.add_row("Completed", f"[green]{counts['completed']}[/green]")
         table.add_row("Failed", f"[red]{counts['failed']}[/red]")
         console.print(table)
-        
+
     except Exception as e:
         logger.error(f"Status check failed: {e}", exc_info=verbose)
         console.print(f"[red]✗[/red] Error: {e}")
@@ -585,39 +884,84 @@ def status(
 
 @app.command()
 def report(
-    store: str = typer.Option(None, help="Status store file (defaults to output_dir/batch_status.json)"),
-    output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Transcript output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
-    out: str = typer.Option("logs/failed_videos.txt", help="Output report file"),
+    store: str = typer.Option(
+        None,
+        help="Legacy status store file (compat only; ignored when queue is available)",
+    ),
+    output_dir: str = typer.Option(
+        None,
+        "--output-dir",
+        "-o",
+        help=f"Transcript / compat output directory (defaults to {DEFAULT_OUTPUT_DIR})",
+    ),
+    out: str = typer.Option(
+        str(Path.home() / ".local" / "state" / "local-transcribe" / "failed_videos.txt"),
+        help="Output report file",
+    ),
+    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    write_compat: bool = typer.Option(
+        True,
+        "--write-compat/--no-write-compat",
+        help="Also regenerate batch_status.json from queue authority",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
-    """Generate failure report."""
+    """Generate failure report from queue authority (failed + cancelled)."""
     logger = configure_logging(verbose=verbose, log_file_prefix="report")
-    
+
     try:
-        # Handle defaults properly
         if output_dir is None or not isinstance(output_dir, str):
             output_path = Path(DEFAULT_OUTPUT_DIR).expanduser()
         else:
             output_path = Path(output_dir).expanduser()
-        
+
+        from local_transcribe.services.queue_paths import QueuePathError, resolve_queue_dir
+        from local_transcribe.services.queue_reporting import (
+            write_compat_batch_status,
+            write_failure_report,
+        )
+
+        try:
+            qdir = resolve_queue_dir(
+                queue_dir=Path(queue_dir) if queue_dir else None
+            )
+        except QueuePathError:
+            qdir = None
+
+        if qdir is not None:
+            report_path, n = write_failure_report(qdir, Path(out))
+            if write_compat:
+                write_compat_batch_status(qdir, output_path / "batch_status.json")
+            if n == 0:
+                console.print("[green]No failed/cancelled executions[/green]")
+                return
+            console.print(f"[green]✓[/green] Report written: {report_path}")
+            console.print(f"Failed/cancelled executions: {n}")
+            return
+
+        console.print(
+            "[yellow]![/yellow] Queue not configured; using legacy "
+            "batch_status.json (not authoritative)"
+        )
         if store is None or not isinstance(store, str):
             store_path = output_path / "batch_status.json"
         else:
             store_path = Path(store).expanduser()
         status_store = JsonStatusStore(store_path)
         statuses = status_store.load()
-        
+
         failed = [s for s in statuses.values() if s.status == "failed"]
-        
+
         if not failed:
             console.print("[green]No failed videos[/green]")
             return
-        
-        output_path = Path(out)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        report_path = Path(out)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+
         from datetime import datetime
-        with open(output_path, 'w', encoding='utf-8') as f:
+
+        with open(report_path, "w", encoding="utf-8") as f:
             f.write(f"Failed Videos Report - {datetime.now()}\n")
             f.write("=" * 80 + "\n\n")
             for v in failed:
@@ -626,10 +970,10 @@ def report(
                 f.write(f"Attempts: {v.attempts}\n")
                 f.write(f"Error: {v.error_message}\n")
                 f.write("-" * 80 + "\n")
-        
-        console.print(f"[green]✓[/green] Report written: {output_path}")
+
+        console.print(f"[green]✓[/green] Report written: {report_path}")
         console.print(f"Failed videos: {len(failed)}")
-        
+
     except Exception as e:
         logger.error(f"Report generation failed: {e}", exc_info=verbose)
         console.print(f"[red]✗[/red] Error: {e}")
@@ -767,29 +1111,20 @@ def main(
         console.print(f"local-transcribe version {__version__}")
         raise typer.Exit(0)
     
-    # First-run check: Auto-upgrade PyTorch to CUDA version if needed
-    # Only run for actual commands (not --help), in pipx environment, and if marker doesn't exist
+    # First-run: auto-install CUDA torch when NVIDIA hardware is present.
     if ctx.invoked_subcommand is not None:
         from local_transcribe.utils.doctor import (
-            is_pipx_environment,
-            has_pytorch_upgrade_marker,
+            detect_cuda_availability,
             ensure_pytorch_cuda,
+            has_pytorch_upgrade_marker,
         )
-        
-        # Only attempt auto-upgrade in pipx environment and if marker doesn't exist
-        if is_pipx_environment() and not has_pytorch_upgrade_marker():
-            # Attempt to upgrade PyTorch to CUDA version if CUDA is available
+
+        if not has_pytorch_upgrade_marker() and detect_cuda_availability():
             success, message = ensure_pytorch_cuda()
-            if success:
-                # Silent success - PyTorch was upgraded or already has CUDA
-                pass
-            elif "CUDA not available" in message:
-                # CUDA not available - this is fine, keep CPU version
-                pass
-            elif "PyTorch not installed" in message:
-                # PyTorch not installed yet - will be installed by dependencies
-                pass
-            # Other errors are logged but don't block execution
+            if success and "already" not in message.lower():
+                console.print(f"[green]✓[/green] {message}")
+            elif not success and "CUDA not available" not in message:
+                console.print(f"[yellow]![/yellow] CUDA torch: {message}")
     
     # Show startup warnings once per session (only for actual commands, not --help)
     if not _startup_warnings_shown and ctx.invoked_subcommand is not None:

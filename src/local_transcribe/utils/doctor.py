@@ -387,73 +387,90 @@ def create_pytorch_upgrade_marker() -> None:
     marker_path.touch()
 
 
-def ensure_pytorch_cuda() -> Tuple[bool, str]:
-    """
-    Ensure PyTorch with CUDA support is installed.
-    
-    Returns:
-        Tuple of (success: bool, message: str)
-    """
-    # Check if CUDA is available
-    if not detect_cuda_availability():
-        return False, "CUDA not available on this system"
-    
-    # Check if PyTorch is installed
-    pytorch_installed, _ = check_pytorch_installed()
-    if not pytorch_installed:
-        return False, "PyTorch not installed"
-    
-    # Check if PyTorch has CUDA support
-    try:
-        import torch
-        if torch.cuda.is_available():
-            # CUDA is available, create marker if it doesn't exist
-            if not has_pytorch_upgrade_marker():
-                create_pytorch_upgrade_marker()
-            return True, "PyTorch with CUDA already installed"
-    except ImportError:
-        return False, "PyTorch import failed"
-    
-    # PyTorch is installed but doesn't have CUDA - upgrade needed
+def _install_pytorch_cuda_wheels() -> Tuple[bool, str]:
+    """Install/upgrade CUDA torch wheels into the current pipx env."""
     if not is_pipx_environment():
-        return False, "Not in pipx environment, cannot auto-upgrade"
-    
-    # Attempt to upgrade PyTorch to CUDA version
+        # Fall back to the active interpreter's pip (venv / editable installs).
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "torch",
+            "torchvision",
+            "torchaudio",
+            "--index-url",
+            "https://download.pytorch.org/whl/cu124",
+        ]
+    else:
+        cmd = [
+            "pipx",
+            "runpip",
+            "local-transcribe",
+            "install",
+            "--upgrade",
+            "torch",
+            "torchvision",
+            "torchaudio",
+            "--index-url",
+            "https://download.pytorch.org/whl/cu124",
+        ]
     try:
-        import sys
-        # Use pipx runpip to upgrade
         result = subprocess.run(
-            [
-                "pipx", "runpip", "local-transcribe", "install", "--upgrade",
-                "torch", "torchvision", "torchaudio",
-                "--index-url", "https://download.pytorch.org/whl/cu124"
-            ],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=600,  # 10 minutes timeout for PyTorch download
+            timeout=900,
         )
-        
-        if result.returncode == 0:
-            # Verify CUDA is now available
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    # Success! Create marker file
-                    create_pytorch_upgrade_marker()
-                    return True, "PyTorch upgraded to CUDA version successfully"
-                else:
-                    return False, "PyTorch upgraded but CUDA not available (may need restart)"
-            except ImportError:
-                return False, "PyTorch upgrade completed but import failed"
-        else:
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            return False, f"PyTorch upgrade failed: {error_msg[:200]}"
     except subprocess.TimeoutExpired:
-        return False, "PyTorch upgrade timed out"
+        return False, "PyTorch CUDA install timed out"
     except FileNotFoundError:
-        return False, "pipx not found, cannot auto-upgrade"
-    except Exception as e:
-        return False, f"Error during PyTorch upgrade: {str(e)[:200]}"
+        return False, "pip/pipx not found, cannot auto-install CUDA torch"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Error during PyTorch CUDA install: {str(exc)[:200]}"
+
+    if result.returncode != 0:
+        error_msg = result.stderr or result.stdout or "Unknown error"
+        return False, f"PyTorch CUDA install failed: {error_msg[:300]}"
+
+    try:
+        import importlib
+
+        importlib.invalidate_caches()
+        import torch
+
+        if torch.cuda.is_available():
+            create_pytorch_upgrade_marker()
+            return True, "PyTorch with CUDA installed successfully"
+        return False, "PyTorch installed but CUDA not available (may need process restart)"
+    except ImportError:
+        return False, "PyTorch install completed but import failed"
+
+
+def ensure_pytorch_cuda() -> Tuple[bool, str]:
+    """Ensure PyTorch with CUDA when an NVIDIA GPU is present.
+
+    Detects ``nvidia-smi`` / ``nvcc``. If CUDA hardware is present and torch is
+    missing or CPU-only, installs CUDA wheels automatically (no manual
+    ``pipx inject`` / ``runpip`` step).
+    """
+    if not detect_cuda_availability():
+        return False, "CUDA not available on this system"
+
+    pytorch_installed, _ = check_pytorch_installed()
+    if pytorch_installed:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                if not has_pytorch_upgrade_marker():
+                    create_pytorch_upgrade_marker()
+                return True, "PyTorch with CUDA already installed"
+        except ImportError:
+            pass
+
+    return _install_pytorch_cuda_wheels()
 
 
 def run_diagnostics() -> Dict[str, Tuple[bool, str]]:

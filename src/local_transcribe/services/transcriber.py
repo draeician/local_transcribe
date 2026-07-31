@@ -1,10 +1,17 @@
-"""Transcription service with CUDA preflight and CPU fallback."""
+"""Transcription service with CUDA preflight and CPU fallback.
 
-import json
+Model construction (:func:`load_whisper_model`) is separate from transcription
+(:func:`transcribe_with_model`). Direct CLI paths publish via the generation-aware
+publisher — never truncate final transcript JSON in place.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import logging
 import os
 import re
 import sys
-import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,20 +19,26 @@ from typing import Optional
 
 from faster_whisper import WhisperModel
 
+from local_transcribe.services.transcript_publish import publish_transcript
 from local_transcribe.utils.youtube import pick_channel
 
+logger = logging.getLogger(__name__)
 
 CUDNN_CANDIDATES = [
     # Common cuDNN 9 sonames seen in recent distros
-    "libcudnn_ops.so.9.1.0", "libcudnn_ops.so.9.1", "libcudnn_ops.so.9",
+    "libcudnn_ops.so.9.1.0",
+    "libcudnn_ops.so.9.1",
+    "libcudnn_ops.so.9",
     # Fallback generic names (older/newer)
-    "libcudnn.so.9", "libcudnn.so",
+    "libcudnn.so.9",
+    "libcudnn.so",
 ]
 
 
 @dataclass
 class TranscribeConfig:
     """Configuration for transcription."""
+
     model: str = "medium"
     device: str = "cpu"
     compute_type: str = "int8"
@@ -51,16 +64,7 @@ def iso8601_from_ts(ts: Optional[float]) -> str:
 
 
 def build_output_json(meta: dict, transcript: str) -> dict:
-    """
-    Build output JSON structure from metadata and transcript.
-    
-    Args:
-        meta: Metadata dictionary from yt-dlp
-        transcript: Transcribed text
-        
-    Returns:
-        Dictionary with transcript and metadata
-    """
+    """Build output JSON structure from metadata and transcript."""
     vid = meta.get("id", "")
     title = meta.get("title", "")
     channel = pick_channel(meta)
@@ -100,58 +104,21 @@ def local_file_metadata(audio_path: Path) -> dict:
     }
 
 
-def transcribe_local_file(audio_path: Path, cfg: TranscribeConfig) -> Path:
-    """
-    Transcribe a local audio file and write transcript JSON (same shape as YouTube output).
-
-    Does not delete or modify the source file.
-    """
-    resolved = audio_path.resolve()
-    if not resolved.is_file():
-        raise ValueError(f"Not a regular file: {resolved}")
-
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    meta = local_file_metadata(resolved)
-    transcript = transcribe_audio(
-        audio_path=resolved,
-        model_name=cfg.model,
-        language=cfg.language,
-        device=cfg.device,
-        compute_type=cfg.compute_type,
-    )
-    output_obj = build_output_json(meta, transcript)
-    vid = output_obj["metadata"]["id"] or "output"
-    json_path = cfg.output_dir / f"{vid}.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(output_obj, f, ensure_ascii=False, indent=2)
-    return json_path
-
-
 def _cuda_preflight() -> tuple[bool, str]:
-    """
-    Try to decide if CUDA/cuDNN are usable *without crashing the process*.
-    
-    Returns:
-        Tuple of (ok, reason_if_not_ok)
-    """
-    # Respect explicit opt-out
+    """Try to decide if CUDA/cuDNN are usable without crashing the process."""
     if os.environ.get("CT2_USE_CUDA", "").strip() == "0":
         return False, "CT2_USE_CUDA=0"
 
-    # Check ctranslate2's view of GPUs
     try:
         import ctranslate2 as ct2  # type: ignore
+
         get_cnt = getattr(ct2, "get_cuda_device_count", None)
         if callable(get_cnt):
             if get_cnt() < 1:
                 return False, "No CUDA devices visible to ctranslate2"
-        else:
-            # Older ct2 builds might not expose this; continue checks
-            pass
     except Exception as e:
         return False, f"ctranslate2 import failed: {e}"
 
-    # Try to see if cuDNN is present (best-effort)
     try:
         for name in CUDNN_CANDIDATES:
             try:
@@ -164,52 +131,60 @@ def _cuda_preflight() -> tuple[bool, str]:
         return False, f"cuDNN probe error: {e}"
 
 
-def transcribe_audio(
-    audio_path: Path,
-    model_name: str = "medium",
-    language: Optional[str] = None,
-    beam_size: int = 5,
-    vad_filter: bool = True,
-    device: str = "cpu",
-    compute_type: str = "int8",
-) -> str:
-    """
-    Transcribe with faster-whisper.
-    
-    HARD CPU SAFEGUARD: If CUDA/cuDNN preflight fails, we force CPU by
-    setting CT2_USE_CUDA=0 *before* model init to prevent native aborts.
-    
-    Args:
-        audio_path: Path to audio file
-        model_name: Whisper model name
-        language: Language code (None for auto)
-        beam_size: Beam size for decoding
-        vad_filter: Enable VAD filtering
-        device: Device (cpu/cuda/auto)
-        compute_type: Compute type (int8/float16/etc)
-        
-    Returns:
-        Transcribed text string
-    """
-    lang_arg = None if (language is None or language.lower() == "auto") else language
-
-    # Preflight GPU if requested
+def resolve_device_and_compute(device: str, compute_type: str) -> tuple[str, str]:
+    """Apply CUDA preflight; return effective (device, compute_type)."""
     effective_device = device
     effective_compute = compute_type
     if device.lower() in ("cuda", "auto"):
         ok, reason = _cuda_preflight()
         if not ok:
-            # Force CPU at environment level (read by ctranslate2)
             os.environ["CT2_USE_CUDA"] = "0"
-            print(f"[warn] CUDA not usable ({reason}); forcing CPU int8.", file=sys.stderr)
+            print(
+                f"[warn] CUDA not usable ({reason}); forcing CPU int8.",
+                file=sys.stderr,
+            )
             effective_device = "cpu"
             effective_compute = "int8"
         else:
-            # Ensure GPU is allowed
             os.environ.pop("CT2_USE_CUDA", None)
+    return effective_device, effective_compute
 
-    # Initialize and run
-    model = WhisperModel(model_name, device=effective_device, compute_type=effective_compute)
+
+def load_whisper_model(
+    model_name: str,
+    device: str = "cpu",
+    compute_type: str = "int8",
+) -> tuple[WhisperModel, str, str]:
+    """Construct a WhisperModel after device preflight.
+
+    Returns:
+        (model, effective_device, effective_compute_type)
+    """
+    effective_device, effective_compute = resolve_device_and_compute(device, compute_type)
+    model = WhisperModel(
+        model_name, device=effective_device, compute_type=effective_compute
+    )
+    return model, effective_device, effective_compute
+
+
+def default_model_loader(model_name: str, device: str, compute_type: str) -> WhisperModel:
+    """Loader for :class:`ModelCache` (returns model only; device already effective)."""
+    model, _dev, _ct = load_whisper_model(
+        model_name, device=device, compute_type=compute_type
+    )
+    return model
+
+
+def transcribe_with_model(
+    model: WhisperModel,
+    audio_path: Path,
+    *,
+    language: Optional[str] = None,
+    beam_size: int = 5,
+    vad_filter: bool = True,
+) -> str:
+    """Run transcription with an already-loaded WhisperModel."""
+    lang_arg = None if (language is None or language.lower() == "auto") else language
     segments, _info = model.transcribe(
         str(audio_path),
         language=lang_arg,
@@ -224,26 +199,77 @@ def transcribe_audio(
     return " ".join(parts)
 
 
-def transcribe_url(url: str, cfg: TranscribeConfig, cleanup_callback=None) -> Path:
+def transcribe_audio(
+    audio_path: Path,
+    model_name: str = "medium",
+    language: Optional[str] = None,
+    beam_size: int = 5,
+    vad_filter: bool = True,
+    device: str = "cpu",
+    compute_type: str = "int8",
+) -> str:
+    """Transcribe with faster-whisper (constructs a one-shot model).
+
+    Prefer :func:`load_whisper_model` + :func:`transcribe_with_model` (or
+    :class:`~local_transcribe.services.model_cache.ModelCache`) for reuse.
     """
-    Transcribe a YouTube URL: download audio, transcribe, save JSON.
-    
-    Args:
-        url: YouTube video URL
-        cfg: Transcription configuration
-        cleanup_callback: Optional callback function(Path) called with audio_path after download
-        
-    Returns:
-        Path to output JSON file
-        
-    Raises:
-        RuntimeError: If download or transcription fails
-    """
-    from local_transcribe.services.downloader import download_audio_and_metadata
-    
+    model, _dev, _ct = load_whisper_model(
+        model_name, device=device, compute_type=compute_type
+    )
+    return transcribe_with_model(
+        model,
+        audio_path,
+        language=language,
+        beam_size=beam_size,
+        vad_filter=vad_filter,
+    )
+
+
+def _publish_direct_payload(
+    cfg: TranscribeConfig,
+    payload: dict,
+    *,
+    source_key: str,
+    generation: int = 1,
+) -> Path:
+    """Publish direct-mode transcript atomically (generation 1 by default)."""
+    result = publish_transcript(
+        cfg.output_dir,
+        source_key=source_key,
+        payload=payload,
+        generation=generation,
+    )
+    return result.path
+
+
+def transcribe_local_file(audio_path: Path, cfg: TranscribeConfig) -> Path:
+    """Transcribe a local audio file and publish transcript JSON atomically."""
+    resolved = audio_path.resolve()
+    if not resolved.is_file():
+        raise ValueError(f"Not a regular file: {resolved}")
+
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Download audio and metadata
+    meta = local_file_metadata(resolved)
+    transcript = transcribe_audio(
+        audio_path=resolved,
+        model_name=cfg.model,
+        language=cfg.language,
+        device=cfg.device,
+        compute_type=cfg.compute_type,
+        beam_size=cfg.beam_size,
+        vad_filter=cfg.vad_filter,
+    )
+    output_obj = build_output_json(meta, transcript)
+    vid = output_obj["metadata"]["id"] or "output"
+    return _publish_direct_payload(cfg, output_obj, source_key=f"file:{vid}")
+
+
+def transcribe_url(url: str, cfg: TranscribeConfig, cleanup_callback=None) -> Path:
+    """Transcribe a YouTube URL: download, transcribe, publish atomically."""
+    from local_transcribe.services.downloader import download_audio_and_metadata
+
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+
     audio_path, meta = download_audio_and_metadata(
         url=url,
         outdir=cfg.output_dir,
@@ -252,34 +278,28 @@ def transcribe_url(url: str, cfg: TranscribeConfig, cleanup_callback=None) -> Pa
         limit_rate=cfg.limit_rate,
         sleep_interval_requests=cfg.sleep_interval_requests,
     )
-    
-    # Notify callback about audio file for cleanup tracking
+
     if cleanup_callback:
         cleanup_callback(audio_path)
-    
-    # Transcribe
+
     transcript = transcribe_audio(
         audio_path=audio_path,
         model_name=cfg.model,
         language=cfg.language,
         device=cfg.device,
         compute_type=cfg.compute_type,
+        beam_size=cfg.beam_size,
+        vad_filter=cfg.vad_filter,
     )
-    
-    # Build and save JSON
+
     output_obj = build_output_json(meta, transcript)
     vid = output_obj["metadata"]["id"] or "output"
-    json_path = cfg.output_dir / f"{vid}.json"
+    json_path = _publish_direct_payload(cfg, output_obj, source_key=f"youtube:{vid}")
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(output_obj, f, ensure_ascii=False, indent=2)
-    
-    # Clean up audio if requested
     if not cfg.keep_audio:
         try:
             os.remove(audio_path)
-        except Exception:
-            pass
-    
-    return json_path
+        except OSError as exc:
+            logger.warning("Failed to remove temp audio %s: %s", audio_path, exc)
 
+    return json_path
