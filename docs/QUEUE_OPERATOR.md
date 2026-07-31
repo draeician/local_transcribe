@@ -33,7 +33,13 @@ queue:
   expected_nfs_version: 3
   expected_server: nas.example.internal
   expected_export: /exports/transcripts
+  default_auth_profile: yt
+auth_profiles:
+  yt:
+    cookies_file: ~/.config/local-transcribe/youtube-cookies.txt
 ```
+
+`default_auth_profile` is applied by the worker when a job has no per-execution `auth_profile`. Cookie *paths* stay local — never put cookie contents into queue JSON.
 
 ## Bootstrap
 

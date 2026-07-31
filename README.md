@@ -1,14 +1,15 @@
 # Local YouTube Transcription System
 
-> **Production-ready batch transcription** with resume capability, file verification, and detailed logging.
+> **Queue-first local transcription** on NFSv3 with one NLM-locked GPU worker, durable jobs, and multi-host producers.
 
 **Features:**
-- ✅ Local processing (no API throttling)
-- ✅ CUDA GPU acceleration + CPU fallback
-- ✅ Batch processing with resume capability
-- ✅ File verification and status tracking
-- ✅ Retry logic and failure handling
+- ✅ Durable NFSv3 transcription queue (`pending` → `processing` → `completed` / `failed` / `retry`)
+- ✅ Single exclusive worker via NLM lock (`lt worker` + systemd user unit)
+- ✅ Producers enqueue from any host (`lt transcribe`, `lt batch`, `lt queue add`, ref-cli)
+- ✅ CUDA GPU acceleration + CPU fallback; ModelCache keeps Whisper loaded
+- ✅ Auth profiles (cookies file / browser) for YouTube downloads
 - ✅ FOSS only (yt-dlp + faster-whisper)
+- ✅ Legacy in-process mode still available via `--direct`
 
 ---
 
@@ -18,8 +19,11 @@
 
 **Option 1: pipx (Recommended - Global Installation)**
 ```bash
-# Install from GitHub with GPU support
+# Install from GitHub
 pipx install git+https://github.com/draeician/local_transcribe.git
+
+# On NVIDIA hosts, doctor/worker install can pull CUDA torch automatically;
+# or install manually:
 pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 # Verify installation
@@ -28,15 +32,10 @@ lt doctor
 
 **Option 2: Local Development**
 ```bash
-# Clone the repository
 git clone https://github.com/draeician/local_transcribe.git
 cd local_transcribe
-
-# Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
-
-# Install the package
 pip install -e .
 pip install -r requirements.txt
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
@@ -44,59 +43,80 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 **Updating an Existing Installation**
 ```bash
-# If installed via pipx from git
-pipx upgrade local-transcribe
-
-# If installed locally via git clone
+# From a git checkout (recommended for this repo)
 cd ~/git/personal/local_transcribe
 git pull
-pip install -e . --upgrade
+pipx install . --force
+systemctl --user restart local-transcribe-worker.service   # if the worker is installed
 ```
 
 See [START_HERE.md](START_HERE.md) for detailed installation instructions.
 
-### Batch Processing (Recommended)
+### Queue bootstrap (one-time, GPU / worker host)
+
 ```bash
-# Process multiple videos with resume capability
-lt batch --input inputfile.txt --device cuda --compute-type float16
+# On shared NFSv3 storage
+lt queue init --queue-dir /path/to/transcription-queue
+# writes ~/.config/local-transcribe/config.yaml (path, UUID, NFS identity)
 
-# If interrupted, just resume
-lt batch --resume
-
-# Check status
-lt status
-
-# Reconcile and see what's done
-lt reconcile
+lt queue doctor
+lt worker install
+systemctl --user daemon-reload
+systemctl --user enable --now local-transcribe-worker.service
 ```
 
-### Single Video or Local Audio File
-```bash
-# YouTube (HTTPS URL)
-lt transcribe "https://youtube.com/watch?v=VIDEO_ID" \
-  --model medium \
-  --device cuda \
-  --compute-type float16
+Configure YouTube cookies for the worker (recommended):
 
-# Local file (output: `<output-dir>/<slug-from-filename>.json`; ffmpeg should be on PATH for formats like m4a)
-lt transcribe "/path/to/recording.m4a" \
-  --model medium \
-  --device cuda \
-  --compute-type float16 \
-  --output-dir ./out
+```yaml
+# ~/.config/local-transcribe/config.yaml
+queue:
+  path: /path/to/transcription-queue
+  expected_uuid: <from init>
+  default_auth_profile: yt
+auth_profiles:
+  yt:
+    cookies_file: ~/.config/local-transcribe/youtube-cookies.txt
+```
+
+Operator details: [docs/QUEUE_OPERATOR.md](docs/QUEUE_OPERATOR.md).
+
+### Everyday use (producers)
+
+```bash
+# Single YouTube URL or local audio — default: enqueue and wait for the worker
+lt transcribe "https://youtube.com/watch?v=VIDEO_ID"
+lt transcribe "/path/to/recording.m4a" --output-dir ./out
+
+# Enqueue without waiting
+lt transcribe "https://youtube.com/watch?v=VIDEO_ID" --no-wait
+
+# Bulk-enqueue a URL list (durable; --resume is a no-op in queue mode)
+lt batch --input inputfile.txt
+
+# Watch the queue
+lt queue stats
+lt queue list
+lt queue list --status completed
+lt queue list --status processing
+```
+
+### Emergency / legacy in-process (bypass queue)
+
+```bash
+lt transcribe "https://youtube.com/watch?v=VIDEO_ID" --direct
+lt batch --input inputfile.txt --direct --resume
 ```
 
 ### Using the CLI
 All functionality is available through the unified `lt` command:
-- `lt` or `lt --help` - Show help screen
-- `lt --version` - Show version information
-- `lt transcribe` - Transcribe a single YouTube video or local audio file
-- `lt batch` - Process multiple videos
-- `lt reconcile` - Reconcile input with finished transcripts
-- `lt status` - Show batch processing status
-- `lt report` - Generate failure report
-- `lt doctor` - Run environment diagnostics
-- `lt update` - Update the package (checks Deno requirement)
+- `lt` / `lt --help` / `lt --version`
+- `lt queue` — init, doctor, add, list, stats, import, purge, cancel, retry, …
+- `lt worker` — run, install, status, start/stop/restart, logs
+- `lt transcribe` — enqueue (default) or `--direct` in-process
+- `lt batch` — bulk enqueue (default) or `--direct` BatchPipeline
+- `lt reconcile` / `lt verify` / `lt status` / `lt report` — legacy batch ledger helpers
+- `lt doctor` — environment + queue/NFS diagnostics
+- `lt update` — refresh yt-dlp / check Deno
 
 ---
 
@@ -104,13 +124,14 @@ All functionality is available through the unified `lt` command:
 
 | Document | Purpose |
 |----------|---------|
-| **[START_HERE.md](START_HERE.md)** | ⭐ Quick installation guide |
-| **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** | Common commands |
-| **[BATCH_TRANSCRIBE_README.md](BATCH_TRANSCRIBE_README.md)** | Complete batch system guide |
-| **[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md)** | System evolution & features |
-| **[UPGRADE_SUMMARY.md](UPGRADE_SUMMARY.md)** | Why use batch_transcribe.py |
-| **[BUILDPLAN.md](BUILDPLAN.md)** | Original design document |
-| **This file (README.md)** | System setup & troubleshooting |
+| **[START_HERE.md](START_HERE.md)** | ⭐ Quick installation + first queue run |
+| **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** | Common queue/worker commands |
+| **[docs/QUEUE_OPERATOR.md](docs/QUEUE_OPERATOR.md)** | NFSv3 mounts, config, systemd worker |
+| **[docs/QUEUE_NFS_LAB.md](docs/QUEUE_NFS_LAB.md)** | Multi-host NFS lab checklist |
+| **[docs/REF_CLI_QUEUE_ADAPTER.md](docs/REF_CLI_QUEUE_ADAPTER.md)** | ref-cli enqueue contract |
+| **[CHANGELOG.md](CHANGELOG.md)** | Release notes (0.5.0 queue) |
+| **[BATCH_TRANSCRIBE_README.md](BATCH_TRANSCRIBE_README.md)** | Legacy direct-batch guide |
+| **This file (README.md)** | Setup & troubleshooting |
 
 ---
 
@@ -376,13 +397,16 @@ A: The NVIDIA cuDNN libraries installed via pip go into your venv's `site-packag
 A: The DRM warning is harmless and can be ignored. It's just ONNX Runtime scanning for GPUs.
 
 **Q: How do I process multiple videos?**  
-A: Use `lt batch --input inputfile.txt`. It has resume capability, status tracking, and file verification. See [QUICK_REFERENCE.md](QUICK_REFERENCE.md).
+A: With the queue worker running, `lt batch --input inputfile.txt` bulk-enqueues URLs. Progress is durable on NFS — use `lt queue stats` / `lt queue list`. See [QUICK_REFERENCE.md](QUICK_REFERENCE.md).
 
 **Q: What if I get interrupted while processing?**  
-A: Just run `lt batch --resume` - it picks up exactly where you left off.
+A: In queue mode nothing is lost; the worker continues from `pending` / `retry`. `--resume` is only meaningful with `lt batch --direct`.
 
 **Q: How do I check what's actually completed?**  
-A: Run `lt reconcile` - it checks actual transcript files vs. what's recorded in finished.dat and generates reports.
+A: Prefer `lt queue stats` and `lt queue list --status completed`. Legacy `lt reconcile` still compares input / `finished.dat` / transcript files.
+
+**Q: Why does `lt queue list` still show many pending rows while transcripts appear?**  
+A: `lt queue list` defaults to pending (first 50). Completed jobs leave that list — use `lt queue stats` to see counts drop.
 
 ---
 
@@ -481,7 +505,7 @@ A: YouTube's 2026 SABR protocol requires JavaScript execution to solve dynamic "
 A: While Node.js was tried, the pipx isolated virtual environment had difficulty reliably calling the local Node binary across the environment boundary. Deno with a system-wide symlink in `/usr/local/bin` ensures reliable access.
 
 **Q: What if I still get 403 errors?**  
-A: Ensure Deno is installed and accessible. Run `lt doctor` to verify. Also consider using `--cookies-file` or `--cookies-from-browser` to authenticate with YouTube.
+A: Ensure Deno is installed and accessible (`lt doctor`). For the background worker, configure `default_auth_profile` + `auth_profiles` with a Netscape cookies file in `~/.config/local-transcribe/config.yaml` (a YouTube **API key** does not authorize yt-dlp downloads). For `--direct` runs, pass `--cookies-file` or `--cookies-from-browser`.
 
 **Q: Do I need to update Deno regularly?**  
 A: Deno updates are independent of this project. You can update Deno with `deno upgrade` if needed, but the current version should work fine.

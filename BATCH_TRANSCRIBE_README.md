@@ -1,5 +1,7 @@
 # Batch Transcription Application
 
+> **Note (0.5.0+):** Default `lt batch` / `lt transcribe` **enqueue to the NFSv3 queue**. This document describes the legacy **in-process** `BatchPipeline` path. Use `lt batch --direct` / `lt transcribe --direct` for that behavior. Prefer [START_HERE.md](START_HERE.md), [QUICK_REFERENCE.md](QUICK_REFERENCE.md), and [docs/QUEUE_OPERATOR.md](docs/QUEUE_OPERATOR.md) for the current queue-first workflow.
+
 A **robust, production-ready** batch transcription system that replaces the fragile shell script with proper application features.
 
 ## 🎯 What This Solves

@@ -62,4 +62,4 @@ These cover the adapter contract: success path and pending-file fallback when th
 2. Call `enqueue_youtube` when `local_transcribe` is importable.
 3. On `ImportError` or any enqueue failure, append to `transcript-pending.md` (legacy path).
 
-Minimum version: queue API from the `feat/queue-creation` line (post tasks 026 / 035).
+Minimum version: **local-transcribe 0.5.0** (queue API from tasks 026 / 035).

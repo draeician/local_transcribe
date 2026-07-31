@@ -3,7 +3,7 @@
 **Project:** `local-transcribe`  
 **Related:** `ref-cli`  
 **Source of truth (detailed):** [`SPEC-queue.md`](../SPEC-queue.md) (v3)  
-**Branch:** `feat/queue-creation`  
+**Shipped in:** `0.5.0` (merged to `main`)  
 **Status:** Proposed (not yet implemented)  
 **Date:** 2026-07-18  
 **Last aligned with:** Architectural review integrating NLM locks and source reservations  

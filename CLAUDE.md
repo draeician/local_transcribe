@@ -1,91 +1,97 @@
 # Claude Code Documentation
 
 ## Overview
-`local-transcribe` is a Python CLI for transcribing audio locally with the Whisper speech‑to‑text model (via faster-whisper).  It can download and transcribe YouTube videos or transcribe audio files already on disk.  The tool is written in pure Python with a minimal dependency set and is designed to be run on Linux, macOS, and Windows.
+`local-transcribe` is a Python CLI for transcribing audio locally with Whisper (via faster-whisper). From **0.5.0** the default execution model is a **durable NFSv3 queue** with one **NLM-locked** background worker. Producers (`lt transcribe`, `lt batch`, `lt queue add`, ref-cli) enqueue jobs; only the lock holder downloads and transcribes. Legacy in-process execution remains available with `--direct`.
 
-## Command‑Line Interface
-The entry point is the Typer app defined in `src/local_transcribe/cli.py`.  All commands are available via the `lt` alias (the `local-transcribe` package installs a console script called `lt`).  The following commands are supported:
+## Command-Line Interface
+Entry point: Typer app in `src/local_transcribe/cli.py` (console script `lt`).
 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `lt version` | Show package version | `lt version` |
-| `lt transcribe URL_OR_PATH [options]` | Transcribe one YouTube video (HTTPS URL) or one local audio file | `lt transcribe https://youtu.be/dQw4w9WgXcQ --model large --device cuda` · `lt transcribe ~/recordings/talk.m4a -o ./out` |
-| `lt batch [options]` | Process a list of URLs from a file, with resume support | `lt batch --input urls.txt --resume` |
-| `lt reconcile [options]` | Compare an input file, `finished.dat` and transcript files; generates summary reports | `lt reconcile --input urls.txt` |
-| `lt verify [options]` | Verify that every completed URL has an associated transcript | `lt verify --mode quick` |
-| `lt status [options]` | Show counts of pending / processing / completed / failed videos from `batch_status.json` | `lt status` |
-| `lt report [options]` | Generate a plain‑text report of all failed videos | `lt report --out failed.txt` |
-| `lt update` | Check that Deno (used by the yt‑dl downloader) is available and optionally upgrade | `lt update` |
+| `lt queue …` | Init/doctor/add/list/stats/import/purge/cancel/retry | `lt queue stats` |
+| `lt worker …` | Run/install/status systemd user worker | `lt worker install` |
+| `lt transcribe URL_OR_PATH` | Default: enqueue + wait; `--direct` for in-process | `lt transcribe URL --no-wait` |
+| `lt batch` | Default: bulk enqueue; `--direct` for BatchPipeline | `lt batch --input urls.txt` |
+| `lt reconcile` | Compare input / finished.dat / transcript files | `lt reconcile --input urls.txt` |
+| `lt verify` | Verify completed URLs have transcripts | `lt verify --mode quick` |
+| `lt status` / `lt report` | Legacy `batch_status.json` helpers (direct mode) | `lt status` |
+| `lt doctor` | Environment + queue/NFS diagnostics | `lt doctor` |
+| `lt update` | Refresh yt-dlp / check Deno | `lt update` |
 
-### Options Common to Multiple Commands
+### Options common to multiple commands
 | Option | Meaning |
 |--------|---------|
-| `--output-dir` / `-o` | Directory where transcripts, status, and logs are written.  Default is `$HOME/references/transcripts`.
-| `--verbose` / `-v` | Enables debug‑level logging.
+| `--output-dir` / `-o` | Transcript root. Default `$HOME/references/transcripts`. |
+| `--queue-dir` | Override configured queue path. |
+| `--verbose` / `-v` | Debug logging. |
+| `--direct` | Bypass queue (emergency/dev). |
 
-### Transcribe Options
+### Transcribe / enqueue options
 | Option | Description |
 |--------|-------------|
-| `--model` | Whisper model to use (`tiny`, `base`, `small`, `medium`, `large`). Default `medium`.
-| `--device` | Target device (`cpu`, `cuda`, `auto`). Default `cuda`.
-| `--compute-type` | Precision (`float16`, `int8`).
-| `--keep-audio` | Preserve the downloaded audio file after transcription (no‑op when the source is a local file).
-| `--cookies-from-browser` / `--cookies-file` | Provide browser cookies to bypass YouTube restrictions (ignored for local files).
-| `--limit-rate` | Max download speed, e.g. `200K` or `4.2M` (YouTube only).
-| `--sleep-interval-requests` | Pause between yt‑dl requests (YouTube only).
+| `--model` / `--device` / `--compute-type` | Whisper settings stored on the execution. |
+| `--no-wait` | Enqueue and return (queue mode). |
+| `--timeout` | Wait limit when waiting for the worker. |
+| `--force` | Force a new generation for an existing source. |
+| `--cookies-from-browser` / `--cookies-file` | Used in `--direct` mode; worker uses config `auth_profiles`. |
+| `--limit-rate` / `--sleep-interval-requests` | YouTube throttling hints. |
 
-Local paths are detected when `Path.expanduser` resolves to an existing regular file; otherwise the argument must be a valid HTTPS YouTube URL.  Container formats such as m4a typically require **ffmpeg** on PATH for decoding.
+Local paths are detected when `Path.expanduser` resolves to an existing regular file; otherwise the argument must be a valid HTTPS YouTube URL. Container formats such as m4a typically require **ffmpeg** on PATH.
 
-### Batch Options
+### Batch options
 | Option | Description |
 |--------|-------------|
-| `--input` | File containing URLs (defaults to `inputfile.txt`).
-| `--resume` | Resume from an interrupted run using `batch_status.json`.
-| `--max-retries` | How many times to retry a failed video.
-| `--sleep-interval` | Pause between videos.
+| `--input` | File of URLs (default `inputfile.txt`). |
+| `--resume` | Meaningful only with `--direct`; no-op in queue mode. |
+| `--wait` / `--timeout` | Wait for enqueued jobs (queue mode). |
+| `--max-retries` | Maps to queue `max_attempts`. |
+| `--auth-profile` | Named profile on the execution (else worker `default_auth_profile`). |
 
 ## Architecture
-The project is split into several loosely coupled modules.
 
-### 1. CLI (`src/local_transcribe/cli.py`)
-* Provides the Typer application.
-* Parses command‑line arguments and configures logging.
-* Delegates to service modules for heavy work.
+### 1. CLI
+* `cli.py` — Typer entry; `transcribe`/`batch` default to queue enqueue.
+* `cli_queue.py` / `cli_worker.py` — queue and worker subcommands.
+* `queue_api.py` — safe enqueue helpers for ref-cli and other producers.
 
 ### 2. Services
 | Module | Responsibility |
 |--------|----------------|
-| `services.pipeline` | Implements `BatchPipeline` – the orchestration layer for batch jobs. Handles resume logic, status tracking, rate limiting, and graceful shutdown.
-| `services.transcriber` | Wrapper around faster‑whisper. Performs speech‑to‑text for downloaded or local audio; `transcribe_local_file` writes the same JSON shape as YouTube runs.
-| `services.downloader` | Uses `yt-dlp` (executed via `subprocess`) to download audio. Includes custom rate‑limit and error handling logic.
-| `services.rate_limiter` | Persists request counts to `rate_limits.json` to avoid exceeding YouTube limits.
-| `services.status_store` | Persists per‑video status (`batch_status.json`). Uses a simple dataclass `TranscriptStatus`.
-| `services.verify_status` | Verifies that transcripts exist for finished URLs.
-| `services.reconcile` | Generates reconciliation reports comparing input, finished, and transcript sets.
+| `services.queue_store` | Atomic transitions across pending/processing/completed/failed/retry. |
+| `services.source_reservations` | CAS source-key reservations / generations. |
+| `services.worker` / `worker_lock` | NLM exclusive ownership + claim/run loop. |
+| `services.job_runner` | Download → transcribe → generation-aware publish. |
+| `services.model_cache` | Keep Whisper models loaded across jobs. |
+| `services.mount_validation` | Fail-closed NFSv3 / UUID / identity checks. |
+| `services.download_admission` | Serialize/admit downloads. |
+| `services.transcript_publish` | Atomic transcript publish with generation rules. |
+| `services.config` | `~/.config/local-transcribe/config.yaml` (queue path, auth profiles). |
+| `services.pipeline` | Legacy `BatchPipeline` for `--direct` batch. |
+| `services.downloader` / `transcriber` | yt-dlp subprocess + faster-whisper. |
 
 ### 3. Utilities
-* `utils.files` – Safe read/write helpers and cookie handling.
-* `utils.youtube` – YouTube URL parsing and validation.
+* `utils.files` — safe read/write helpers.
+* `utils.youtube` — URL parsing/validation.
+* `utils.doctor` — environment + queue diagnostics.
+* `logging_setup.py` — XDG rotating logs under `~/.local/state/local-transcribe/logs/`.
 
-## Data Flow
-1. **Input** – `batch` reads URLs from an input file; `transcribe` takes either a YouTube URL or a path to a local audio file.
-2. **Preparation** – `BatchPipeline` initializes `TranscriptStatus` objects, checking for existing transcripts.
-3. **Processing** – For each pending video (batch), or once for `transcribe`:
-   * YouTube: download audio via `services.downloader`; local file: use the path as‑is.
-   * Transcribe with `services.transcriber` and write transcript JSON.
-   * Batch runs also update `batch_status.json` per video.
-4. **Post‑processing** – `verify` or `reconcile` generate reports and update `batch_status.json`.
-5. **Reporting** – `status` and `report` provide quick status views.
+## Data Flow (queue mode)
+1. **Producer** enqueues via `lt transcribe` / `lt batch` / `lt queue add` / `enqueue_youtube_safe`.
+2. **Reservation** records the source key so duplicates do not spawn parallel active work.
+3. **Worker** (sole NLM lock holder) claims pending → processing, downloads under `~/.cache/local-transcribe/jobs/<id>/`, transcribes, publishes transcript JSON, moves job to completed/failed/retry.
+4. **Observers** use `lt queue stats` / `list` (list defaults to pending — prefer stats for backlog).
 
 ## Extending the Tool
-* **Adding new commands** – Create a Typer command in `cli.py` and delegate to a new service.
-* **Custom Whisper models** – Pass any model name supported by Whisper to the `TranscribeConfig`.
-* **Different download backends** – Replace `services.downloader` with another downloader while keeping the same interface.
+* New commands: Typer in `cli.py` / `cli_queue.py` / `cli_worker.py`.
+* Producers: prefer `queue_api.enqueue_youtube_safe` with pending-file fallback.
+* Auth: local `auth_profiles` only — never store cookie contents in job JSON.
 
 ## Troubleshooting
-* **Missing Deno** – `lt update` checks for Deno. Install via `brew install deno` (macOS) or `curl -fsSL https://deno.land/x/install/install.sh | sh`.
-* **Rate limiting** – The tool will pause automatically. If you hit 429s, increase `--sleep-interval-requests`.
-* **Corrupt transcripts** – Use `lt verify --mode quick` to detect and flag.
+* **Missing Deno** — required for YouTube SABR; symlink to `/usr/local/bin/deno` for pipx.
+* **HTTP 403** — configure worker cookies via `default_auth_profile`; API keys do not authorize yt-dlp.
+* **NFS / lock** — `lt queue doctor`; reject `nolock` / soft mounts; see `docs/QUEUE_OPERATOR.md`.
+* **Corrupt transcripts** — `lt verify --mode quick`.
 
 # Claude Code Guide for local-transcribe
 
@@ -113,10 +119,12 @@ The project is split into several loosely coupled modules.
 - **Logging:** All CLI commands must use the `configure_logging` utility from `logging_setup.py`.
 
 ## Project Structure
-- `src/local_transcribe/cli.py`: Typer entry point.
-- `src/local_transcribe/services/downloader.py`: Logic for yt-dlp strategies.
-- `src/local_transcribe/services/transcriber.py`: Logic for Whisper/Faster-Whisper.
-- `src/local_transcribe/utils/doctor.py`: Environment diagnostic checks.
+- `src/local_transcribe/cli.py` / `cli_queue.py` / `cli_worker.py`: Typer entry points.
+- `src/local_transcribe/queue_api.py`: Producer enqueue API.
+- `src/local_transcribe/services/queue_store.py` / `worker.py` / `job_runner.py`: Queue + worker core.
+- `src/local_transcribe/services/downloader.py` / `transcriber.py`: yt-dlp + Whisper.
+- `src/local_transcribe/utils/doctor.py`: Environment / NFS diagnostics.
+- `docs/QUEUE_OPERATOR.md`: Operator runbook.
 
 ## Style Preferences
 - Use type hints for all function signatures.

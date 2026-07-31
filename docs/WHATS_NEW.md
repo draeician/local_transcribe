@@ -1,4 +1,23 @@
-# What's New - Transcription System Upgrade
+# What's New
+
+## 0.5.0 — NFSv3 background transcription queue (2026-07-30)
+
+Default execution is now **queue-first**:
+
+- `lt transcribe` / `lt batch` **enqueue** into a durable NFSv3 queue and (for transcribe) wait for the worker unless `--no-wait`.
+- One host runs `lt worker` (systemd user unit) holding an **NLM exclusive lock**.
+- Use `lt queue stats` to watch backlog; `lt queue list` defaults to pending only.
+- Configure cookies with `queue.default_auth_profile` + `auth_profiles` (not a YouTube Data API key).
+- Escape hatch: `--direct` for legacy in-process `BatchPipeline` / single-shot runs.
+- Logs: `~/.local/state/local-transcribe/logs/`.
+
+Docs: [QUEUE_OPERATOR.md](QUEUE_OPERATOR.md) · [../START_HERE.md](../START_HERE.md) · [../QUICK_REFERENCE.md](../QUICK_REFERENCE.md) · [../CHANGELOG.md](../CHANGELOG.md)
+
+---
+
+## Historical: Transcription System Upgrade (pre-queue)
+
+The sections below describe the earlier migration from shell scripts to the Python `lt` / `BatchPipeline` app. That path remains available via `--direct`.
 
 ## 🎯 Your Questions Answered
 
