@@ -21,12 +21,14 @@ from local_transcribe.utils.youtube import is_valid_youtube_url
 app = typer.Typer(help="Local transcription with Whisper (YouTube URLs or audio files)")
 console = Console(force_terminal=True)
 
-# Queue / worker sub-apps (SPEC-queue v3)
+# Queue / worker / cookies sub-apps (SPEC-queue v3)
+from local_transcribe.cli_cookies import cookies_app  # noqa: E402
 from local_transcribe.cli_queue import queue_app  # noqa: E402
 from local_transcribe.cli_worker import worker_app  # noqa: E402
 
 app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
+app.add_typer(cookies_app, name="cookies")
 
 # Default values
 DEFAULT_MODEL = "medium"
@@ -998,6 +1000,7 @@ def update(
     import sys
 
     from local_transcribe.utils.ytdlp_update import (
+        find_yt_dlp_binary,
         format_pip_command,
         perform_yt_dlp_update,
         resolve_deno_on_path,
@@ -1018,6 +1021,7 @@ def update(
             raise typer.Exit(1)
 
         console.print(f"[green]✓[/green] Deno: {deno_version or 'available'}")
+        console.print(f"[dim]Downloader yt-dlp binary: {find_yt_dlp_binary(sys.executable)}[/dim]")
         console.print("\n[bold]Updating yt-dlp in the current lt environment[/bold]")
 
         outcome = perform_yt_dlp_update(
@@ -1049,7 +1053,14 @@ def update(
 
         after = outcome.after_version or "unknown"
         console.print(f"After: {after}")
+        console.print(f"Binary: {find_yt_dlp_binary(sys.executable)}")
         console.print("\n[green]✓[/green] yt-dlp update complete")
+        console.print(
+            "[dim]Tip: re-run `lt worker install` then "
+            "`systemctl --user daemon-reload && "
+            "systemctl --user restart local-transcribe-worker` "
+            "so the service PATH prefers this runtime yt-dlp.[/dim]"
+        )
 
     except typer.Exit:
         raise

@@ -41,6 +41,30 @@ auth_profiles:
 
 `default_auth_profile` is applied by the worker when a job has no per-execution `auth_profile`. Cookie *paths* stay local — never put cookie contents into queue JSON.
 
+### Refresh cookies (Brave default)
+
+```bash
+lt cookies refresh                 # Brave (Flatpak profile auto-detected when present)
+lt cookies refresh --browser chrome
+lt cookies refresh --browser firefox
+lt cookies refresh --help          # output path, keyring, profile overrides
+```
+
+Writes the Netscape cookies file used by the worker (default
+`~/.config/local-transcribe/youtube-cookies.txt`) and ensures
+`auth_profiles` / `default_auth_profile` point at it.
+
+### yt-dlp binary (worker vs system)
+
+Downloads use the **pipx/venv** `yt-dlp` next to the `lt` runtime (not
+`/usr/bin/yt-dlp`). `lt update` refreshes that binary. `lt worker install`
+sets systemd `PATH` so the service prefers the same bin directory.
+
+```bash
+lt update --dry-run                # prints Downloader yt-dlp binary: ...
+lt doctor                          # shows module + binary paths/versions
+```
+
 ## Bootstrap
 
 ```bash
@@ -48,6 +72,7 @@ lt queue init --queue-dir /path/to/transcription-queue
 # writes ~/.config/local-transcribe/config.yaml (path + UUID + detected NFS identity)
 # verify that file, then:
 lt queue doctor
+lt cookies refresh                 # export browser cookies for the worker
 lt worker install   # also ensures CUDA torch when nvidia-smi is present
 systemctl --user daemon-reload
 systemctl --user enable --now local-transcribe-worker.service
@@ -55,6 +80,16 @@ systemctl --user enable --now local-transcribe-worker.service
 
 Logs live under ``~/.local/state/local-transcribe/logs/`` (override with
 ``LOCAL_TRANSCRIBE_LOG_DIR``). The systemd worker also logs to the user journal.
+
+## Retry failed jobs
+
+```bash
+lt queue list --status failed      # full execution_id column
+lt queue retry                     # re-queue all failed (one job per unique source)
+lt queue retry <execution_id>      # re-queue one source
+lt queue retry --include-cancelled
+lt queue retry --help
+```
 
 ## Two-client NLM lock checklist (lab)
 

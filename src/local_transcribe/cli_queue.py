@@ -170,19 +170,25 @@ def queue_add(
 @queue_app.command("list")
 def queue_list(
     queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
-    status: Optional[str] = typer.Option(None, "--status"),
+    status: Optional[str] = typer.Option(
+        None,
+        "--status",
+        help="Filter: pending, processing, retry, completed, failed, cancelled",
+    ),
     origin: Optional[str] = typer.Option(None, "--origin"),
     limit: int = typer.Option(50, "--limit"),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
-    """List queue executions."""
+    """List queue executions (full execution_id for use with retry/show/cancel)."""
     configure_logging(verbose=verbose, log_file_prefix="queue")
     store = QueueStore(_queue_dir_opt(queue_dir))
     rows = store.list_executions(status=status, origin=origin, limit=limit)
-    table = Table("execution_id", "status", "priority", "source_key", "origin")
+    # Plain lines so execution_id is never truncated by Rich table width.
     for ex in rows:
-        table.add_row(ex.execution_id[:8] + "…", ex.status, str(ex.priority), ex.source_key, ex.origin)
-    console.print(table)
+        console.print(
+            f"{ex.execution_id}\t{ex.status}\t{ex.priority}\t"
+            f"{ex.source_key}\t{ex.origin}"
+        )
     console.print(f"Total shown: {len(rows)}")
 
 
@@ -342,14 +348,83 @@ def queue_repair(
 
 @queue_app.command("retry")
 def queue_retry(
-    execution_id: str = typer.Argument(...),
+    execution_id: Optional[str] = typer.Argument(
+        None,
+        help="Optional execution id. If omitted, retries all failed jobs.",
+    ),
     queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    include_cancelled: bool = typer.Option(
+        False,
+        "--include-cancelled",
+        help="When retrying all, also include cancelled executions",
+    ),
 ) -> None:
-    """Re-queue a failed/cancelled source via force enqueue of its source."""
+    """Retry failed queue jobs (all failed if EXECUTION_ID is omitted).
+
+    With no argument, force-enqueues every unique failed source.
+    With an id (from `lt queue list --status failed`), retries that source only.
+
+    Examples:
+
+      lt queue retry
+
+      lt queue retry 415b0f18-330c-4c6d-bac6-36e49ca009c5
+
+      lt queue retry --include-cancelled
+    """
     store = QueueStore(_queue_dir_opt(queue_dir))
-    ex, st = store.find_execution(execution_id)
-    if ex is None:
-        console.print(f"[red]✗[/red] Not found: {execution_id}")
-        raise typer.Exit(1)
-    result = store.enqueue(ex.source, force=True, origin=ex.origin, priority=ex.priority)
-    console.print(f"{result.kind}: {result.execution.execution_id if result.execution else ''}")
+
+    if execution_id:
+        ex, st = store.find_execution(execution_id)
+        if ex is None:
+            console.print(f"[red]✗[/red] Not found: {execution_id}")
+            raise typer.Exit(1)
+        if st not in {"failed", "cancelled"}:
+            console.print(
+                f"[yellow]![/yellow] Execution is in {st!r}; "
+                "retry is intended for failed/cancelled"
+            )
+        result = store.enqueue(
+            ex.source, force=True, origin=ex.origin, priority=ex.priority
+        )
+        new_id = result.execution.execution_id if result.execution else ""
+        console.print(f"{result.kind}: {new_id}")
+        return
+
+    statuses = ["failed"]
+    if include_cancelled:
+        statuses.append("cancelled")
+
+    # Deduplicate by source_key so N failures of one video become one enqueue.
+    seen_sources: set[str] = set()
+    targets = []
+    for status in statuses:
+        for ex in store.list_executions(status=status, limit=10_000):
+            if ex.source_key in seen_sources:
+                continue
+            seen_sources.add(ex.source_key)
+            targets.append(ex)
+
+    if not targets:
+        console.print("[green]No failed executions to retry[/green]")
+        return
+
+    enqueued = 0
+    other = 0
+    for ex in targets:
+        result = store.enqueue(
+            ex.source, force=True, origin=ex.origin, priority=ex.priority
+        )
+        new_id = result.execution.execution_id if result.execution else ""
+        console.print(
+            f"{result.kind}: {new_id or ex.source_key}  (from {ex.execution_id})"
+        )
+        if result.kind == "enqueued":
+            enqueued += 1
+        else:
+            other += 1
+
+    console.print(
+        f"[bold]Retry summary:[/bold] sources={len(targets)} "
+        f"enqueued={enqueued} other={other}"
+    )

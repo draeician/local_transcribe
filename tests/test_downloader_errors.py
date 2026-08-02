@@ -15,6 +15,7 @@ def test_classify_extractor_hints_update() -> None:
     info = classify_yt_dlp_failure("", "Requested format is not available", 1)
     assert info.category == "extractor_failure"
     assert "lt update" in info.message
+    assert "venv/pipx" in info.message or "/usr/bin" in info.message
 
 
 def test_classify_unavailable() -> None:

@@ -207,10 +207,18 @@ def check_ffmpeg() -> Tuple[bool, str]:
 
 
 def check_yt_dlp() -> Tuple[bool, str]:
-    """Check if yt-dlp is available."""
+    """Check if yt-dlp is available (module + downloader binary)."""
     try:
         import yt_dlp
-        return True, f"Version: {yt_dlp.version.__version__}"
+        from local_transcribe.utils.ytdlp_update import (
+            find_yt_dlp_binary,
+            get_yt_dlp_version,
+        )
+
+        binary = find_yt_dlp_binary()
+        bin_ver = get_yt_dlp_version() or "?"
+        mod_ver = yt_dlp.version.__version__
+        return True, f"module={mod_ver}; binary={binary} ({bin_ver})"
     except ImportError:
         return False, "yt-dlp not installed"
     except Exception as e:

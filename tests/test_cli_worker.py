@@ -62,13 +62,31 @@ def test_cli_worker_run_always_passes_validate_nfs_true(
 
 
 def test_systemd_unit_starts_fail_closed_worker() -> None:
-    unit = render_systemd_unit("/home/user/.local/bin/lt")
+    unit = render_systemd_unit(
+        "/home/user/.local/bin/lt",
+        python_executable="/home/user/.local/share/pipx/venvs/local-transcribe/bin/python",
+    )
     assert "ExecStart=" in unit
     assert "worker run --standby" in unit
     assert "--no-validate-nfs" not in unit
     assert "--validate-nfs=false" not in unit.lower()
     # Unit relies on CLI default fail-closed validation
     assert "worker run --standby --no-validate" not in unit
+    assert "Environment=PATH=" in unit
+    assert (
+        "/home/user/.local/share/pipx/venvs/local-transcribe/bin"
+        in unit
+    )
+
+
+def test_systemd_unit_path_prefers_runtime_bin() -> None:
+    from local_transcribe.cli_worker import worker_path_env
+
+    path = worker_path_env(
+        "/opt/venv/bin/python",
+    )
+    assert path.startswith("/opt/venv/bin:")
+    assert "/usr/local/bin" in path
 
 
 def test_worker_install_writes_fail_closed_unit(

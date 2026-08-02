@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
 RunFunc = Callable[..., subprocess.CompletedProcess[str]]
@@ -13,6 +15,53 @@ RunFunc = Callable[..., subprocess.CompletedProcess[str]]
 PIP_STDERR_TAIL_LINES = 20
 PIP_TIMEOUT_SECONDS = 300
 SUBPROCESS_TIMEOUT_SECONDS = 10
+
+
+def _abspath_no_symlink(path: str | Path) -> Path:
+    """Absolute path without resolving symlinks.
+
+    pipx exposes ``venv/bin/python -> python3``; ``Path.resolve()`` would
+    follow that into ``/usr/bin`` and make us prefer system yt-dlp.
+    """
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def runtime_bin_dir(python_executable: Optional[str] = None) -> Path:
+    """Return the ``bin`` directory for the current (or given) Python runtime."""
+    return _abspath_no_symlink(python_executable or sys.executable).parent
+
+
+def find_yt_dlp_binary(python_executable: Optional[str] = None) -> str:
+    """
+    Locate the yt-dlp executable the worker / downloader should use.
+
+    Prefer the sibling of ``sys.executable`` (pipx/venv) so ``lt update`` and
+    downloads stay aligned. Fall back to PATH, then ``python -m yt_dlp``.
+    """
+    bin_dir = runtime_bin_dir(python_executable)
+    for name in ("yt-dlp", "yt_dlp"):
+        candidate = bin_dir / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    path_hit = shutil.which("yt-dlp") or shutil.which("yt_dlp")
+    if path_hit:
+        return path_hit
+
+    py = python_executable or sys.executable
+    # Last resort: invoke via the module (still works if console script missing).
+    return py
+
+
+def yt_dlp_invocation(
+    python_executable: Optional[str] = None,
+) -> List[str]:
+    """Return argv prefix to run yt-dlp (binary or ``python -m yt_dlp``)."""
+    binary = find_yt_dlp_binary(python_executable)
+    py = _abspath_no_symlink(python_executable or sys.executable)
+    if _abspath_no_symlink(binary) == py:
+        return [str(py), "-m", "yt_dlp"]
+    return [binary]
 
 
 def build_yt_dlp_pip_command(
@@ -59,14 +108,28 @@ def get_yt_dlp_version(
     """
     Return the installed yt-dlp version.
 
-    Prefers the same PATH binary used by the downloader, then falls back to
-    ``python -m yt_dlp --version`` in the current runtime.
+    Prefers the same resolver as the downloader (venv sibling, then PATH),
+    then falls back to ``python -m yt_dlp --version``.
     """
-    binary = shutil.which("yt-dlp") or shutil.which("yt_dlp")
-    if binary:
-        version = _version_from_binary(binary, run)
+    inv = yt_dlp_invocation(python_executable)
+    if len(inv) == 1:
+        version = _version_from_binary(inv[0], run)
         if version:
             return version
+    else:
+        try:
+            result = run(
+                inv + ["--version"],
+                capture_output=True,
+                text=True,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0:
+            version = _parse_version_output(result.stdout or result.stderr or "")
+            if version:
+                return version
 
     py = python_executable or sys.executable
     return _version_via_module(py, run)

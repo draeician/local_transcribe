@@ -50,16 +50,16 @@ Do this once on the host that will download and transcribe:
 lt queue init --queue-dir /path/to/transcription-queue
 lt queue doctor
 
-# Optional: YouTube cookies for the worker
-# mkdir -p ~/.config/local-transcribe
-# export Netscape cookies to youtube-cookies.txt, then add to config.yaml:
-#   queue.default_auth_profile: yt
-#   auth_profiles.yt.cookies_file: ~/.config/local-transcribe/youtube-cookies.txt
+# YouTube cookies for the worker (Brave default; also --browser chrome|firefox)
+lt cookies refresh
 
 lt worker install
 systemctl --user daemon-reload
 systemctl --user enable --now local-transcribe-worker.service
 systemctl --user status local-transcribe-worker.service
+
+# Retry every failed queue job (one new pending per unique source)
+lt queue retry
 ```
 
 Full mount/config notes: [docs/QUEUE_OPERATOR.md](docs/QUEUE_OPERATOR.md).

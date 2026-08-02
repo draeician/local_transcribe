@@ -23,12 +23,30 @@ worker_app = typer.Typer(help="Background transcription worker")
 SERVICE_NAME = "local-transcribe-worker.service"
 
 
-def render_systemd_unit(lt_path: str) -> str:
+def worker_path_env(python_executable: str | None = None) -> str:
+    """PATH that prefers the pipx/venv bin (yt-dlp updated by ``lt update``)."""
+    import sys
+
+    from local_transcribe.utils.ytdlp_update import runtime_bin_dir
+
+    venv_bin = str(runtime_bin_dir(python_executable or sys.executable))
+    # Deno symlink + standard system paths after the runtime bin.
+    return f"{venv_bin}:/usr/local/bin:/usr/bin:/bin"
+
+
+def render_systemd_unit(
+    lt_path: str,
+    *,
+    python_executable: str | None = None,
+) -> str:
     """Return the systemd --user unit body for the fail-closed worker.
 
     ExecStart runs ``worker run --standby`` with no flag that disables NFS
-    validation. Validation is always on for this entry point.
+    validation. Validation is always on for this entry point. PATH prefers
+    the install-time runtime bin so downloads use the same yt-dlp as
+    ``lt update``.
     """
+    path_env = worker_path_env(python_executable)
     return f"""[Unit]
 Description=Local Transcribe Background Worker
 After=network-online.target
@@ -36,6 +54,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=PATH={path_env}
 ExecStart={lt_path} worker run --standby
 Restart=on-failure
 RestartSec=10

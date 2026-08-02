@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from local_transcribe.utils.youtube import pick_channel
+from local_transcribe.utils.ytdlp_update import yt_dlp_invocation
 
 
 class RateLimitError(Exception):
@@ -81,7 +81,9 @@ def classify_yt_dlp_failure(stdout: str, stderr: str, returncode: int) -> Downlo
     ):
         return DownloadErrorInfo(
             "extractor_failure",
-            detail + "\nHint: run `lt update` to refresh yt-dlp.",
+            detail
+            + "\nHint: run `lt update` to refresh the runtime yt-dlp "
+            "(venv/pipx binary; not system /usr/bin/yt-dlp).",
             retryable=True,
         )
     if "video unavailable" in combined or " is unavailable" in combined:
@@ -92,25 +94,6 @@ def classify_yt_dlp_failure(stdout: str, stderr: str, returncode: int) -> Downlo
         return DownloadErrorInfo("postprocessing_failure", detail, retryable=True)
     return DownloadErrorInfo("download_failed", detail, retryable=True)
 
-
-def _find_yt_dlp_binary() -> str:
-    """
-    Locate the yt-dlp executable in PATH.
-
-    Returns:
-        Absolute path to yt-dlp binary.
-
-    Raises:
-        RuntimeError: If yt-dlp is not found.
-    """
-    candidate = shutil.which("yt-dlp") or shutil.which("yt_dlp")
-    if not candidate:
-        raise RuntimeError(
-            "yt-dlp executable not found in PATH. "
-            "Install yt-dlp (e.g. with pipx or your package manager) "
-            "so local-transcribe can delegate downloads to it."
-        )
-    return candidate
 
 def download_audio_and_metadata(
     url: str,
@@ -126,20 +109,29 @@ def download_audio_and_metadata(
     ignore_errors: bool = False,
 ) -> Tuple[Path, dict]:
     """
-    Download audio and metadata by delegating to the system yt-dlp CLI.
+    Download audio and metadata by delegating to the runtime yt-dlp CLI.
+
+    Prefers the pipx/venv ``yt-dlp`` sibling of ``sys.executable`` so
+    ``lt update`` and downloads stay aligned (not a stale ``/usr/bin/yt-dlp``).
 
     ``outdir`` should be a job-local scratch directory (not the final NFS
     transcript root). Uses a new process group for cancellation/timeouts.
     """
     outdir.mkdir(parents=True, exist_ok=True)
-    yt_dlp_bin = _find_yt_dlp_binary()
+    yt_prefix = yt_dlp_invocation()
+    if not yt_prefix:
+        raise RuntimeError(
+            "yt-dlp executable not found. "
+            "Install yt-dlp into the local-transcribe environment "
+            "(e.g. `lt update`) so downloads can run."
+        )
 
     # Use the same general pattern as the user's CLI script:
     # extract audio and let yt-dlp choose the best stream, defaulting to mp3.
     outtmpl = str(outdir / "%(id)s.%(ext)s")
 
     cmd = [
-        yt_dlp_bin,
+        *yt_prefix,
         "--restrict-filenames",
         "--no-progress",
         "--no-warnings",

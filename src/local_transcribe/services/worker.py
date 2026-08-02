@@ -99,7 +99,11 @@ class LocalRuntimeLock:
 
 
 def recover_processing(queue_dir: Path) -> int:
-    """Move abandoned processing jobs back to retry/pending. Returns count recovered."""
+    """Move abandoned processing jobs to retry, or failed if attempts exhausted.
+
+    SIGKILL/OOM never reaches ``fail_or_retry``, so recovery must honor
+    ``max_attempts`` or the same job can death-loop forever.
+    """
     processing = queue_dir / "processing"
     if not processing.is_dir():
         return 0
@@ -111,16 +115,28 @@ def recover_processing(queue_dir: Path) -> int:
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             logger.warning("Skipping unreadable processing file %s: %s", path, exc)
             continue
+        can_retry = ex.attempts < ex.max_attempts
+        if can_retry:
+            status: str = "retry"
+            dest = queue_dir / "retry" / path.name
+            message = "Recovered abandoned processing job"
+        else:
+            status = "failed"
+            dest = queue_dir / "failed" / path.name
+            message = (
+                "Recovered abandoned processing job; max attempts exceeded "
+                f"({ex.attempts}/{ex.max_attempts})"
+            )
         ex.error = ExecutionError(
             category="worker_interrupted",
-            message="Recovered abandoned processing job",
-            retryable=True,
+            message=message,
+            retryable=can_retry,
             occurred_at=utc_now_iso(),
         )
-        ex.status = "retry"
+        ex.status = status  # type: ignore[assignment]
         ex.updated_at = utc_now_iso()
-        ex.available_at = utc_now_iso()
-        dest = queue_dir / "retry" / path.name
+        if can_retry:
+            ex.available_at = utc_now_iso()
         try:
             atomic_state_transition(path, dest, ex.to_dict())
         except (AtomicFileError, OSError) as exc:
@@ -129,7 +145,9 @@ def recover_processing(queue_dir: Path) -> int:
             )
             continue
         count += 1
-        logger.info("Recovered processing job %s -> retry/", ex.execution_id)
+        logger.info(
+            "Recovered processing job %s -> %s/", ex.execution_id, status
+        )
     return count
 
 

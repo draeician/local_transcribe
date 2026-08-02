@@ -1,4 +1,7 @@
 yt-dlp[curl-cffi,default]>=2025.1.1
+secretstorage>=3.3.0
+jeepney>=0.8
+cryptography>=42.0.0
 faster-whisper>=1.0.3
 tqdm>=4.66.2
 soundfile>=0.12.1
