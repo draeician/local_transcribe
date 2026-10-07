@@ -1,0 +1,7 @@
+# Pending instructions
+
+1. Coder: implement tasks 011 → 012 → 013 → 014 → 015 in order (Phase 1).
+2. Do not implement JSON heartbeat leases or candidate path discovery (rejected by review).
+3. Keep normal CLI behavior unchanged until Phase 5 (task 024).
+4. Task 020 (downloader hardening) may proceed in parallel after 012 exists for scratch paths.
+5. Manager: after each task moves to review/done, keep ≥2 actionable items in wip.

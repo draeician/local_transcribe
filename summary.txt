@@ -1,0 +1,19 @@
+# Manager summary — 2026-07-18
+
+## Branch
+feat/queue-creation (queue SPEC + design docs; no queue code yet)
+
+## Spec
+SPEC-queue.md v3 accepted (NLM lock, source reservations, explicit path).
+docs/QUEUE_DESIGN_DECISIONS.md aligned.
+
+## Backlog
+Full queue implementation roadmap generated under .crules/tasks/wip/ as tasks 010–027.
+project_spec.md created with epic roadmap table.
+
+## Next for Coder
+Start task 011 (config + queue path), then 012 (atomic files) — foundation before any CLI cutover.
+Do not change default lt transcribe behavior until task 024.
+
+## Blockers
+None for foundation phases. Phase 8 and multi-host NLM tests need real NFSv3 two-client environment.
