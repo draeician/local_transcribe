@@ -178,11 +178,16 @@ def test_unload_at_idle_threshold(clock: FakeClock) -> None:
 
 
 def test_reuse_refreshes_last_used_clock(clock: FakeClock) -> None:
-    """Idle is measured from the last *actual model use*, not load time."""
+    """Acquisition is a use boundary too, so it keeps the idle floor fresh.
+
+    The authoritative end-of-use stamp comes from :meth:`ModelCache.mark_used`;
+    ``get()`` only prevents a model that is being actively handed out from
+    looking stale mid-job.
+    """
     cache, loads = _counting_cache()
     model = cache.get("medium", "cuda", "float16")
 
-    # Reuse inside the window refreshes the idle clock ...
+    # Reuse inside the window refreshes the floor ...
     clock.advance(200.0)
     assert cache.get("medium", "cuda", "float16") is model
 
@@ -292,3 +297,204 @@ def test_production_job_runner_exposes_idle_hook(tmp_path: Path) -> None:
     assert hook is not None
     assert hook() is False
     assert runner.model_cache is cache
+
+
+# --- end-of-use accounting (MODEL-IDLE-300 correction) ----------------------
+#
+# ``get()`` hands the model out; the transcription that follows *is* model use.
+# Idle time must therefore be measured from the moment a use finishes, which the
+# runner reports through ``mark_used()``. These tests are the regression guard
+# for "a transcription longer than 300s got evicted the moment it finished".
+
+CUDA_KEY = ("medium", "cuda", "float16")
+RUNNER_KEY = ("tiny", "cpu", "int8")
+
+
+def test_mark_used_restarts_idle_clock_at_end_of_use(
+    clock: FakeClock,
+) -> None:
+    """A use longer than the window must not consume it."""
+    cache, loads = _counting_cache()
+    model = cache.get(*CUDA_KEY)
+
+    clock.advance(600.0)  # ten minutes of transcription
+    assert cache.mark_used(*CUDA_KEY) is True  # ... ends here
+
+    clock.advance(DEFAULT_IDLE_UNLOAD_SECONDS - 0.5)
+    assert cache.maybe_unload_idle() is False
+    assert cache.current_key == CUDA_KEY
+
+    clock.advance(0.5)
+    assert cache.maybe_unload_idle() is True
+    assert len(loads) == 1
+
+    # The next job after the eviction loads through the normal path.
+    assert cache.get(*CUDA_KEY) is not model
+    assert len(loads) == 2
+
+
+def test_reuse_then_completion_restarts_idle_clock(clock: FakeClock) -> None:
+    """Each completed use restarts the window, so a busy model never expires."""
+    cache, loads = _counting_cache()
+    model = cache.get(*CUDA_KEY)
+
+    clock.advance(100.0)
+    assert cache.mark_used(*CUDA_KEY) is True  # job 1 finished
+
+    clock.advance(DEFAULT_IDLE_UNLOAD_SECONDS - 100.0)
+    assert cache.maybe_unload_idle() is False  # still inside job 1's window
+    assert cache.get(*CUDA_KEY) is model  # job 2 arrives in time
+
+    clock.advance(250.0)  # job 2's own transcription
+    assert cache.mark_used(*CUDA_KEY) is True  # its completion restarts it
+
+    clock.advance(DEFAULT_IDLE_UNLOAD_SECONDS - 1.0)
+    assert cache.maybe_unload_idle() is False
+    clock.advance(1.0)
+    assert cache.maybe_unload_idle() is True
+    assert len(loads) == 1
+
+
+def test_mark_used_is_key_aware_and_never_touches_a_replacement(
+    clock: FakeClock,
+) -> None:
+    """A late completion for a replaced/evicted key must not refresh anything."""
+    cache, _loads = _counting_cache()
+    cache.get(*CUDA_KEY)
+
+    clock.advance(100.0)
+    cache.get("small", "cpu", "int8")  # config change replaced the entry
+
+    assert cache.mark_used(*CUDA_KEY) is False
+    assert cache.current_key == ("small", "cpu", "int8")
+
+    clock.advance(300.0)  # 'small' is now 300s past its own last use
+    assert cache.maybe_unload_idle() is True
+
+    # Nothing cached anymore -> reporting use is a no-op, not a resurrection.
+    assert cache.mark_used("small", "cpu", "int8") is False
+    assert cache.current_key is None
+
+
+def test_mark_used_without_cached_entry_is_noop() -> None:
+    cache, _loads = _counting_cache()
+    assert cache.mark_used(*CUDA_KEY) is False
+    assert cache.current_key is None
+
+
+def _idle_test_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    transcribe: Any,
+    loader: Any = None,
+) -> tuple[ProductionJobRunner, ModelCache, Path]:
+    """Production runner + real cache, with only the Whisper call stubbed."""
+    cache = ModelCache(loader if loader is not None else (lambda m, d, c: object()))
+    transcripts = tmp_path / "tx"
+    transcripts.mkdir()
+    runner = ProductionJobRunner(
+        transcripts_root=transcripts,
+        model_cache=cache,
+        scratch_root=tmp_path / "scratch",
+    )
+    runner.transcribe_text_fn = None
+
+    audio = tmp_path / "a.wav"
+    audio.write_bytes(b"RIFF")
+
+    monkeypatch.setattr(jr_mod, "resolve_device_and_compute", lambda d, c: ("cpu", "int8"))
+    monkeypatch.setattr(jr_mod, "transcribe_with_model", transcribe)
+    return runner, cache, audio
+
+
+def _local_execution(n: int, audio: Path) -> Execution:
+    return Execution(
+        execution_id=f"e{n}",
+        source_key=f"local:deadbee{n}",
+        generation=1,
+        source=str(audio),
+        source_type="local_file",
+        options=ExecutionOptions(model="tiny", device="cpu", compute_type="int8"),
+    )
+
+
+def test_finished_transcription_starts_idle_clock_at_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """A 10-minute job must still get a full 300s of grace afterwards."""
+
+    def transcribe(model: Any, audio_path: Path, **kwargs: Any) -> str:
+        clock.advance(600.0)  # the transcription itself burns the clock
+        return "long text"
+
+    runner, cache, audio = _idle_test_runner(tmp_path, monkeypatch, transcribe=transcribe)
+
+    runner.run(_local_execution(1, audio))
+    assert cache.current_key == RUNNER_KEY
+
+    clock.advance(DEFAULT_IDLE_UNLOAD_SECONDS - 0.5)
+    assert runner.maybe_unload_idle() is False
+    clock.advance(0.5)
+    assert runner.maybe_unload_idle() is True
+
+
+def test_back_to_back_jobs_reuse_one_model_and_reset_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """Job 2 arriving inside job 1's window reuses the model and re-times it."""
+    loads: list[tuple[str, str, str]] = []
+
+    def loader(m: str, d: str, c: str) -> object:
+        loads.append((m, d, c))
+        return object()
+
+    durations = iter([100.0, 250.0])
+
+    def transcribe(model: Any, audio_path: Path, **kwargs: Any) -> str:
+        clock.advance(next(durations))
+        return "text"
+
+    runner, cache, audio = _idle_test_runner(
+        tmp_path, monkeypatch, transcribe=transcribe, loader=loader
+    )
+
+    runner.run(_local_execution(1, audio))  # ends at t=100
+    clock.advance(200.0)  # job 2 queued 200s after job 1 finished
+    runner.run(_local_execution(2, audio))  # runs 250s, ends at t=550
+
+    assert len(loads) == 1, "job 2 must reuse the cached model"
+
+    clock.advance(DEFAULT_IDLE_UNLOAD_SECONDS - 1.0)  # t=849
+    assert runner.maybe_unload_idle() is False
+    clock.advance(1.0)  # t=850 == 300s after job 2 completed
+    assert runner.maybe_unload_idle() is True
+
+
+def test_failed_transcription_still_records_end_of_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: FakeClock
+) -> None:
+    """A raising job ends the use too: no ancient timestamp, no swallowed error."""
+
+    class WhisperDied(RuntimeError):
+        pass
+
+    attempts: list[float] = []
+
+    def transcribe(model: Any, audio_path: Path, **kwargs: Any) -> str:
+        attempts.append(clock.now)
+        clock.advance(600.0)
+        raise WhisperDied("cuda exploded")
+
+    runner, cache, audio = _idle_test_runner(tmp_path, monkeypatch, transcribe=transcribe)
+
+    with pytest.raises(WhisperDied):
+        runner.run(_local_execution(1, audio))
+
+    assert len(attempts) == 1  # the exception propagated, untouched
+    assert cache.current_key == RUNNER_KEY  # entry kept, not discarded
+
+    clock.advance(DEFAULT_IDLE_UNLOAD_SECONDS - 0.5)
+    assert runner.maybe_unload_idle() is False  # clock restarted at the failure
+    clock.advance(0.5)
+    assert runner.maybe_unload_idle() is True

@@ -279,6 +279,172 @@ memory drops (`nvidia-smi`) while the worker stays resident. Afterwards, decide 
 pre-existing config-pollution test failures (item above) deserve their own fix branch, since
 they make the whole suite look red on operator machines.
 
+## Correction — idle clock must start at end of model use (MODEL-IDLE-300-CORRECTION)
+
+Date: 2026-10-07
+Agent: pi
+Branch: `fix/model-idle-unload`, correction on top of `fe71870` (not amended, not rebuilt).
+
+### Semantic defect found in architecture review of `fe71870`
+
+`fe71870` wired idle eviction correctly but measured the window from the wrong instant.
+`CachedModel.last_used` was written only by `ModelCache.get()`, i.e. at **acquisition**,
+before transcription starts. Because the worker calls idle maintenance right after a job
+finishes, any transcription longer than the threshold arrived at its first idle tick already
+looking expired:
+
+```text
+get model at T -> transcribe 600s -> job ends -> worker idle branch
+-> now - last_used == 600 >= 300 -> model released immediately
+```
+
+Acquisition time is not equivalent to end-of-use time: the hour spent inside
+`transcribe_with_model()` **is** model use, so it must not be billed as idle time. The
+practical effect was that the most expensive model load was thrown away precisely when the
+worker was most likely to need it again (busy queue = long jobs = eviction after every job),
+and the previous handoff even documented that wrong behavior as intended (caveat 3 above).
+The 300-second threshold itself was never in question and is unchanged.
+
+### Implementation correction
+
+* `services/model_cache.py` — new narrow API `ModelCache.mark_used(model, device,
+  compute_type) -> bool`: records the **end of an actual use** by moving the entry's
+  `last_used` to now. It is **key-aware** — it refreshes only the entry whose key matches and
+  returns `False` without touching anything if the entry was replaced (different
+  model/device/compute) or already evicted, so a late completion can never keep an unrelated
+  entry alive or resurrect an evicted one. `get()` keeps seeding `last_used` at acquisition,
+  now documented purely as a *floor* (start of use), never as end-of-use. Module/`get()`/
+  `maybe_unload_idle()`/`CachedModel.last_used` docstrings corrected.
+* `services/job_runner.py` — the single model-use site in `ProductionJobRunner.run()` is now
+  wrapped:
+
+  ```python
+  model = self.model_cache.get(opts.model, effective_device, effective_compute)
+  try:
+      text = transcribe_with_model(model, audio_path, language=opts.language)
+  finally:
+      self.model_cache.mark_used(opts.model, effective_device, effective_compute)
+  ```
+
+  `finally` is deliberate: a transcription that raises has still finished using the model, so
+  the clock restarts at the failure rather than leaving an ancient pre-transcription stamp.
+  The exception is **not** caught, converted, or swallowed — it still propagates to the worker
+  and the normal retry path.
+* `services/worker.py` — **unchanged by this correction.** No thread, no timer, no polling
+  change, no transcription timing in the worker, no duplicated cache state; idle maintenance
+  still runs only on the "nothing claimable" branch, and cache ownership stays in
+  `ProductionJobRunner`. `ProductionJobRunner` is the only consumer of `ModelCache` in `src/`
+  (verified by grep), so there is no other use site that could report stale completions.
+
+Resulting invariant: `last_used` == end of the most recent actual use, and the model is
+released only after 300 further seconds with no use.
+
+### Files changed (this correction)
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/services/model_cache.py` | key-aware `mark_used()`; `last_used` redefined as end-of-use; docstrings corrected |
+| `src/local_transcribe/services/job_runner.py` | `try/finally` around `transcribe_with_model()` calling `mark_used()`; hook docstring |
+| `tests/test_model_cache.py` | +6 tests; the old `get()`-based reuse test reframed as acquisition-floor behavior |
+| `tests/test_worker_model_idle.py` | wrong long-transcription test replaced by two correct ones; `ProbeRunner` gained an exact per-tick clock schedule |
+| `SPEC-queue.md` | §20 idle-unload rules now state end-of-use semantics, the `T+900 → evict at T+1200` example, and `mark_used()` key-awareness; §25.4 test requirement extended |
+| `CHANGELOG.md` | the 0.5.1 wording that equated `get()` age with "last actual use" corrected |
+
+No production behavior other than the timestamp semantics changed; queue layout/store,
+reservations, NLM lock, retry, download admission, transcript publication, CLI, `--direct`,
+worker concurrency, and configuration architecture were not touched.
+
+### Tests changed / added
+
+`tests/test_model_cache.py` (23 tests now):
+
+* `test_mark_used_restarts_idle_clock_at_end_of_use` — 600s use then a full further 300s
+  window, then release, then normal reload.
+* `test_reuse_then_completion_restarts_idle_clock` — completion → reuse inside the window →
+  its own completion restarts the window; one load throughout.
+* `test_mark_used_is_key_aware_and_never_touches_a_replacement`,
+  `test_mark_used_without_cached_entry_is_noop` — cache-identity safety.
+* `test_finished_transcription_starts_idle_clock_at_completion`,
+  `test_back_to_back_jobs_reuse_one_model_and_reset_the_window`,
+  `test_failed_transcription_still_records_end_of_use` — through the real
+  `ProductionJobRunner.run()` (only the Whisper call is stubbed); the last one asserts the
+  `RuntimeError` still propagates while the stamp is refreshed.
+
+`tests/test_worker_model_idle.py` (8 tests now):
+
+* Removed `test_worker_never_unloads_model_during_active_transcription`, whose final
+  assertion demanded eviction on the first idle tick after a long job — the wrong semantics.
+* `test_worker_keeps_model_after_long_transcription_when_next_job_is_soon` — 900s job, next
+  idle tick 60s later must not unload, and the job that then arrives reuses **one** model.
+* `test_worker_unloads_exactly_300s_after_long_transcription_completes` — through the real
+  `run_worker` loop with a pinned per-tick fake clock: acquire at `T`, transcribe to `T+900`,
+  maintenance at `T+901` (keep), `T+1199.5` (keep), `T+1200` (release), reload only afterwards
+  (`loads[1].loaded_at == completed_at + 300`).
+* Unchanged and still passing: idle window 60/120/180/240 → release at 300, reuse inside the
+  window, hook never observed while a job is active (`hook_calls_while_active == 0`), hook
+  called for a non-`ProductionJobRunner` callable, failing hook does not kill the loop,
+  plain-function runner still works, production default threshold is 300.
+
+**Proof the regression tests actually catch `fe71870`:** with the new tests kept and only the
+two production files restored to `fe71870`, the run is **9 failed, 22 passed**; restoring the
+correction gives **31 passed**. Five of those nine fail on behavioral assertions rather than
+on the missing `mark_used` API (including both worker-loop tests, e.g. `AssertionError` on
+`[False, False, True]` vs immediate eviction), so the guard is about timing semantics, not
+internals.
+
+### Verification
+
+All commands via the project venv (`.venv/bin/python`); bare `python3` on this host has no
+pytest/ruff.
+
+| Check | Result |
+|-------|--------|
+| `pytest -q tests/test_model_cache.py` | **23 passed** |
+| `pytest -q tests/test_worker_model_idle.py` | **8 passed** |
+| `pytest -q tests/test_model_cache.py tests/test_worker_model_idle.py` | **31 passed in ~1.3 s** (fake clock; no real five-minute waits) |
+| worker/CLI regression set (`test_worker_loop`, `test_worker_job_runner`, `test_worker_lock`, `test_worker_error_handling`, `test_worker_atomic_transitions`, `test_cli_worker`, `test_cli_transcribe_queue`, `test_model_cache`, `test_worker_model_idle`) | **94 passed** |
+| branch full suite `pytest -q` | **12 failed, 206 passed, 10 skipped** (identical over 3 consecutive runs; 12–13 over 6 runs because of the known flaky multiprocess test) |
+| freshly verified `origin/main` baseline (`git worktree add /tmp/base-main origin/main` @ `7234d97`, same venv, `PYTHONPATH=/tmp/base-main/src`, import path confirmed to resolve to the worktree) | **12–14 failed, 179 passed, 10 skipped** over 6 runs |
+| failing-test-ID comparison (6 runs each, union of IDs) | baseline union = 13 IDs, branch union = **the same 13 IDs**; `comm`/`diff` show **no branch-only failure and no baseline-only failure** → no previously passing test was broken and nothing new was added to the red set |
+| flaky IDs | `tests/test_queue_concurrency.py::test_concurrent_force_single_current_generation` and `::test_multiprocess_force_no_dual_current` appear intermittently in **both** baseline and branch full runs and pass in isolation |
+| `.venv/bin/python -m ruff check .` (branch) vs `ruff check .` (origin/main worktree) | **42 errors on both**; `--output-format concise` rule+file sets diffed with `comm` → **empty delta in both directions**, i.e. zero new findings (and none removed). Pre-existing findings inside touched files (`job_runner.py` unused `shutil`/`Optional`, `worker.py` unused `interactive`) were deliberately left alone as unrelated cleanup. |
+| `git diff --check` | clean |
+
+### Remaining caveats
+
+1. `get()` still refreshes `last_used` at acquisition as a documented floor. A hypothetical
+   future caller that uses a model without ever calling `mark_used()` would fall back to
+   acquisition-based aging (conservative: keeps the model longer, never evicts mid-use).
+   Today `ProductionJobRunner` is the only `ModelCache` consumer.
+2. Eviction granularity is still one poll interval, so release happens between 300 and ~305 s
+   after the end of use (no new thread/timer, by design).
+3. If a transcription never returns (hang), no completion is reported — but eviction only runs
+   on the worker's no-claim path, so a hung job still cannot lose its model; the process would
+   need the usual operator intervention.
+4. Version policy choice, flagged for the coordinator: this commit does **not** bump to 0.5.2.
+   `GIT_POLICY.md` maps `fix` → patch bump, but the code being corrected shipped only inside
+   `0.5.1`, which was bumped in `fe71870` on this same branch and has never been tagged or
+   installed (Release Protocol: a release is official only when tagged). Bumping again for a fix
+   to unreleased code would create version noise, so the `0.5.1` CHANGELOG wording was corrected
+   in place instead, keeping `pyproject.toml` / `__init__.py` / CHANGELOG consistent at 0.5.1.
+   Say the word and a follow-up `chore(release): prepare 0.5.2` + tag is trivial.
+5. `model_idle_unload_seconds` is still a spec/compiled default, not a `config.yaml` knob
+   (unchanged from the previous entry, caveat 1 there).
+6. Verification environment note from the previous entry still applies: `.venv` carries stale
+   editable-install metadata (`local_transcribe-0.4.0.dist-info`), unrelated to this change.
+
+### Recommended next step
+
+Review/merge `fix/model-idle-unload` (now `fe71870` + this correction). On the worker host:
+`pipx install . --force`, restart the systemd user worker, run one long job (>5 min), and
+confirm in `~/.local/state/local-transcribe/logs/worker.log` that **no** `Unloading idle
+model` line appears right after the job completes, and that the line first appears about five
+minutes after the last job finished — the previous build would have logged it immediately.
+Separately, the persistent 12-failure baseline (operator `~/.config/local-transcribe/config.yaml`
+polluting tmp-path queue tests, plus Rich/ANSI assertions in `tests/test_update.py`) and the two
+flaky multiprocess concurrency tests deserve their own fix branch; they are unrelated to model
+idleness and were intentionally not touched here.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

@@ -1,8 +1,12 @@
 """Worker idle-unload lifecycle (MODEL-IDLE-300, SPEC §20).
 
-Regression coverage for the bug where ``ModelCache.maybe_unload_idle()`` existed
-but no worker ever called it, so the worker-scoped Whisper model was pinned in
-memory forever.
+Regression coverage for two related bugs:
+
+1. ``ModelCache.maybe_unload_idle()`` existed but no worker ever called it, so
+   the worker-scoped Whisper model was pinned in memory forever.
+2. The idle clock started when the model was *acquired*, so a transcription
+   longer than the window looked idle the instant it finished and the model was
+   dropped immediately instead of after a further 300 seconds of real idleness.
 
 Wall clock is simulated: only ``model_cache.time`` is swapped for a fake clock,
 so idle windows of 300+ seconds are exercised instantly. The worker itself
@@ -33,7 +37,9 @@ from local_transcribe.services.worker import run_worker
 
 OPTS = ExecutionOptions(model="tiny", device="cpu", compute_type="int8")
 CACHE_KEY = ("tiny", "cpu", "int8")
-LONGER_THAN_IDLE = 10_000.0
+#: A transcription that outlives the idle window by 3x. Ten minutes of
+#: transcription is model *use*, so it must not be billed as idle time.
+LONG_TRANSCRIPTION = 900.0
 
 
 class FakeClock:
@@ -107,7 +113,8 @@ def whisper_stub(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-de
     """Replace real Whisper work in ProductionJobRunner with a stub.
 
     Returns the mutable ``events`` list plus the fake clock handle so tests can
-    simulate a transcription that outlives the idle threshold.
+    simulate a transcription that outlives the idle threshold. ``long_seconds``
+    is consumed by the first transcription only; later jobs are quick.
     """
     state: dict[str, Any] = {"clock": None, "long_seconds": 0.0, "loads": []}
 
@@ -116,6 +123,7 @@ def whisper_stub(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-de
     def fake_transcribe(model, audio_path, **kwargs):  # type: ignore[no-untyped-def]
         if state["long_seconds"]:
             state["clock"].advance(state["long_seconds"])  # type: ignore[union-attr]
+            state["long_seconds"] = 0.0
         state["events"].append(  # type: ignore[index]
             {
                 "model_key": model.key,
@@ -146,11 +154,15 @@ class ProbeRunner(ProductionJobRunner):
         *args: Any,
         clock: FakeClock,
         step_seconds: float,
+        step_schedule: list[float] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.clock = clock
         self.step_seconds = step_seconds
+        # Optional per-tick wall-clock steps, for tests that need the idle
+        # maintenance to run at exact ages (e.g. 299.5s vs 300.0s).
+        self.step_schedule: list[float] = step_schedule or []
         self.active_execution_id: str | None = None
         self.hook_calls_while_active = 0
         self.idle_ticks: list[dict[str, Any]] = []
@@ -169,7 +181,9 @@ class ProbeRunner(ProductionJobRunner):
         if self.active_execution_id is not None:
             self.hook_calls_while_active += 1
         # Simulate wall-clock time elapsing between worker polls.
-        self.clock.advance(self.step_seconds)
+        index = len(self.idle_ticks)
+        step = self.step_schedule[index] if index < len(self.step_schedule) else self.step_seconds
+        self.clock.advance(step)
         cached_before = self.model_cache.current_key is not None
         unloaded = super().maybe_unload_idle()
         self.idle_ticks.append(
@@ -202,6 +216,7 @@ def build_runner(
     step_seconds: float,
     cache: ModelCache | None = None,
     loads: list[FakeModel] | None = None,
+    step_schedule: list[float] | None = None,
 ) -> ProbeRunner:
     loads = [] if loads is None else loads
     whisper_stub["clock"] = clock
@@ -212,6 +227,7 @@ def build_runner(
         scratch_root=tmp_path / "scratch",
         clock=clock,
         step_seconds=step_seconds,
+        step_schedule=step_schedule,
     )
     return runner
 
@@ -317,27 +333,33 @@ def test_worker_reuses_cached_model_for_jobs_inside_idle_window(
     assert runner.hook_calls_while_active == 0
 
 
-def test_worker_never_unloads_model_during_active_transcription(
+def test_worker_keeps_model_after_long_transcription_when_next_job_is_soon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     clock: FakeClock,
     whisper_stub: dict[str, Any],
 ) -> None:
-    """A transcription longer than the idle window keeps its model."""
+    """Time spent transcribing is use, not idle time.
+
+    The first job runs 900s (3x the idle window). The idle clock must start
+    when that transcription *finishes*, so the next idle tick (1 minute later)
+    has to keep the model and the job that arrives shortly afterwards must
+    reuse it -- one load, no eviction.
+    """
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     queue = tmp_path / "queue"
     initialize_queue_layout(queue)
     store = QueueStore(queue)
     enqueue_local(store, tmp_path, "long.wav")
 
-    whisper_stub["long_seconds"] = LONGER_THAN_IDLE  # clock jumps mid-job
+    whisper_stub["long_seconds"] = LONG_TRANSCRIPTION  # clock jumps inside job 1
     loads: list[FakeModel] = []
     runner = build_runner(
         tmp_path, clock, whisper_stub, step_seconds=60.0, loads=loads
     )
 
     def on_idle_tick(tick: int, unloaded: bool) -> None:
-        if tick == 1:
+        if tick == 1:  # next job turns up 60s after the long job finished
             enqueue_local(store, tmp_path, "next.wav")
 
     runner.on_idle_tick = on_idle_tick
@@ -345,13 +367,80 @@ def test_worker_never_unloads_model_during_active_transcription(
     processed = worker_run(queue, runner, max_jobs=2)
 
     assert processed == 2
-    # The cached instance survived the whole (over-threshold) transcription.
+    assert len(loads) == 1, "the model must survive a long job and be reused"
+    assert [t["unloaded"] for t in runner.idle_ticks] == [False]
+    assert runner.idle_ticks[0]["cached_before"] is True
     assert all(e["cached_during_job"] is True for e in whisper_stub["events"])
     assert runner.hook_calls_while_active == 0
-    # The model is only released on a genuine idle tick, then reloaded.
-    assert runner.idle_ticks[0]["cached_before"] is True
-    assert runner.idle_ticks[0]["unloaded"] is True
+    assert len(list((queue / "completed").glob("*.json"))) == 2
+
+
+def test_worker_unloads_exactly_300s_after_long_transcription_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: FakeClock,
+    whisper_stub: dict[str, Any],
+) -> None:
+    """The five-minute window is measured from completion, not acquisition.
+
+    Timeline (fake clock): acquire at T -> transcribe until T+900 -> idle
+    maintenance at T+901 and T+1199.5 keeps the model, T+1200 (= 300s after the
+    use ended) releases it, and the next job reloads through the normal path.
+    """
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    queue = tmp_path / "queue"
+    initialize_queue_layout(queue)
+    store = QueueStore(queue)
+    enqueue_local(store, tmp_path, "long.wav")
+
+    whisper_stub["long_seconds"] = LONG_TRANSCRIPTION
+    loads: list[FakeModel] = []
+    # Idle maintenance must observe these ages *after the use ended*: 1s and
+    # 299.5s keep the model, 300s releases it. The worker steps the fake clock
+    # by the differences between consecutive target ages.
+    ages_after_completion = [
+        1.0,
+        DEFAULT_IDLE_UNLOAD_SECONDS - 0.5,
+        DEFAULT_IDLE_UNLOAD_SECONDS,
+    ]
+    steps = [ages_after_completion[0]] + [
+        later - earlier
+        for earlier, later in zip(
+            ages_after_completion, ages_after_completion[1:]
+        )
+    ]
+    runner = build_runner(
+        tmp_path,
+        clock,
+        whisper_stub,
+        step_seconds=60.0,  # unused: the schedule pins every tick exactly
+        loads=loads,
+        step_schedule=steps,
+    )
+
+    def on_idle_tick(tick: int, unloaded: bool) -> None:
+        if unloaded:  # a later job arrives only after the eviction
+            enqueue_local(store, tmp_path, "after-eviction.wav")
+
+    runner.on_idle_tick = on_idle_tick
+
+    processed = worker_run(queue, runner, max_jobs=2)
+
+    assert processed == 2
+    completed_at = loads[0].loaded_at + LONG_TRANSCRIPTION
+    ages = [t["now"] - completed_at for t in runner.idle_ticks]
+
+    assert ages == ages_after_completion
+    assert [t["unloaded"] for t in runner.idle_ticks] == [False, False, True]
+    assert all(t["cached_before"] for t in runner.idle_ticks)
+    assert runner.hook_calls_while_active == 0
+
+    # The long job itself never lost its model, and the reload happened only
+    # after the genuine 300s of post-transcription idleness.
+    assert all(e["cached_during_job"] is True for e in whisper_stub["events"])
     assert [m.key for m in loads] == [CACHE_KEY, CACHE_KEY]
+    assert loads[1].loaded_at == completed_at + DEFAULT_IDLE_UNLOAD_SECONDS
+    assert len(list((queue / "completed").glob("*.json"))) == 2
 
 
 def test_worker_runs_idle_maintenance_while_nothing_is_claimable(
