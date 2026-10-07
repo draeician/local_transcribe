@@ -643,6 +643,7 @@ clean stale tmp files
 recover processing records
 promote eligible retry records
 select next eligible execution
+if nothing is claimable: run idle model maintenance (§20), sleep poll interval, re-poll
 claim through rename to processing/
 verify source reservation generation is current
 check for valid existing transcript
@@ -1315,7 +1316,16 @@ Worker-scoped cache keyed by `(model, effective_device, effective_compute_type)`
 * Reload on configuration change.  
 * Preserve CUDA preflight and CPU fallback.  
 * Log effective device/compute type.  
-* Optional unload after `model_idle_unload_seconds`.  
+* Unload the cached model after `model_idle_unload_seconds` (**default 300**, five minutes) of *model inactivity*.
+
+Idle-unload rules (shipped):
+
+* Idle time is measured from the cached entry's **last actual model use**; every cache `get()` — reuse included — refreshes it. It is never measured from worker start, queue poll, or loop iteration.
+* The worker loop performs idle maintenance only on its "nothing claimable" path, between jobs, so an unload can never interrupt an active transcription.
+* The runner that owns the cache (`ProductionJobRunner`) exposes the narrow optional hook `maybe_unload_idle()`. The worker looks the hook up duck-typed; arbitrary injected `job_runner` callables are not required to expose it and keep working unchanged.
+* Unloading releases the cached model reference (freed by normal reference counting). No global CUDA/CTranslate2 reset or other GPU-wide side effect is performed.
+* The next job after an eviction loads the model normally through the same cache path.
+* Eviction is evaluated in the existing polling loop — no second timer or background thread.
 
 Refactor `transcriber.py` to separate model construction from transcription and accept a reusable model or provider. Atomic transcript publication moves into the shared publisher path.
 
@@ -1393,7 +1403,7 @@ worker:
   standby_retry_seconds: 30
   stale_processing_seconds: 3600
   stale_tmp_seconds: 3600
-  model_idle_unload_seconds: 1800
+  model_idle_unload_seconds: 300
   max_interactive_streak: 5
 
 rate_limit:
@@ -1408,6 +1418,8 @@ auth_profiles:
 ```
 
 **Removed vs v2:** `lease_renew_seconds`, `stale_lease_seconds`, multi-path `candidates` auto-discovery.
+
+**Status note:** the `worker:` block above documents the compiled defaults; these values are not read from `config.yaml` today. `model_idle_unload_seconds` ships as `DEFAULT_IDLE_UNLOAD_SECONDS = 300.0` in `services/model_cache.py` (see §20).
 
 Queue and transcript roots may use NFS. Cookie files and temporary media remain local.
 
@@ -1518,6 +1530,7 @@ Startup must fail for: `nolock`; `local_lock=posix`; `local_lock=all`; `soft` / 
 * Recovery for completed transcript + leftover processing record.  
 * Recovery for invalid transcript.  
 * Model cache reuse and reload.  
+* Model cache idle unload after `model_idle_unload_seconds`, including worker-loop coverage that the model survives an in-flight transcription and reloads on the next job.
 * Local-file shared-root and host-affinity rules.  
 
 ### 25.5 Interruption tests

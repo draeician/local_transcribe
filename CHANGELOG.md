@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Worker auto-imports `~/references/transcripts/transcript-pending.md` (configurable) so ref-cli can enqueue without installing `local-transcribe`
 
+## [0.5.1] - 2026-10-07
+
+### Fixed
+- The background worker now actually unloads its cached Whisper model after 300 seconds (5 minutes) of model idleness. `ModelCache.maybe_unload_idle()` existed but was never called, and its default was 1800s, so a long-running worker pinned the model (and its VRAM) forever
+- Idle time is measured from the model's last actual use, so back-to-back jobs inside the window still reuse the cached model; the model is never released during an active transcription and reloads on the next job after eviction
+
 ## [0.5.0] - 2026-07-30
 
 ### Added

@@ -144,6 +144,16 @@ class ProductionJobRunner:
         result = self.run(execution, scratch_dir=scratch_dir)
         return result.as_worker_payload()
 
+    def maybe_unload_idle(self) -> bool:
+        """Release the cached Whisper model if it has been idle past the threshold.
+
+        This is the worker's idle-maintenance hook (SPEC §20). The runner owns
+        the worker-scoped :class:`ModelCache`; the worker loop calls this only
+        between jobs, never during :meth:`run`. Returns ``True`` when a model
+        was released.
+        """
+        return self.model_cache.maybe_unload_idle()
+
     def run(
         self,
         execution: Execution,
