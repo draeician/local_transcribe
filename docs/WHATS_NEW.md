@@ -1,5 +1,16 @@
 # What's New
 
+## 0.5.1 — worker releases the Whisper model when idle (2026-10-08)
+
+- The background worker now **unloads the cached Whisper model after 5 minutes of real idleness** (`model_idle_unload_seconds: 300`), so an idle queue stops holding GPU/CPU memory. The next job reloads the model automatically.
+- Idleness is counted from the **end** of the last transcription, so long jobs are not evicted the moment they finish and jobs that arrive within the window still reuse the loaded model.
+- `lt cookies refresh` (Brave by default) refreshes the YouTube cookies the worker uses; `lt queue retry` with no arguments re-enqueues every failed source.
+- Worker downloads use the pipx/venv `yt-dlp` (not a stale `/usr/bin/yt-dlp`); the systemd unit pins `PATH`.
+
+Docs: [CHANGELOG.md](../CHANGELOG.md) · [QUEUE_OPERATOR.md](QUEUE_OPERATOR.md)
+
+---
+
 ## 0.5.0 — NFSv3 background transcription queue (2026-07-30)
 
 Default execution is now **queue-first**:

@@ -1,7 +1,7 @@
 # Project Specification — local-transcribe
 
 **Package:** `local-transcribe` (`lt` CLI)  
-**Version:** 0.5.0  
+**Version:** 0.5.1  
 **Status:** Active development  
 **Primary language:** Python 3.10+  
 **Install:** pipx / editable venv  

@@ -7,14 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-08
+
 ### Added
 - Worker auto-imports `~/references/transcripts/transcript-pending.md` (configurable) so ref-cli can enqueue without installing `local-transcribe`
-
-## [0.5.1] - 2026-10-07
+- `lt cookies refresh` (Brave by default) to mint/refresh the YouTube cookies the worker authenticates with, and `lt queue retry` with no arguments now re-enqueues every failed source (`--include-cancelled` to include cancelled ones)
 
 ### Fixed
 - The background worker now actually unloads its cached Whisper model after 300 seconds (5 minutes) of model idleness. `ModelCache.maybe_unload_idle()` existed but was never called, and its default was 1800s, so a long-running worker pinned the model (and its VRAM) forever
 - Idle time is measured from the **end** of the model's most recent use, not from when it was handed out: `ProductionJobRunner` reports completion of every `transcribe_with_model()` call (success or failure) to `ModelCache.mark_used()`. Time spent transcribing is model use, so a job longer than five minutes no longer looks idle the moment it finishes and still gets a full five minutes of cache; jobs arriving inside that window reuse the loaded model, and eviction still never happens during an active transcription
+- The worker now resolves the `yt-dlp` installed in its own pipx/venv instead of a stale `/usr/bin/yt-dlp`, and the systemd unit pins `PATH`, so downloads and `lt update` stay on the same binary
+- Recovering abandoned `processing` jobs after a crash honors `max_attempts` instead of death-looping the same source forever
 
 ## [0.5.0] - 2026-07-30
 

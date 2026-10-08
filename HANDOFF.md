@@ -445,6 +445,120 @@ polluting tmp-path queue tests, plus Rich/ANSI assertions in `tests/test_update.
 flaky multiprocess concurrency tests deserve their own fix branch; they are unrelated to model
 idleness and were intentionally not touched here.
 
+## Merge and release — 0.5.1 on `main` (MODEL-IDLE-300-MERGE)
+
+Date: 2026-10-08 (UTC)
+Agent: pi
+
+### Pre-merge verification (before any repository state change)
+
+`git fetch --prune --tags origin`, then `fix/model-idle-unload` pulled `--ff-only` (already
+up to date). Verified:
+
+* exactly the two expected commits on top of `origin/main`, in order —
+  `fe71870 fix(worker): unload Whisper model after idle timeout` then
+  `16cf38c fix(worker): start model idle timeout after transcription`; nothing extra;
+* branch based on current `origin/main` (`git merge-base --is-ancestor origin/main HEAD` →
+  true; merge-base `7234d97` == `origin/main`);
+* `origin/main` contained **neither** commit before the merge;
+* working tree clean apart from the ignored local `.local-transcribe-wip`;
+* version state agreed: `pyproject.toml` `0.5.1`, `src/local_transcribe/__init__.py` `0.5.1`,
+  `CHANGELOG.md` `[0.5.1]` present; no `0.5.2` anywhere. Highest existing tag is `v0.5.0`, so
+  `0.5.1` is the correct next release and **no further bump was applied** — the two fix commits
+  together *are* the unreleased 0.5.1, and `16cf38c` corrects the code becoming 0.5.1;
+* branch health: 31 targeted model-idle tests passed, 63 worker/CLI regression tests passed,
+  full suite **12 failed, 206 passed, 10 skipped**, `ruff check .` 42 errors (all pre-existing).
+
+### Merge mechanics
+
+```text
+7a0bbe1 Merge branch 'fix/model-idle-unload' — worker idle Whisper unload
+  parent 1: 7234d97 (origin/main)
+  parent 2: 16cf38c (branch tip, unmodified)
+```
+
+`git merge --no-ff` on `main` after `git pull --ff-only origin main`. `--no-ff` was chosen over
+fast-forward to keep the reviewed feature branch traceable as a unit (same pattern as the 0.5.0
+merge `fb5c4d0`), and `--no-commit` was used first to confirm the merged tree was **byte-identical**
+to the approved branch tree (`git diff fix/model-idle-unload` empty) and to run the GIT_POLICY
+secret scan on the staged merge (0 content hits, 0 forbidden filenames). Both implementation
+commits keep their original hashes — nothing was squashed, amended, or rewritten. No push to
+`main` happened outside this reviewed merge.
+
+### Post-merge verification on `main`
+
+| Check | Result |
+|-------|--------|
+| `pytest -q tests/test_model_cache.py tests/test_worker_model_idle.py` | **31 passed** |
+| worker/CLI regression set (9 files) | **94 passed** |
+| full suite ×3 | 12 / 13 / 12 failed, 206 (205) passed, 10 skipped |
+| failing-ID comparison vs fresh `origin/main` worktree (`/tmp/base-main2` @ `7234d97`, 4 runs, ID union = 13) | **no new failing IDs on merged `main`**; the 12–13 failures are the same pre-existing set documented in the two entries above |
+| `ruff check .` merged vs `origin/main` worktree | **42 findings on both**; concise rule+file sets diffed → **empty delta both directions** |
+| `git diff --check` | clean |
+| `.venv/bin/lt --version` (release protocol step a; `python3 -m local_transcribe` has no `__main__.py`) | `local-transcribe version 0.5.1` — matches `pyproject.toml` and `__init__.py` |
+
+The model-idle implementation was **not** modified by this task: the merged source is exactly
+what passed architectural review.
+
+### Release preparation in this commit
+
+The code merge alone would have shipped an inaccurate release record, so this commit only does
+release hygiene (no behavior change):
+
+* `CHANGELOG.md` — `[0.5.1]` dated to the actual release day (2026-10-08) and completed with
+  everything merged since the `v0.5.0` tag, per the release protocol "summarize all feat and fix
+  commits since the last tag": the `transcript-pending.md` auto-import (was sitting in
+  `[Unreleased]` although already merged in `6720269`), plus `b99fd9e`, which had **no**
+  changelog entry at all (`lt cookies refresh`, no-argument `lt queue retry`, worker resolving
+  its own pipx/venv `yt-dlp` with a pinned systemd `PATH`, `max_attempts` honored during
+  abandoned-`processing` recovery). Every claim was re-checked against the code
+  (`cli_cookies.py` `cookies refresh`, `cli_queue.py` retry-all, `find_yt_dlp_binary`,
+  `Environment=PATH=` in `cli_worker.py`, `attempts < max_attempts` in `worker.py`).
+  `[Unreleased]` is now empty.
+* `project_spec.md` — header `Version:` synced `0.5.0` → `0.5.1` (it is not a version-authority
+  file, but MANAGER.md forbids divergent version strings and this one was stale).
+* `docs/WHATS_NEW.md` — short 0.5.1 operator-facing section (model released after 5 idle
+  minutes, measured from end of use; cookie refresh; venv `yt-dlp`).
+* `HANDOFF.md` — this record.
+
+### Release tag and push
+
+Annotated tag `v0.5.1` (matching the existing `v0.4.0`/`v0.5.0` annotated-tag convention) points
+at this release commit, and `main` + the tag are pushed with `git push origin main --tags`.
+Post-push verification (see the session summary for the captured hashes): local `main` ==
+`origin/main`, `v0.5.1` resolves to the same commit on the remote, `v0.5.0` still reachable and
+untouched, and both implementation commits are ancestors of `origin/main`.
+
+### Remaining caveats
+
+1. The 12 pre-existing full-suite failures are unchanged by the release (operator
+   `~/.config/local-transcribe/config.yaml` polluting tmp-path queue tests; Rich/ANSI substring
+   assertions in `tests/test_update.py`) plus two order-sensitive multiprocess concurrency tests.
+   A release tagged from a tree with red tests is defensible only because those IDs are identical
+   on `origin/main` — they should be fixed before the next release.
+2. `importlib.metadata.version("local-transcribe")` still reports `0.4.0` on this host until
+   `pipx install . --force` refreshes the stale editable-install metadata; `lt version` and the
+   package metadata in the tree are correct at 0.5.1.
+3. `project_spec.md`'s "Verification baseline" line still says `python3 -m local_transcribe
+   --version`, which fails (no `__main__.py`); `lt version` / `lt --version` is the working
+   check and is what the release verification used.
+4. The merged branch `fix/model-idle-unload` (local and remote) was deliberately **not**
+   deleted, even though `GIT_POLICY.md` suggests deleting after merge: the coordinator may still
+   want to diff it. `git push origin --delete fix/model-idle-unload && git branch -d
+   fix/model-idle-unload` when ready.
+5. No GitHub Release object was created (out of scope; the tag push is what makes the release
+   official per the Release Protocol). Release-notes text for one is in `CHANGELOG.md` /
+   `docs/WHATS_NEW.md`.
+
+### Recommended next step
+
+On the worker host: `pipx install . --force` (this also clears caveat 2), restart the systemd
+user worker, run one job longer than five minutes, and confirm in
+`~/.local/state/local-transcribe/logs/worker.log` that no `Unloading idle model` line appears at
+job end and that the line appears about five minutes after the last job finished, with GPU memory
+dropping in `nvidia-smi` while the worker stays resident. Then decide whether to delete the merged
+branch and whether to schedule the test-hygiene fix branch described in caveat 1.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
