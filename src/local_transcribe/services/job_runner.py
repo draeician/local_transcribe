@@ -144,6 +144,18 @@ class ProductionJobRunner:
         result = self.run(execution, scratch_dir=scratch_dir)
         return result.as_worker_payload()
 
+    def maybe_unload_idle(self) -> bool:
+        """Release the cached Whisper model if it has been idle past the threshold.
+
+        This is the worker's idle-maintenance hook (SPEC §20). The runner owns
+        the worker-scoped :class:`ModelCache`; the worker loop calls this only
+        between jobs, never during :meth:`run`. Idleness is counted from the end
+        of the last transcription (see :meth:`ModelCache.mark_used`), so a job
+        that ran longer than the threshold does not look idle when it finishes.
+        Returns ``True`` when a model was released.
+        """
+        return self.model_cache.maybe_unload_idle()
+
     def run(
         self,
         execution: Execution,
@@ -212,11 +224,20 @@ class ProductionJobRunner:
                 opts.device, opts.compute_type
             )
             model = self.model_cache.get(opts.model, effective_device, effective_compute)
-            text = transcribe_with_model(
-                model,
-                audio_path,
-                language=opts.language,
-            )
+            try:
+                text = transcribe_with_model(
+                    model,
+                    audio_path,
+                    language=opts.language,
+                )
+            finally:
+                # Time spent inside transcribe_with_model() is model *use*, so
+                # the idle clock restarts when the attempt ends -- including an
+                # attempt that raised. The transcription error itself is never
+                # swallowed here; it keeps propagating to the worker.
+                self.model_cache.mark_used(
+                    opts.model, effective_device, effective_compute
+                )
 
         payload = build_output_json(meta, text)
         published = publish_transcript(

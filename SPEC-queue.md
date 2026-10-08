@@ -643,6 +643,7 @@ clean stale tmp files
 recover processing records
 promote eligible retry records
 select next eligible execution
+if nothing is claimable: run idle model maintenance (§20), sleep poll interval, re-poll
 claim through rename to processing/
 verify source reservation generation is current
 check for valid existing transcript
@@ -1315,7 +1316,19 @@ Worker-scoped cache keyed by `(model, effective_device, effective_compute_type)`
 * Reload on configuration change.  
 * Preserve CUDA preflight and CPU fallback.  
 * Log effective device/compute type.  
-* Optional unload after `model_idle_unload_seconds`.  
+* Unload the cached model after `model_idle_unload_seconds` (**default 300**, five minutes) of *model inactivity*.
+
+Idle-unload rules (shipped):
+
+* Idle time is measured from the **end of the most recent actual use** of the cached model. `get()` marks the *start* of a use (it only keeps the age from going stale while a job is mid-flight); the runner reports completion through `ModelCache.mark_used(model, effective_device, effective_compute_type)`, and that is what restarts the clock. Idle time is never measured from worker start, queue poll, loop iteration, model load, or acquisition.
+* **Active transcription is never idle time.** `ProductionJobRunner` calls `mark_used()` when `transcribe_with_model()` returns — in a `finally`, so a transcription that raises also ends its use and refreshes the stamp. A job that ran longer than `model_idle_unload_seconds` therefore does *not* consume the window and is not evicted the moment it finishes.
+* Example (threshold 300): acquire at `T`, transcribe until `T+900` → idle maintenance at `T+901` and `T+1199.5` keeps the model, `T+1200` (300s after the use ended) releases it, and the next job reloads.
+* `mark_used()` is key-aware: a completion reported for a key that is no longer the cached entry refreshes nothing, so a replaced or already-evicted entry cannot be kept alive or revived by a late report.
+* The worker loop performs idle maintenance only on its "nothing claimable" path, between jobs, so an unload can never interrupt an active transcription.
+* The runner that owns the cache (`ProductionJobRunner`) exposes the narrow optional hook `maybe_unload_idle()`. The worker looks the hook up duck-typed; arbitrary injected `job_runner` callables are not required to expose it and keep working unchanged.
+* Unloading releases the cached model reference (freed by normal reference counting). No global CUDA/CTranslate2 reset or other GPU-wide side effect is performed.
+* The next job after an eviction loads the model normally through the same cache path.
+* Eviction is evaluated in the existing polling loop — no second timer or background thread.
 
 Refactor `transcriber.py` to separate model construction from transcription and accept a reusable model or provider. Atomic transcript publication moves into the shared publisher path.
 
@@ -1393,7 +1406,7 @@ worker:
   standby_retry_seconds: 30
   stale_processing_seconds: 3600
   stale_tmp_seconds: 3600
-  model_idle_unload_seconds: 1800
+  model_idle_unload_seconds: 300
   max_interactive_streak: 5
 
 rate_limit:
@@ -1408,6 +1421,8 @@ auth_profiles:
 ```
 
 **Removed vs v2:** `lease_renew_seconds`, `stale_lease_seconds`, multi-path `candidates` auto-discovery.
+
+**Status note:** the `worker:` block above documents the compiled defaults; these values are not read from `config.yaml` today. `model_idle_unload_seconds` ships as `DEFAULT_IDLE_UNLOAD_SECONDS = 300.0` in `services/model_cache.py` (see §20).
 
 Queue and transcript roots may use NFS. Cookie files and temporary media remain local.
 
@@ -1518,6 +1533,8 @@ Startup must fail for: `nolock`; `local_lock=posix`; `local_lock=all`; `soft` / 
 * Recovery for completed transcript + leftover processing record.  
 * Recovery for invalid transcript.  
 * Model cache reuse and reload.  
+* Model cache idle unload after `model_idle_unload_seconds`, including worker-loop coverage that the model survives an in-flight transcription and reloads on the next job.
+* Idle age measured from the **end** of a use: a transcription longer than `model_idle_unload_seconds` must stay cached for a full window after it completes (both success and failure paths), and a job arriving inside that window must reuse the same model.
 * Local-file shared-root and host-affinity rules.  
 
 ### 25.5 Interruption tests

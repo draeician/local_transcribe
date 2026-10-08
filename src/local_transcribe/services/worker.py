@@ -21,6 +21,7 @@ from local_transcribe.services.legacy_import import (
     default_legacy_pending_path,
     maybe_import_legacy_pending,
 )
+from local_transcribe.services.model_cache import resolve_idle_maintenance
 from local_transcribe.services.mount_validation import validate_queue_mount
 from local_transcribe.services.queue_models import (
     TERMINAL_STATUSES,
@@ -332,6 +333,11 @@ def run_worker(
 
         job_runner = create_default_job_runner(transcripts_root=transcripts_root)
 
+    # Optional idle model maintenance (SPEC §20). A runner that owns a
+    # worker-scoped model cache exposes ``maybe_unload_idle()``; arbitrary
+    # injected callables are not required to, and are used as-is.
+    idle_maintenance = resolve_idle_maintenance(job_runner)
+
     queue_cfg = load_config().queue
     if require_statd is None:
         require_statd = validate_nfs
@@ -417,6 +423,20 @@ def run_worker(
             and _execution_file_in_terminal_dir(resolved, until_execution_id)
         )
 
+    def _run_idle_maintenance() -> None:
+        """Give the job runner a chance to drop an idle cached model.
+
+        Only ever called on the "nothing claimable" path, i.e. while this
+        process holds no running job, so a transcription in flight can never
+        lose its model. Failures must not stop the queue loop.
+        """
+        if idle_maintenance is None:
+            return
+        try:
+            idle_maintenance()
+        except Exception:  # noqa: BLE001 — idle maintenance is best-effort
+            logger.exception("Idle model maintenance failed; continuing worker loop")
+
     try:
         recover_processing(resolved)
         _import_legacy_pending(force=True)
@@ -433,6 +453,9 @@ def run_worker(
                     break
                 if once or (max_jobs is not None and processed >= max_jobs):
                     break
+                # Idle: reap the cached Whisper model once it has been unused
+                # past the cache threshold instead of holding VRAM forever.
+                _run_idle_maintenance()
                 if until_execution_id is not None:
                     # Target still non-terminal but nothing claimable yet (e.g. retry
                     # delay). Keep polling briefly.
