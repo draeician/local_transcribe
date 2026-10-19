@@ -927,6 +927,22 @@ contention, not a code path. The steady-state numbers above are reproducible.
 4. `HSA_OVERRIDE_GFX_VERSION` is intentionally never used; `gfx1151` is a real
    target of the pinned wheels.
 
+### Repository lifecycle
+
+* Feature commits `601b7f8`, `a2c19ad`, `270b08e`, `9a44619`, `0186958` on
+  `feat/amd-rocm-transcription` (based on `origin/main` at `3e0e236`).
+* Merge commit `938844b` (`--no-ff` on `main`; merged tree verified
+  byte-identical to the reviewed branch tree via `git diff <branch> HEAD`).
+* `origin/main` == local `main` == `938844b`; merged branch deleted locally and
+  on the remote (`git ls-remote --heads origin` no longer lists it).
+* The local WIP marker `.local-transcribe-wip` was present for the whole task and
+  removed only after the final on-`main` verification; `git ls-files`,
+  `git log --all`, and `git status` confirm it was never tracked, committed, or
+  pushed.
+* Version is consistent at `0.7.0` across `pyproject.toml`,
+  `src/local_transcribe/__init__.py`, `project_spec.md`, and `CHANGELOG.md`.
+  No tag pushed (not declared an official release here).
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
