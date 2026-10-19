@@ -686,6 +686,23 @@ Merge to `main`, then on a real GPU host run
 `./install_local_transcribe.py --cuda` and `lt doctor`, and transcribe one
 YouTube video to confirm CUDA acceleration end-to-end.
 
+### Repository lifecycle record
+
+* Feature commit: `8a6f9a5` `feat(install): portable CPU/CUDA installation and
+  runtime selection` on `fix/portable-cpu-cuda-install` (based on `origin/main`
+  `b4ec265`).
+* Merge commit: `a4801fe` `Merge branch 'fix/portable-cpu-cuda-install' —
+  portable CPU/CUDA installation` (`--no-ff` on `main`; merged tree verified
+  byte-identical to the reviewed branch tree via `git diff <branch> HEAD`).
+* `origin/main` == local `main` == `a4801fe` after `git push origin main`;
+  merged branch deleted both locally and on the remote
+  (`git ls-remote --heads origin` no longer lists it).
+* The local WIP marker `.local-transcribe-wip` existed throughout and was
+  removed only after the final on-`main` verification; `git ls-files`,
+  `git log --all`, and `git status` confirm it was never tracked, committed, or
+  pushed.
+* No new tag was pushed (0.6.0 is not declared an official release here).
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
