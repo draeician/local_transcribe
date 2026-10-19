@@ -211,17 +211,18 @@ def prepare_rocm_wheels(
 def build_rocm_install_steps(plan: RocmWheelPlan, wheel_path: Path) -> List[List[str]]:
     """pipx commands to install the ROCm stack into the pipx venv.
 
-    ``--no-deps`` is used for both injections so pip never re-resolves
-    ``ctranslate2`` (which would silently fetch the PyPI CUDA wheel) and never
-    pulls unrelated packages into the isolated venv.
+    ``--pip-args=--no-deps`` (single ``=``-joined argument) is used for both
+    injections so pip never re-resolves ``ctranslate2`` (which would silently
+    fetch the PyPI CUDA wheel) and never pulls unrelated packages into the
+    isolated venv. The ``=`` form is required because ``--pip-args`` takes a
+    value that itself begins with ``--``.
     """
     return [
         [
             "pipx",
             "inject",
             "--force",
-            "--pip-args",
-            "--no-deps",
+            "--pip-args=--no-deps",
             "--index-url",
             plan.rocm_sdk_index_url,
             "local-transcribe",
@@ -231,8 +232,7 @@ def build_rocm_install_steps(plan: RocmWheelPlan, wheel_path: Path) -> List[List
             "pipx",
             "inject",
             "--force",
-            "--pip-args",
-            "--no-deps",
+            "--pip-args=--no-deps",
             "local-transcribe",
             str(wheel_path),
         ],
