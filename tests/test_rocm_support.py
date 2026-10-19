@@ -497,3 +497,35 @@ def test_installer_documents_rocm_profile() -> None:
     text = INSTALLER_PATH.read_text(encoding="utf-8")
     assert "--rocm" in text
     assert "TheRock" in text or "rocm-sdk" in text
+
+
+def test_package_import_preloads_rocm_runtime() -> None:
+    """Importing the package must prepare the ROCm runtime before ctranslate2.
+
+    faster_whisper imports ctranslate2 at module load, so the preload has to run
+    at package import; otherwise the ROCm wheel fails with a missing
+    libhiprand/libhipblas soname.
+    """
+    import local_transcribe
+
+    init_path = Path(local_transcribe.__file__)
+    source = init_path.read_text(encoding="utf-8")
+    assert "_preload_rocm_runtime" in source
+    assert "prepare_gpu_runtime" in source
+
+
+def test_preload_is_non_fatal_when_hardware_module_missing(monkeypatch) -> None:
+    import importlib
+
+    import local_transcribe
+
+    def boom():
+        raise RuntimeError("no hardware module")
+
+    monkeypatch.setattr(
+        "local_transcribe.utils.hardware.prepare_gpu_runtime", boom
+    )
+    # Re-running the bootstrap must swallow the failure.
+    local_transcribe._preload_rocm_runtime()
+    importlib.reload(local_transcribe)
+
