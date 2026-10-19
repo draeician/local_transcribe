@@ -424,7 +424,7 @@ def test_build_rocm_install_steps_never_resolve_pypi_ctranslate2() -> None:
     steps = rocm.build_rocm_install_steps(plan, Path("/tmp/ct2.whl"))
     sdk_step, wheel_step = steps
     assert "--pip-args=--no-deps" in sdk_step
-    assert "--pip-args=--no-deps" in wheel_step
+    assert "--force-reinstall" in " ".join(wheel_step)
     assert "/tmp/ct2.whl" in wheel_step
     # The ROCm SDK index is used so pip finds the ROCm libraries.
     assert plan.rocm_sdk_index_url in sdk_step

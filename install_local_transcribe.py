@@ -513,7 +513,8 @@ def verify_gpu_in_venv(runner: Optional[Runner] = None) -> Tuple[bool, str]:
     """Confirm CTranslate2 can use a GPU inside the installed venv.
 
     The probe imports the installed package so the ROCm preload path runs
-    exactly as it will for a real job.
+    exactly as it will for a real job, and it requires a non-zero device count
+    *and* supported compute types — not merely a successful process exit.
     """
     python = _venv_python()
     if python is None:
@@ -531,10 +532,38 @@ def verify_gpu_in_venv(runner: Optional[Runner] = None) -> Tuple[bool, str]:
         )
     except Exception as exc:  # noqa: BLE001
         return False, f"GPU verification failed to run: {exc}"
+    output = (result.stdout or "").strip()
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         return False, f"GPU not usable in installed venv: {detail[-300:]}"
-    return True, (result.stdout or "").strip()
+
+    devices = _parse_probe_int(output, "gpu_devices")
+    types = _parse_probe_list(output, "gpu_types")
+    if not devices:
+        return False, f"no GPU visible to CTranslate2 in the installed venv ({output})"
+    if not types:
+        return False, f"no GPU compute types reported by CTranslate2 ({output})"
+    return True, output
+
+
+def _parse_probe_int(output: str, key: str) -> int:
+    for line in output.splitlines():
+        fields = line.split(None, 1)
+        if len(fields) == 2 and fields[0] == key:
+            try:
+                return int(fields[1].strip())
+            except ValueError:
+                return 0
+    return 0
+
+
+def _parse_probe_list(output: str, key: str) -> List[str]:
+    for line in output.splitlines():
+        fields = line.split(None, 1)
+        if len(fields) == 2 and fields[0] == key:
+            inner = fields[1].strip().strip("[]")
+            return [item.strip().strip("'\"") for item in inner.split(",") if item.strip()]
+    return []
 
 
 def verify_cuda_in_venv(runner: Optional[Runner] = None) -> Tuple[bool, str]:

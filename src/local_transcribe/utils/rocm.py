@@ -216,6 +216,11 @@ def build_rocm_install_steps(plan: RocmWheelPlan, wheel_path: Path) -> List[List
     fetch the PyPI CUDA wheel) and never pulls unrelated packages into the
     isolated venv. The ``=`` form is required because ``--pip-args`` takes a
     value that itself begins with ``--``.
+
+    The CTranslate2 wheel injection additionally uses ``--force-reinstall``:
+    the base install already pulls the PyPI CUDA ``ctranslate2`` at the *same
+    version* (4.8.3), and pip would otherwise consider the requirement already
+    satisfied and leave the non-ROCm build in place.
     """
     return [
         [
@@ -232,7 +237,7 @@ def build_rocm_install_steps(plan: RocmWheelPlan, wheel_path: Path) -> List[List
             "pipx",
             "inject",
             "--force",
-            "--pip-args=--no-deps",
+            "--pip-args=--no-deps --force-reinstall",
             "local-transcribe",
             str(wheel_path),
         ],
