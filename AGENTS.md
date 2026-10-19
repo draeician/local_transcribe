@@ -102,12 +102,13 @@ Local paths are detected when `Path.expanduser` resolves to an existing regular 
 
 ## Build & Environment Commands
 - **Install/Update:** `pipx install . --force`
-- **Portable installer (CPU/CUDA):** `./install_local_transcribe.py [--auto|--cpu|--cuda]`
-- **Add CUDA profile (GPU hosts):** `pipx inject local-transcribe -r requirements-cuda.txt`
+- **Portable installer (CPU/CUDA/ROCm):** `./install_local_transcribe.py [--auto|--cpu|--cuda|--rocm]`
+- **Add CUDA profile (NVIDIA hosts):** `pipx inject local-transcribe -r requirements-cuda.txt`
+- **Add ROCm profile (AMD hosts):** `./install_local_transcribe.py --rocm`
 - **Verify Environment:** `lt doctor`
 - **Check JS Runtime:** `deno --version` (Required for YouTube SABR only; not for install or local audio)
 
-Torch is **not** used: inference is CTranslate2 via faster-whisper. Never add `torch*` or `nvidia-*` to the core dependency set.
+Torch is **not** used: inference is CTranslate2 via faster-whisper. Never add `torch*` or `nvidia-*` to the core dependency set. AMD ROCm runs through CTranslate2's official ROCm/HIP wheel (it keeps the internal `cuda` device name); never use `HSA_OVERRIDE_GFX_VERSION`.
 
 ## Coding Guidelines
 - **File Editing:** Always use `vi`. Never suggest or use `nano`.

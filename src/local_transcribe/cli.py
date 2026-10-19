@@ -32,9 +32,11 @@ app.add_typer(cookies_app, name="cookies")
 
 # Default values
 DEFAULT_MODEL = "medium"
-# "auto" resolves to CUDA when a usable NVIDIA/CTranslate2 stack is present,
-# otherwise CPU int8. Resolution happens where the job runs (worker for queue
-# jobs), so a producer never has to know the worker's hardware.
+# "auto" resolves to the best usable GPU backend (NVIDIA CUDA or AMD ROCm) when
+# CTranslate2 can use it, otherwise CPU int8. Resolution happens where the job
+# runs (worker for queue jobs), so a producer never has to know the worker's
+# hardware. Use --device cuda / rocm to require a specific GPU backend, or
+# --device cpu to force CPU.
 DEFAULT_DEVICE = "auto"
 DEFAULT_COMPUTE_TYPE = "auto"
 DEFAULT_OUTPUT_DIR = Path.home() / "references" / "transcripts"
@@ -57,7 +59,7 @@ def transcribe(
         help="YouTube video URL or path to a local audio file (e.g. m4a, mp3; ffmpeg should be available)",
     ),
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
-    device: str = typer.Option(DEFAULT_DEVICE, help="Device (cpu/cuda/auto)"),
+    device: str = typer.Option(DEFAULT_DEVICE, help="Device (auto/cpu/cuda/rocm)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
     output_dir: str = typer.Option(str(DEFAULT_OUTPUT_DIR), help="Output directory"),
     keep_audio: bool = typer.Option(
@@ -252,7 +254,7 @@ def batch(
     resume: bool = typer.Option(False, help="Resume from previous run"),
     max_retries: int = typer.Option(2, help="Max retry attempts (maps to queue max_attempts)"),
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
-    device: str = typer.Option(DEFAULT_DEVICE, help="Device (cpu/cuda/auto)"),
+    device: str = typer.Option(DEFAULT_DEVICE, help="Device (auto/cpu/cuda/rocm)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
     language: Optional[str] = typer.Option(None, "--language", help="Whisper language hint (queue mode)"),
     keep_audio: bool = typer.Option(False, "--keep-audio", help="Keep downloaded audio (queue mode)"),

@@ -6,7 +6,9 @@ publisher — never truncate final transcript JSON in place.
 
 Device/compute selection delegates to :mod:`local_transcribe.utils.hardware`,
 which probes CTranslate2 (the actual inference backend — PyTorch is not used) so
-a machine without a usable NVIDIA stack simply runs on CPU.
+a machine without a usable NVIDIA CUDA or AMD ROCm stack simply runs on CPU. The
+ROCm runtime is prepared through :func:`hardware.prepare_gpu_runtime`, which
+preloads ROCm SDK libraries without any global library-path change.
 """
 
 from __future__ import annotations
@@ -22,12 +24,25 @@ from typing import Optional
 from faster_whisper import WhisperModel
 
 from local_transcribe.services.transcript_publish import publish_transcript
+from local_transcribe.utils import hardware as _hardware
 from local_transcribe.utils.hardware import (
+    BACKEND_CPU,
+    BACKEND_CUDA,
+    BACKEND_ROCM,
+    BackendUnavailableError,
+    prepare_gpu_runtime,
     resolve_device_and_compute as _resolve_device_and_compute,
 )
 from local_transcribe.utils.youtube import pick_channel
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "BackendUnavailableError",
+    "BACKEND_CPU",
+    "BACKEND_CUDA",
+    "BACKEND_ROCM",
+]
 
 
 @dataclass
@@ -102,21 +117,39 @@ def local_file_metadata(audio_path: Path) -> dict:
 def resolve_device_and_compute(device: str, compute_type: str) -> tuple[str, str]:
     """Apply runtime hardware detection; return effective (device, compute_type).
 
-    A request for ``auto``/``cuda``/``gpu`` on a machine where CTranslate2 cannot
-    run on CUDA resolves to ``("cpu", "int8")``. An explicit ``cpu`` request keeps
-    the caller's compute type (or picks a CPU-supported type for ``auto``).
+    ``auto``/``gpu``/``cuda`` on a machine where CTranslate2 cannot use the GPU
+    resolves to ``("cpu", "int8")``; an explicit ``rocm`` request raises
+    :class:`~local_transcribe.utils.hardware.BackendUnavailableError` instead of
+    silently pretending to use the GPU. An explicit ``cpu`` request keeps the
+    caller's compute type (or picks a CPU-supported type for ``auto``).
+
+    The ROCm runtime is prepared first so the ROCm CTranslate2 wheel can resolve
+    its HIP/cuBLAS sonames from the pipx venv without a global library-path
+    change.
     """
+    prepare_gpu_runtime()
     effective_device, effective_compute = _resolve_device_and_compute(
         device, compute_type
     )
     if effective_device == "cpu" and (device or "").strip().lower() in (
         "cuda",
         "gpu",
+        "rocm",
+        "hip",
+        "amd",
         "auto",
         "",
     ):
         os.environ["CT2_USE_CUDA"] = "0"
     return effective_device, effective_compute
+
+
+def effective_backend(device: str, compute_type: str) -> str:
+    """Return the backend that will actually run ``device``/``compute_type``."""
+    eff_device, _eff_compute = resolve_device_and_compute(device, compute_type)
+    if eff_device != "cuda":
+        return BACKEND_CPU
+    return _hardware.gpu_backend()
 
 
 def load_whisper_model(

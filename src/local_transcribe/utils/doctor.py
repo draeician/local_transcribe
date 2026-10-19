@@ -1,10 +1,11 @@
 """Environment diagnostics for local-transcribe.
 
-CPU-only operation is a first-class, healthy configuration. Required checks are
-the packages needed to transcribe at all (CTranslate2, faster-whisper, ffmpeg,
-yt-dlp). CUDA libraries, a GPU driver, and Deno are *optional acceleration /
-YouTube* components: their absence is reported but never fails diagnostics, and
-nothing is ever installed here.
+CPU-only operation is a first-class, healthy configuration. Acceleration is
+optional and reported as one of three backends: AMD ROCm, NVIDIA CUDA, or CPU.
+Required checks are the packages needed to transcribe at all (CTranslate2,
+faster-whisper, ffmpeg, yt-dlp). GPU libraries, a GPU driver, and Deno are
+*optional acceleration / YouTube* components: their absence is reported but
+never fails diagnostics, and nothing is ever installed here.
 """
 
 from __future__ import annotations
@@ -64,14 +65,48 @@ def check_nvidia_smi() -> Tuple[bool, str]:
     return detect_nvidia_gpu()
 
 
-def check_cuda_runtime() -> Tuple[bool, str]:
-    """Check whether CTranslate2 can actually execute on CUDA."""
-    from local_transcribe.utils.hardware import cuda_runtime_status
+def check_amd_gpu() -> Tuple[bool, str]:
+    """Check whether an AMD GPU/ROCm compute device is visible."""
+    from local_transcribe.utils.hardware import detect_amd_gpu
 
-    ok, reason = cuda_runtime_status()
-    if ok:
-        return True, "CTranslate2 CUDA inference usable"
-    return False, reason
+    return detect_amd_gpu()
+
+
+def check_gpu_runtime() -> Tuple[bool, str]:
+    """Check whether CTranslate2 can actually execute on a GPU (CUDA or ROCm)."""
+    from local_transcribe.utils import hardware
+
+    ok, reason = hardware.gpu_runtime_status()
+    if not ok:
+        return False, reason
+    backend = hardware.gpu_backend()
+    types = hardware.supported_compute_types(hardware.CT2_GPU_DEVICE)
+    label = {
+        hardware.BACKEND_ROCM: "AMD ROCm",
+        hardware.BACKEND_CUDA: "NVIDIA CUDA",
+        hardware.BACKEND_CPU: "GPU",
+    }.get(backend, backend)
+    return True, (
+        f"CTranslate2 {label} inference usable "
+        f"(backend={backend}; compute types={', '.join(sorted(types)) or 'unknown'})"
+    )
+
+
+def check_cuda_runtime() -> Tuple[bool, str]:
+    """Backward-compatible alias for :func:`check_gpu_runtime`."""
+    return check_gpu_runtime()
+
+
+def check_rocm_sdk() -> Tuple[bool, str]:
+    """Report whether ROCm SDK libraries are discoverable (no root needed)."""
+    from local_transcribe.utils.hardware import rocm_sdk_library_dirs
+
+    dirs = rocm_sdk_library_dirs()
+    if not dirs:
+        return False, "no ROCm library directories discovered"
+    listing = ", ".join(str(d) for d in dirs[:3])
+    suffix = "" if len(dirs) <= 3 else f" (+{len(dirs) - 3} more)"
+    return True, f"ROCm libraries under: {listing}{suffix}"
 
 
 def check_ffmpeg() -> Tuple[bool, str]:
@@ -199,21 +234,46 @@ def run_diagnostics() -> List[DiagnosticCheck]:
 
     Returns an ordered list; the CLI fails only if a ``required`` check is not ok.
     """
+    from local_transcribe.utils import hardware
+
     ffmpeg_ok, ffmpeg_detail = check_ffmpeg()
     ytdlp_ok, ytdlp_detail = check_yt_dlp()
     modules_ok, modules_detail = check_required_modules()
     cpu_ok, cpu_detail = check_cpu_backend()
-    gpu_ok, gpu_detail = check_nvidia_smi()
-    cuda_ok, cuda_detail = check_cuda_runtime()
+    nvidia_ok, nvidia_detail = check_nvidia_smi()
+    amd_ok, amd_detail = check_amd_gpu()
+    rocm_sdk_ok, rocm_sdk_detail = check_rocm_sdk()
+    gpu_ok, gpu_detail = check_gpu_runtime()
     deno_ok, deno_detail = check_deno()
 
-    backend = "CUDA" if cuda_ok else "CPU"
-    if not cuda_ok and gpu_ok:
-        # GPU visible but not usable: actionable CUDA diagnostics.
-        cuda_detail = (
-            f"{cuda_detail}. GPU detected but CTranslate2 cannot use it; "
-            "install CUDA libraries with install_local_transcribe.py --cuda "
-            "or rely on CPU."
+    # Identify the active backend (AMD ROCm / NVIDIA CUDA / CPU).
+    if gpu_ok:
+        detected = hardware.gpu_backend()
+        active = {
+            hardware.BACKEND_ROCM: "AMD ROCm",
+            hardware.BACKEND_CUDA: "NVIDIA CUDA",
+            hardware.BACKEND_CPU: "CPU",
+        }.get(detected, detected)
+        arch = hardware.amd_gpu_architecture() if detected == hardware.BACKEND_ROCM else ""
+        active_detail = f"active: {active}"
+        if arch:
+            active_detail += f" ({arch})"
+        compute = hardware.supported_compute_types(hardware.CT2_GPU_DEVICE)
+        if compute:
+            active_detail += f"; compute types: {', '.join(sorted(compute))}"
+    else:
+        active_detail = "active: CPU"
+
+    if not gpu_ok and (nvidia_ok or amd_ok):
+        # A GPU is physically present but CTranslate2 cannot use it.
+        hint = (
+            "install AMD ROCm libraries with install_local_transcribe.py --rocm"
+            if amd_ok and not nvidia_ok
+            else "install CUDA libraries with install_local_transcribe.py --cuda"
+        )
+        gpu_detail = (
+            f"{gpu_detail}. GPU detected but CTranslate2 cannot use it; "
+            f"{hint} or rely on CPU."
         )
 
     return [
@@ -221,13 +281,10 @@ def run_diagnostics() -> List[DiagnosticCheck]:
         DiagnosticCheck("CPU Backend", cpu_ok, cpu_detail, True),
         DiagnosticCheck("FFmpeg", ffmpeg_ok, ffmpeg_detail, True),
         DiagnosticCheck("yt-dlp", ytdlp_ok, ytdlp_detail, True),
-        DiagnosticCheck(
-            "Acceleration Backend",
-            True,
-            f"active: {backend}",
-            False,
-        ),
-        DiagnosticCheck("GPU Detection (nvidia-smi)", gpu_ok, gpu_detail, False),
-        DiagnosticCheck("ctranslate2 CUDA", cuda_ok, cuda_detail, False),
+        DiagnosticCheck("Acceleration Backend", True, active_detail, False),
+        DiagnosticCheck("GPU Detection (nvidia-smi)", nvidia_ok, nvidia_detail, False),
+        DiagnosticCheck("AMD GPU (/dev/kfd, rocminfo)", amd_ok, amd_detail, False),
+        DiagnosticCheck("ROCm SDK Libraries", rocm_sdk_ok, rocm_sdk_detail, False),
+        DiagnosticCheck("ctranslate2 GPU", gpu_ok, gpu_detail, False),
         DiagnosticCheck("Deno Runtime (YouTube)", deno_ok, deno_detail, False),
     ]

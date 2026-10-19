@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-19
+
+### Added
+- AMD ROCm GPU acceleration via CTranslate2's official ROCm/HIP build. `--device auto` selects AMD ROCm when a ROCm runtime is usable, and `--device rocm` requires it.
+- Installer `--rocm` profile: downloads the pinned, hash-verified CTranslate2 ROCm wheel (v4.8.3, `rocm-python-wheels-Linux.zip`) and the pinned TheRock ROCm SDK wheels (`rocm-sdk-core` / `rocm-sdk-libraries-gfxNNNN`, gfx1151/gfx1150), installing both into the pipx venv with `--no-deps` so pip never substitutes the PyPI CUDA wheel. `--auto` now recognizes supported AMD hardware.
+- `src/local_transcribe/utils/rocm.py` — pinned wheel plan, SHA-256 verification, archive extraction, and pipx install-step construction.
+- ROCm runtime preparation: `utils/hardware.py` discovers ROCm SDK libraries inside site-packages and `dlopen`s them (`RTLD_GLOBAL`), so the ROCm wheel resolves its HIP/cuBLAS sonames with **no global `LD_LIBRARY_PATH` or `/etc/ld.so.conf.d` change**. The systemd worker inherits this automatically.
+- `lt doctor` now distinguishes AMD ROCm, NVIDIA CUDA, and CPU, reports the GPU architecture and compute types, and gives an actionable `--rocm` hint when a GPU is visible but unusable.
+
+### Changed
+- Backend identification is based on the native libraries actually loaded, because CTranslate2 keeps the `cuda` device name for its ROCm build. `HSA_OVERRIDE_GFX_VERSION` is never used.
+- `resolve_device_and_compute`/`gpu_runtime_status` are now backend-agnostic; the old `cuda_runtime_status` name remains as an alias.
+
+### Fixed
+- An explicit `--device rocm` on a host without usable ROCm now raises a clear error instead of silently reporting GPU use.
+
 ## [0.6.0] - 2026-10-19
 
 ### Added

@@ -212,7 +212,7 @@ def test_runtime_auto_resolves_to_cpu_without_cuda(monkeypatch) -> None:
     from local_transcribe.utils import hardware
 
     monkeypatch.setattr(
-        hardware, "cuda_runtime_status", lambda: (False, "no CUDA devices")
+        hardware, "gpu_runtime_status", lambda: (False, "no CUDA devices")
     )
     monkeypatch.delenv("CT2_USE_CUDA", raising=False)
     device, compute = hardware.resolve_device_and_compute("auto", "auto")
@@ -222,7 +222,7 @@ def test_runtime_auto_resolves_to_cpu_without_cuda(monkeypatch) -> None:
 def test_runtime_auto_resolves_to_cuda_when_usable(monkeypatch) -> None:
     from local_transcribe.utils import hardware
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (True, ""))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (True, ""))
     monkeypatch.setattr(
         hardware, "supported_compute_types", lambda dev: ("float16", "int8", "float32")
     )
@@ -236,7 +236,7 @@ def test_runtime_cuda_requested_but_broken_falls_back(monkeypatch) -> None:
 
     monkeypatch.setattr(
         hardware,
-        "cuda_runtime_status",
+        "gpu_runtime_status",
         lambda: (False, "CUDA driver version is insufficient"),
     )
     device, compute = hardware.resolve_device_and_compute("cuda", "float16")
@@ -247,10 +247,10 @@ def test_backend_resolution_is_not_cached_across_machines(monkeypatch) -> None:
     """The worker resolves per call, so producer/worker hardware can differ."""
     from local_transcribe.utils import hardware
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (False, "no cuda"))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (False, "no cuda"))
     assert hardware.resolve_device_and_compute("auto", "auto")[0] == "cpu"
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (True, ""))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (True, ""))
     monkeypatch.setattr(hardware, "supported_compute_types", lambda dev: ("float16",))
     assert hardware.resolve_device_and_compute("auto", "auto")[0] == "cuda"
 
@@ -259,7 +259,7 @@ def test_transcriber_resolve_matches_hardware_module(monkeypatch) -> None:
     from local_transcribe.services import transcriber
     from local_transcribe.utils import hardware
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (False, "nope"))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (False, "nope"))
     device, compute = transcriber.resolve_device_and_compute("cuda", "float16")
     assert (device, compute) == ("cpu", "int8")
 
@@ -299,7 +299,7 @@ def test_explicit_cpu_keeps_requested_compute_type(monkeypatch) -> None:
     def explode():
         raise AssertionError("CUDA probe called for explicit cpu request")
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", explode)
+    monkeypatch.setattr(hardware, "gpu_runtime_status", explode)
     device, compute = hardware.resolve_device_and_compute("cpu", "int8")
     assert (device, compute) == ("cpu", "int8")
 
@@ -307,7 +307,7 @@ def test_explicit_cpu_keeps_requested_compute_type(monkeypatch) -> None:
 def test_explicit_cuda_compute_type_is_preserved_when_usable(monkeypatch) -> None:
     from local_transcribe.utils import hardware
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (True, ""))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (True, ""))
     device, compute = hardware.resolve_device_and_compute("cuda", "int8_float16")
     assert (device, compute) == ("cuda", "int8_float16")
 
@@ -330,7 +330,7 @@ def test_explicit_cpu_compute_preference(monkeypatch) -> None:
 def test_doctor_cpu_only_checks_pass_without_nvidia(monkeypatch) -> None:
     from local_transcribe.utils import doctor, hardware
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (False, "no cuda"))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (False, "no cuda"))
     monkeypatch.setattr(hardware, "detect_nvidia_gpu", lambda run=None: (False, "not found"))
     monkeypatch.setattr(hardware, "supported_compute_types", lambda dev: ("int8", "float32"))
     monkeypatch.setattr(doctor, "check_ffmpeg", lambda: (True, "ffmpeg ok"))
@@ -341,8 +341,8 @@ def test_doctor_cpu_only_checks_pass_without_nvidia(monkeypatch) -> None:
     checks = {c.name: c for c in doctor.run_diagnostics()}
     required_failures = [c.name for c in checks.values() if c.required and not c.ok]
     assert required_failures == []
-    assert checks["ctranslate2 CUDA"].ok is False
-    assert checks["ctranslate2 CUDA"].required is False
+    assert checks["ctranslate2 GPU"].ok is False
+    assert checks["ctranslate2 GPU"].required is False
     assert checks["Deno Runtime (YouTube)"].required is False
 
 
@@ -352,7 +352,7 @@ def test_doctor_cli_exit_zero_on_cpu_only(tmp_path, monkeypatch) -> None:
     from local_transcribe import cli
     from local_transcribe.utils import doctor, hardware
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (False, "no cuda"))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (False, "no cuda"))
     monkeypatch.setattr(hardware, "detect_nvidia_gpu", lambda run=None: (False, "not found"))
     monkeypatch.setattr(hardware, "supported_compute_types", lambda dev: ("int8",))
     monkeypatch.setattr(doctor, "check_ffmpeg", lambda: (True, "ffmpeg ok"))
@@ -371,7 +371,7 @@ def test_doctor_cli_exit_one_on_missing_required(monkeypatch) -> None:
     from local_transcribe import cli
     from local_transcribe.utils import doctor, hardware
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (False, "no cuda"))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (False, "no cuda"))
     monkeypatch.setattr(hardware, "detect_nvidia_gpu", lambda run=None: (False, "not found"))
     monkeypatch.setattr(hardware, "supported_compute_types", lambda dev: ("int8",))
     monkeypatch.setattr(doctor, "check_ffmpeg", lambda: (True, "ffmpeg ok"))
@@ -388,7 +388,7 @@ def test_doctor_surfaces_actionable_cuda_problem(monkeypatch) -> None:
 
     monkeypatch.setattr(hardware, "detect_nvidia_gpu", lambda run=None: (True, "RTX 4090"))
     monkeypatch.setattr(
-        hardware, "cuda_runtime_status", lambda: (False, "cuDNN .so not found")
+        hardware, "gpu_runtime_status", lambda: (False, "cuDNN .so not found")
     )
     monkeypatch.setattr(hardware, "supported_compute_types", lambda dev: ("int8",))
     monkeypatch.setattr(doctor, "check_ffmpeg", lambda: (True, "ok"))
@@ -396,7 +396,7 @@ def test_doctor_surfaces_actionable_cuda_problem(monkeypatch) -> None:
     monkeypatch.setattr(doctor, "check_required_modules", lambda: (True, "present"))
     monkeypatch.setattr(doctor, "check_deno", lambda: (True, "deno"))
 
-    cuda = next(c for c in doctor.run_diagnostics() if c.name == "ctranslate2 CUDA")
+    cuda = next(c for c in doctor.run_diagnostics() if c.name == "ctranslate2 GPU")
     assert cuda.ok is False
     assert "GPU detected but CTranslate2 cannot use it" in cuda.detail
     assert "--cuda" in cuda.detail
@@ -491,7 +491,7 @@ def test_worker_resolves_auto_on_cpu_while_producer_requested_auto(
     from local_transcribe.utils import hardware
 
     monkeypatch.setattr(
-        hardware, "cuda_runtime_status", lambda: (False, "no CUDA devices")
+        hardware, "gpu_runtime_status", lambda: (False, "no CUDA devices")
     )
     monkeypatch.setattr(hardware, "supported_compute_types", lambda dev: ("int8",))
     monkeypatch.setattr(jr_mod, "resolve_device_and_compute", hardware.resolve_device_and_compute)
@@ -547,7 +547,7 @@ def test_job_runner_resolves_auto_on_the_worker_not_the_producer(
         seen["compute"] = compute
         return hardware.resolve_device_and_compute(device, compute)
 
-    monkeypatch.setattr(hardware, "cuda_runtime_status", lambda: (False, "no cuda"))
+    monkeypatch.setattr(hardware, "gpu_runtime_status", lambda: (False, "no cuda"))
     monkeypatch.setattr(hardware, "supported_compute_types", lambda dev: ("int8",))
     monkeypatch.setattr(jr_mod, "resolve_device_and_compute", spy)
     monkeypatch.setattr(jr_mod, "transcribe_with_model", lambda *a, **k: "txt")
