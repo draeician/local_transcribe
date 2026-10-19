@@ -1,17 +1,19 @@
-"""Transcription service with CUDA preflight and CPU fallback.
+"""Transcription service with hardware-aware device selection.
 
 Model construction (:func:`load_whisper_model`) is separate from transcription
 (:func:`transcribe_with_model`). Direct CLI paths publish via the generation-aware
 publisher — never truncate final transcript JSON in place.
+
+Device/compute selection delegates to :mod:`local_transcribe.utils.hardware`,
+which probes CTranslate2 (the actual inference backend — PyTorch is not used) so
+a machine without a usable NVIDIA stack simply runs on CPU.
 """
 
 from __future__ import annotations
 
-import ctypes
 import logging
 import os
 import re
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,19 +22,12 @@ from typing import Optional
 from faster_whisper import WhisperModel
 
 from local_transcribe.services.transcript_publish import publish_transcript
+from local_transcribe.utils.hardware import (
+    resolve_device_and_compute as _resolve_device_and_compute,
+)
 from local_transcribe.utils.youtube import pick_channel
 
 logger = logging.getLogger(__name__)
-
-CUDNN_CANDIDATES = [
-    # Common cuDNN 9 sonames seen in recent distros
-    "libcudnn_ops.so.9.1.0",
-    "libcudnn_ops.so.9.1",
-    "libcudnn_ops.so.9",
-    # Fallback generic names (older/newer)
-    "libcudnn.so.9",
-    "libcudnn.so",
-]
 
 
 @dataclass
@@ -40,8 +35,8 @@ class TranscribeConfig:
     """Configuration for transcription."""
 
     model: str = "medium"
-    device: str = "cpu"
-    compute_type: str = "int8"
+    device: str = "auto"
+    compute_type: str = "auto"
     output_dir: Path = Path("./out")
     keep_audio: bool = False
     cookies_from_browser: Optional[str] = None
@@ -104,49 +99,23 @@ def local_file_metadata(audio_path: Path) -> dict:
     }
 
 
-def _cuda_preflight() -> tuple[bool, str]:
-    """Try to decide if CUDA/cuDNN are usable without crashing the process."""
-    if os.environ.get("CT2_USE_CUDA", "").strip() == "0":
-        return False, "CT2_USE_CUDA=0"
-
-    try:
-        import ctranslate2 as ct2  # type: ignore
-
-        get_cnt = getattr(ct2, "get_cuda_device_count", None)
-        if callable(get_cnt):
-            if get_cnt() < 1:
-                return False, "No CUDA devices visible to ctranslate2"
-    except Exception as e:
-        return False, f"ctranslate2 import failed: {e}"
-
-    try:
-        for name in CUDNN_CANDIDATES:
-            try:
-                ctypes.CDLL(name)
-                return True, ""
-            except OSError:
-                continue
-        return False, "cuDNN .so not found"
-    except Exception as e:
-        return False, f"cuDNN probe error: {e}"
-
-
 def resolve_device_and_compute(device: str, compute_type: str) -> tuple[str, str]:
-    """Apply CUDA preflight; return effective (device, compute_type)."""
-    effective_device = device
-    effective_compute = compute_type
-    if device.lower() in ("cuda", "auto"):
-        ok, reason = _cuda_preflight()
-        if not ok:
-            os.environ["CT2_USE_CUDA"] = "0"
-            print(
-                f"[warn] CUDA not usable ({reason}); forcing CPU int8.",
-                file=sys.stderr,
-            )
-            effective_device = "cpu"
-            effective_compute = "int8"
-        else:
-            os.environ.pop("CT2_USE_CUDA", None)
+    """Apply runtime hardware detection; return effective (device, compute_type).
+
+    A request for ``auto``/``cuda``/``gpu`` on a machine where CTranslate2 cannot
+    run on CUDA resolves to ``("cpu", "int8")``. An explicit ``cpu`` request keeps
+    the caller's compute type (or picks a CPU-supported type for ``auto``).
+    """
+    effective_device, effective_compute = _resolve_device_and_compute(
+        device, compute_type
+    )
+    if effective_device == "cpu" and (device or "").strip().lower() in (
+        "cuda",
+        "gpu",
+        "auto",
+        "",
+    ):
+        os.environ["CT2_USE_CUDA"] = "0"
     return effective_device, effective_compute
 
 

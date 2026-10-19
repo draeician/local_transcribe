@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
+### Added
+- Portable installer `install_local_transcribe.py` with `--auto` (default), `--cpu`, and `--cuda` profiles. It installs only into a pipx-managed virtual environment, never runs pip against a system interpreter, is idempotent, and verifies the result (`install_with_gpu.sh` is now a thin compatibility wrapper).
+- Optional `cuda` dependency extra (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12==9.*`) and `requirements-cuda.txt` for CTranslate2's CUDA 12 stack.
+- Hardware-aware runtime selection: `device`/`compute_type` default to `auto` and resolve to CUDA (best supported compute type) when usable, otherwise CPU `int8`.
+
+### Changed
+- Core dependencies no longer include `nvidia-cublas`, `nvidia-cudnn`, or `torch`/`torchvision`/`torchaudio`; `pipx install git+…` succeeds on CPU-only Linux hosts (fixes the Aether build failure).
+- Queue executions store `device: auto` / `compute_type: auto`; the worker resolves the effective backend when it runs the job, so producers and workers may differ in hardware.
+- `lt doctor` treats CPU-only operation as healthy and exits 0; CUDA libraries, GPU driver, and Deno are reported as optional, and CUDA library-loading problems remain actionable.
+
+### Removed
+- Automatic PyTorch CUDA installation from the CLI startup path and `lt worker install`; no ordinary command downloads packages.
+
 ## [0.5.1] - 2026-10-08
 
 ### Added

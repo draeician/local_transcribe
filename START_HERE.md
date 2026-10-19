@@ -6,25 +6,31 @@ Get started with queue-first local YouTube transcription.
 
 ### Option 1: Using pipx (Recommended - Global Installation)
 
-**Quick Install (with GPU support):**
+**Quick Install (CPU or GPU):**
 ```bash
-# First, ensure Deno is installed (see System Requirements below)
-deno --version
+# CPU-only and GPU hosts are both supported. This never installs NVIDIA
+# packages, so it works on machines without CUDA.
+pipx install git+https://github.com/draeician/local_transcribe.git
 
-# From local directory
-./install_with_gpu.sh
+# Optional: add CUDA 12 acceleration on a GPU host with a working driver.
+# --auto (default) installs CUDA only when a usable GPU+driver is found.
+./install_local_transcribe.py
+./install_local_transcribe.py --cpu     # force CPU
+./install_local_transcribe.py --cuda    # force CUDA (errors when unusable)
 
-# Or from git repository (one-liner)
-pipx install git+https://github.com/draeician/local_transcribe.git && pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+lt doctor
 ```
+
+Deno is only needed for YouTube downloads; it is **not** required to install the
+application or to transcribe local audio files.
 
 **Manual Install:**
 ```bash
 pipx install .
 # or: pipx install git+https://github.com/draeician/local_transcribe.git
 
-# Optional manual CUDA torch (doctor/worker install may do this on NVIDIA hosts)
-pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Optional CUDA profile (GPU hosts only; stays inside the pipx venv)
+pipx inject local-transcribe -r requirements-cuda.txt
 
 lt doctor
 ```
@@ -36,8 +42,8 @@ cd ~/git/personal/local_transcribe
 python3 -m venv venv
 source venv/bin/activate
 pip install -e .
-pip install -r requirements.txt
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Optional CUDA acceleration (GPU hosts only):
+pip install -e '.[cuda]'
 lt doctor
 ```
 
@@ -69,15 +75,16 @@ Full mount/config notes: [docs/QUEUE_OPERATOR.md](docs/QUEUE_OPERATOR.md).
 ### Single video or local audio (default: enqueue + wait)
 
 ```bash
+# --device/--compute-type default to "auto": CUDA when usable, else CPU int8.
 lt transcribe "https://www.youtube.com/watch?v=VIDEO_ID" \
   --model medium \
-  --device cuda \
-  --compute-type float16
+  --device auto \
+  --compute-type auto
 
 lt transcribe "/path/to/recording.m4a" \
   --model medium \
-  --device cuda \
-  --compute-type float16 \
+  --device auto \
+  --compute-type auto \
   --output-dir ./out
 
 # Fire-and-forget enqueue
@@ -88,7 +95,7 @@ lt transcribe "https://www.youtube.com/watch?v=VIDEO_ID" --no-wait
 
 ```bash
 echo "https://www.youtube.com/watch?v=VIDEO_ID" > inputfile.txt
-lt batch --input inputfile.txt --device cuda --compute-type float16
+lt batch --input inputfile.txt --device auto --compute-type auto
 
 # Optional: wait for those jobs to finish
 lt batch --input inputfile.txt --wait

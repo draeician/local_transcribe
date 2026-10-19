@@ -453,8 +453,8 @@ pending/0190dc1a-43c4-7c28-bcb3-5980d90a28c2.json
   "error": null,
   "options": {
     "model": "medium",
-    "device": "cuda",
-    "compute_type": "float16",
+    "device": "auto",
+    "compute_type": "auto",
     "language": null,
     "keep_audio": false,
     "auth_profile": null,
@@ -1314,7 +1314,7 @@ Worker-scoped cache keyed by `(model, effective_device, effective_compute_type)`
 
 * Reuse when the next job matches.  
 * Reload on configuration change.  
-* Preserve CUDA preflight and CPU fallback.  
+* Hardware detection and CPU fallback (`device: auto` resolves on the worker that runs the job; unusable CUDA → CPU `int8`).  
 * Log effective device/compute type.  
 * Unload the cached model after `model_idle_unload_seconds` (**default 300**, five minutes) of *model inactivity*.
 
@@ -1360,7 +1360,7 @@ Completed: 82
 Failed: 2
 Cancelled: 0
 Next download allowed: 38 seconds
-Model: medium / cuda / float16
+Model: medium / auto → cuda / float16
 ```
 
 ### 21.3 Health warnings

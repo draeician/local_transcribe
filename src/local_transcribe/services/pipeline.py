@@ -24,8 +24,8 @@ class BatchConfig:
     input_file: Path
     output_dir: Path
     model: str = "medium"
-    device: str = "cuda"
-    compute_type: str = "float16"
+    device: str = "auto"
+    compute_type: str = "auto"
     max_retries: int = 2
     status_store: Optional[StatusStore] = None
     cookies_from_browser: Optional[str] = None

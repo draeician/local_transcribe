@@ -73,6 +73,7 @@ Local paths are detected when `Path.expanduser` resolves to an existing regular 
 ### 3. Utilities
 * `utils.files` — safe read/write helpers.
 * `utils.youtube` — URL parsing/validation.
+* `utils.hardware` — GPU/CUDA detection + device/compute resolution (no torch).
 * `utils.doctor` — environment + queue diagnostics.
 * `logging_setup.py` — XDG rotating logs under `~/.local/state/local-transcribe/logs/`.
 
@@ -101,10 +102,12 @@ Local paths are detected when `Path.expanduser` resolves to an existing regular 
 
 ## Build & Environment Commands
 - **Install/Update:** `pipx install . --force`
-- **Inject Dependencies:** `pipx inject local-transcribe "yt-dlp[curl-cffi,default]"`
-- **Restore GPU:** `pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124`
+- **Portable installer (CPU/CUDA):** `./install_local_transcribe.py [--auto|--cpu|--cuda]`
+- **Add CUDA profile (GPU hosts):** `pipx inject local-transcribe -r requirements-cuda.txt`
 - **Verify Environment:** `lt doctor`
-- **Check JS Runtime:** `deno --version` (Required for 2026 SABR support)
+- **Check JS Runtime:** `deno --version` (Required for YouTube SABR only; not for install or local audio)
+
+Torch is **not** used: inference is CTranslate2 via faster-whisper. Never add `torch*` or `nvidia-*` to the core dependency set.
 
 ## Coding Guidelines
 - **File Editing:** Always use `vi`. Never suggest or use `nano`.

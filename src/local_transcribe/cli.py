@@ -32,8 +32,11 @@ app.add_typer(cookies_app, name="cookies")
 
 # Default values
 DEFAULT_MODEL = "medium"
-DEFAULT_DEVICE = "cuda"
-DEFAULT_COMPUTE_TYPE = "float16"
+# "auto" resolves to CUDA when a usable NVIDIA/CTranslate2 stack is present,
+# otherwise CPU int8. Resolution happens where the job runs (worker for queue
+# jobs), so a producer never has to know the worker's hardware.
+DEFAULT_DEVICE = "auto"
+DEFAULT_COMPUTE_TYPE = "auto"
 DEFAULT_OUTPUT_DIR = Path.home() / "references" / "transcripts"
 
 # Module-level flag to show startup warnings only once
@@ -123,7 +126,7 @@ def transcribe(
 
     logger = configure_logging(verbose=verbose, log_file_prefix="transcribe")
 
-    from local_transcribe.utils.doctor import check_deno_with_guidance, check_pytorch_with_guidance
+    from local_transcribe.utils.doctor import check_deno_with_guidance
 
     if not is_local:
         deno_available, deno_info = check_deno_with_guidance()
@@ -131,13 +134,6 @@ def transcribe(
             console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
             console.print(f"[dim]{deno_info}[/dim]")
             console.print("[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n")
-
-    if device.lower() in ("cuda", "gpu"):
-        pytorch_available, pytorch_info = check_pytorch_with_guidance()
-        if not pytorch_available:
-            console.print("\n[yellow]⚠️  Warning: PyTorch not detected[/yellow]")
-            console.print(f"[dim]{pytorch_info}[/dim]")
-            console.print("[dim]GPU acceleration requires PyTorch. Falling back to CPU mode.[/dim]\n")
 
     try:
         output_dir_path = Path(output_dir).expanduser()
@@ -386,7 +382,7 @@ def batch(
         return
     
     # Check prerequisites
-    from local_transcribe.utils.doctor import check_deno_with_guidance, check_pytorch_with_guidance
+    from local_transcribe.utils.doctor import check_deno_with_guidance
     
     # Always check Deno (required for YouTube downloads)
     deno_available, deno_info = check_deno_with_guidance()
@@ -394,14 +390,6 @@ def batch(
         console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
         console.print(f"[dim]{deno_info}[/dim]")
         console.print("[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n")
-    
-    # Check PyTorch if using CUDA
-    if device.lower() in ("cuda", "gpu"):
-        pytorch_available, pytorch_info = check_pytorch_with_guidance()
-        if not pytorch_available:
-            console.print("\n[yellow]⚠️  Warning: PyTorch not detected[/yellow]")
-            console.print(f"[dim]{pytorch_info}[/dim]")
-            console.print("[dim]GPU acceleration requires PyTorch. Falling back to CPU mode.[/dim]\n")
     
     try:
         # Handle defaults properly - check if value is actually a string or OptionInfo
@@ -1074,15 +1062,19 @@ def update(
 def doctor(
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
-    """Run environment diagnostics."""
+    """Run environment diagnostics.
+
+    Exit code is 0 when every *required* check passes. Optional acceleration
+    checks (CUDA libs, Deno for YouTube downloads) report status but never fail
+    a CPU-only system.
+    """
     import sys
     from local_transcribe.utils.doctor import run_diagnostics
     
+    output_console = Console(file=sys.stdout, force_terminal=True)
     try:
-        results = run_diagnostics()
+        checks = run_diagnostics()
         
-        # Use console with explicit file=sys.stdout to ensure output
-        output_console = Console(file=sys.stdout, force_terminal=True)
         output_console.print("\n[bold]Environment Diagnostics[/bold]")
         
         table = Table(show_header=True, header_style="bold")
@@ -1090,18 +1082,29 @@ def doctor(
         table.add_column("Status")
         table.add_column("Details")
         
-        for check_name, (status, details) in results.items():
-            status_icon = "[green]✓[/green]" if status else "[red]✗[/red]"
-            table.add_row(check_name, status_icon, details or "")
+        for check in checks:
+            if check.ok:
+                status_icon = "[green]✓[/green]"
+            elif check.required:
+                status_icon = "[red]✗[/red]"
+            else:
+                status_icon = "[yellow]–[/yellow]"
+            suffix = "" if check.required else " [dim](optional)[/dim]"
+            table.add_row(check.name, status_icon, (check.detail or "") + suffix)
         
         output_console.print(table)
         
-        # Exit with error if any critical checks failed
-        if not all(status for status, _ in results.values()):
+        # Fail only when a required (core) check is broken.
+        failed_required = [c.name for c in checks if c.required and not c.ok]
+        if failed_required:
+            output_console.print(
+                f"[red]✗[/red] Required checks failed: {', '.join(failed_required)}"
+            )
             raise typer.Exit(1)
         
+    except typer.Exit:
+        raise
     except Exception as e:
-        output_console = Console(file=sys.stdout, force_terminal=True)
         output_console.print(f"[red]✗[/red] Error: {e}")
         if verbose:
             import traceback
@@ -1122,40 +1125,19 @@ def main(
         console.print(f"local-transcribe version {__version__}")
         raise typer.Exit(0)
     
-    # First-run: auto-install CUDA torch when NVIDIA hardware is present.
-    if ctx.invoked_subcommand is not None:
-        from local_transcribe.utils.doctor import (
-            detect_cuda_availability,
-            ensure_pytorch_cuda,
-            has_pytorch_upgrade_marker,
-        )
-
-        if not has_pytorch_upgrade_marker() and detect_cuda_availability():
-            success, message = ensure_pytorch_cuda()
-            if success and "already" not in message.lower():
-                console.print(f"[green]✓[/green] {message}")
-            elif not success and "CUDA not available" not in message:
-                console.print(f"[yellow]![/yellow] CUDA torch: {message}")
-    
-    # Show startup warnings once per session (only for actual commands, not --help)
+    # Show startup warnings once per session (only for actual commands, not --help).
+    # Deno is needed for YouTube downloads only; no package is ever installed here.
     if not _startup_warnings_shown and ctx.invoked_subcommand is not None:
-        from local_transcribe.utils.doctor import check_deno_with_guidance, check_pytorch_with_guidance
-        
-        # Check Deno
+        from local_transcribe.utils.doctor import check_deno_with_guidance
+
         deno_available, deno_info = check_deno_with_guidance()
         if not deno_available:
             console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
             console.print(f"[dim]{deno_info}[/dim]")
-        
-        # Check PyTorch (informational)
-        pytorch_available, pytorch_info = check_pytorch_with_guidance()
-        if not pytorch_available:
-            console.print("\n[yellow]⚠️  Warning: PyTorch not detected[/yellow]")
-            console.print(f"[dim]{pytorch_info}[/dim]")
-        
-        if not deno_available or not pytorch_available:
+
+        if not deno_available:
             console.print()  # Add spacing before command output
-        
+
         _startup_warnings_shown = True
     
     # If a subcommand is being invoked, let it handle everything

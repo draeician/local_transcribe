@@ -129,20 +129,29 @@ def worker_doctor(
 
 @worker_app.command("install")
 def worker_install() -> None:
-    """Install a systemd --user unit (does not enable linger)."""
+    """Install a systemd --user unit (does not enable linger).
+
+    Never installs packages: acceleration is chosen by the worker at runtime
+    based on the hardware it finds. The installer (``install_local_transcribe.py``)
+    is the only place CUDA dependencies are added, and only when requested.
+    """
     from local_transcribe.logging_setup import default_log_dir
-    from local_transcribe.utils.doctor import (
-        detect_cuda_availability,
-        ensure_pytorch_cuda,
+    from local_transcribe.utils.hardware import (
+        cuda_usable,
+        describe_backend,
+        detect_nvidia_gpu,
     )
 
-    if detect_cuda_availability():
-        console.print("[dim]NVIDIA GPU detected — ensuring CUDA PyTorch…[/dim]")
-        ok, message = ensure_pytorch_cuda()
-        if ok:
-            console.print(f"[green]✓[/green] {message}")
-        else:
-            console.print(f"[yellow]![/yellow] CUDA torch setup: {message}")
+    gpu_present, gpu_detail = detect_nvidia_gpu()
+    if gpu_present:
+        console.print(f"[dim]NVIDIA GPU detected: {gpu_detail}[/dim]")
+    if cuda_usable():
+        console.print(f"[green]✓[/green] CUDA backend available — {describe_backend('auto', 'auto')}")
+    else:
+        console.print(
+            f"[dim]CPU backend — {describe_backend('auto', 'auto')} "
+            "(run install_local_transcribe.py --cuda to add CUDA libraries)[/dim]"
+        )
 
     lt_path = shutil.which("lt") or os.path.expanduser("~/.local/bin/lt")
     unit_dir = Path.home() / ".config" / "systemd" / "user"

@@ -1,5 +1,21 @@
 # What's New
 
+## 0.6.0 — Portable CPU/CUDA installation (2026-10-19)
+
+- `pipx install git+https://github.com/draeician/local_transcribe.git` now works on **CPU-only Linux**: the core dependencies no longer pull `nvidia-cublas`, `nvidia-cudnn`, or PyTorch. CTranslate2 + faster-whisper run CPU inference directly.
+- New portable installer `install_local_transcribe.py`:
+  - `--auto` (default) installs the CUDA profile only when a **working** NVIDIA GPU + driver (>= 525.60) is detected, else CPU;
+  - `--cpu` forces CPU; `--cuda` forces CUDA and fails clearly when CUDA is unusable;
+  - everything goes into a pipx venv (never system-wide) and re-runs are safe.
+- GPU acceleration is opt-in via the `cuda` extra / `pipx inject local-transcribe -r requirements-cuda.txt`.
+- `--device`/`--compute-type` default to `auto` and resolve on the machine that runs the job: CUDA + best compute type when usable, otherwise CPU `int8`. Queue producers and GPU-less workers interoperate.
+- `lt doctor` reports CPU-only mode as healthy and exits 0; CUDA/GPU/Deno are optional.
+- No command installs packages automatically anymore (including `lt doctor` and `lt worker install`).
+
+Docs: [CHANGELOG.md](../CHANGELOG.md) · [README.md](../README.md) · [QUEUE_OPERATOR.md](QUEUE_OPERATOR.md)
+
+---
+
 ## 0.5.1 — worker releases the Whisper model when idle (2026-10-08)
 
 - The background worker now **unloads the cached Whisper model after 5 minutes of real idleness** (`model_idle_unload_seconds: 300`), so an idle queue stops holding GPU/CPU memory. The next job reloads the model automatically.

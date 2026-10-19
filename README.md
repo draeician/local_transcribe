@@ -18,27 +18,47 @@
 ### Installation Options
 
 **Option 1: pipx (Recommended - Global Installation)**
-```bash
-# Install from GitHub
-pipx install git+https://github.com/draeician/local_transcribe.git
 
-# On NVIDIA hosts, doctor/worker install can pull CUDA torch automatically;
-# or install manually:
-pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```bash
+# CPU-only or GPU host — installs into an isolated pipx venv, never system-wide.
+# This never installs NVIDIA/PyTorch packages; CPU inference just works.
+pipx install git+https://github.com/draeician/local_transcribe.git
 
 # Verify installation
 lt doctor
 ```
 
+**Adding CUDA acceleration (optional, GPU hosts only):**
+
+```bash
+# --auto (default) picks CUDA only when a working NVIDIA GPU + driver is found,
+# otherwise installs the CPU profile.
+./install_local_transcribe.py
+
+# Force CPU, or force CUDA with a clear error when CUDA is unusable:
+./install_local_transcribe.py --cpu
+./install_local_transcribe.py --cuda
+
+# Equivalent one-liner with pipx (CUDA 12 wheel profile, stays in the venv):
+pipx inject local-transcribe -r requirements-cuda.txt
+```
+
+`install_local_transcribe.py` replaces the old `install_with_gpu.sh`
+(which is now a thin wrapper forwarding to it). Detection uses a functional
+`nvidia-smi` probe plus a driver-version threshold — an NVIDIA GPU alone does
+not imply a compatible CUDA driver/library stack. Deno is **not** required to
+install the application or to transcribe local audio files.
+
 **Option 2: Local Development**
+
 ```bash
 git clone https://github.com/draeician/local_transcribe.git
 cd local_transcribe
 python3 -m venv venv
 source venv/bin/activate
 pip install -e .
-pip install -r requirements.txt
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Optional CUDA acceleration (GPU hosts only):
+pip install -e '.[cuda]'
 ```
 
 **Updating an Existing Installation**
@@ -144,7 +164,8 @@ All functionality is available through the unified `lt` command:
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip ffmpeg pipx
 
-# 2. Install Deno (required for YouTube 2026 SABR support)
+# 2. (Optional) Install Deno — required for YouTube 2026 SABR support only,
+#    not for installing the app or transcribing local audio files.
 curl -fsSL https://deno.land/install.sh | sh
 # Add Deno to PATH (add to ~/.bashrc for persistence)
 export DENO_INSTALL="$HOME/.deno"
@@ -152,21 +173,14 @@ export PATH="$DENO_INSTALL/bin:$PATH"
 # Create symlink for system-wide access (optional but recommended)
 sudo ln -sf "$DENO_INSTALL/bin/deno" /usr/local/bin/deno
 
-# 3. Install CUDA Toolkit (for GPU support)
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt update
-sudo apt install -y cuda-toolkit
+# 3. (Optional) NVIDIA driver for CUDA acceleration.
+#    The driver must be >= 525.60 for the CUDA 12 profile. A GPU alone is not
+#    enough: install_local_transcribe.py --cuda verifies a working driver.
+nvidia-smi      # Optional; should show GPU + driver version
 
-# 4. Add CUDA to environment
-echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-source ~/.bashrc
-
-# 5. Verify installations
-deno --version  # Should show Deno version
-nvcc --version  # Should show CUDA version
-nvidia-smi      # Should show GPU info
+# 4. Verify installations
+deno --version  # Optional (YouTube downloads only)
+nvidia-smi      # Optional (CUDA acceleration only)
 ```
 
 ### Installation Methods
@@ -175,11 +189,13 @@ nvidia-smi      # Should show GPU info
 
 **First-time installation:**
 ```bash
-# Install the package (includes GPU dependencies)
+# CPU-only or GPU host. Core dependencies are CPU-only and never pull NVIDIA
+# packages, so this succeeds on GPU-less Linux hosts.
 pipx install git+https://github.com/draeician/local_transcribe.git
 
-# Install PyTorch with CUDA support
-pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Optional: add CUDA 12 acceleration (GPU hosts with a working driver)
+pipx inject local-transcribe -r requirements-cuda.txt
+#   or: ./install_local_transcribe.py --cuda
 
 # Verify installation
 lt doctor
@@ -187,11 +203,8 @@ lt doctor
 
 **Updating an existing installation:**
 ```bash
-# Update to latest version from GitHub
-pipx upgrade local-transcribe
-
-# Update PyTorch if needed
-pipx runpip local-transcribe install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Update to latest version from GitHub (safe and idempotent for first installs too)
+pipx install --force git+https://github.com/draeician/local_transcribe.git
 
 # Verify
 lt doctor
@@ -209,10 +222,11 @@ cd local_transcribe
 python3 -m venv venv
 source venv/bin/activate
 
-# Install the package and dependencies
+# Install the package and CPU dependencies
 pip install -e .
-pip install -r requirements.txt
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Optional CUDA acceleration (GPU hosts only)
+pip install -e '.[cuda]'
 
 # Verify installation
 lt doctor
@@ -229,10 +243,6 @@ git pull
 # Update the package
 pip install -e . --upgrade
 
-# Update dependencies if needed
-pip install -r requirements.txt --upgrade
-pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
 # Verify
 lt doctor
 ```
@@ -240,11 +250,12 @@ lt doctor
 ### Quick Test
 
 ```bash
-# Test single video transcription (YouTube)
+# Test single video transcription (YouTube). --device/--compute-type default to
+# "auto": CUDA when usable, otherwise CPU int8. Pass explicit values to override.
 lt transcribe "https://www.youtube.com/watch?v=DMQ_HcNSOAI" \
   --model medium \
-  --device cuda \
-  --compute-type float16
+  --device auto \
+  --compute-type auto
 
 # Test local audio (writes ./out/<stem-slug>.json)
 lt transcribe "/path/to/sample.m4a" --output-dir ./out --device cuda --compute-type float16
@@ -259,8 +270,8 @@ lt batch --input inputfile.txt
 
 ### Summary
 **Problem**: Script crashes with `Unable to load libcudnn_ops.so` error.  
-**Root Cause**: cuDNN libraries in venv not in `LD_LIBRARY_PATH`.  
-**Quick Fix**: The `lt` CLI handles this automatically. If issues persist, run `lt doctor` to diagnose.
+**Root Cause**: The CUDA profile (`nvidia-cudnn-cu12`, `nvidia-cublas-cu12`) is not installed, or the NVIDIA driver is too old for the CUDA 12 runtime.  
+**Quick Fix**: run `lt doctor` to see whether CUDA is usable. If you want GPU acceleration, install the CUDA profile (`./install_local_transcribe.py --cuda`) on a host with a working driver >= 525.60. Otherwise, do nothing: CPU inference is a fully supported configuration and requires no NVIDIA packages.
 
 ### Issue
 ```
@@ -278,112 +289,77 @@ Aborted (core dumped)
 - This warning appears even when everything is working correctly
 
 ### Root Cause
-The cuDNN libraries installed via `nvidia-cudnn-cu13` Python package are located in the venv at:
+On GPU hosts the CUDA profile (`nvidia-cudnn-cu12`, `nvidia-cublas-cu12`) installs its
+libraries inside the venv at:
+
 ```
 venv/lib/python3.12/site-packages/nvidia/cudnn/lib/
 venv/lib/python3.12/site-packages/nvidia/cublas/lib/
 ```
 
-However, these paths are **NOT** in the `LD_LIBRARY_PATH` by default, causing ctranslate2/onnxruntime to fail when trying to load cuDNN.
+If those packages are missing (the default CPU install) or the NVIDIA driver is
+older than the CUDA 12 runtime requires (>= 525.60), CTranslate2 cannot load
+cuDNN. `local-transcribe` no longer crashes in that situation: it detects that
+CUDA is unusable and runs on CPU. GPU acceleration is entirely optional.
 
 ### Diagnosis Commands
 ```bash
-# Verify GPU and driver
-nvidia-smi  # Shows NVIDIA RTX A1000, Driver 535.274.02, CUDA 12.2
+# Whether CUDA is actually usable (authoritative; no torch involved)
+lt doctor
 
-# Verify CUDA compiler
-nvcc --version  # Shows CUDA 12.0.140
+# What the installed venv actually contains
+pipx runpip local-transcribe list | grep -iE 'nvidia|torch'   # empty on CPU hosts
+pipx runpip local-transcribe show nvidia-cudnn-cu12 nvidia-cublas-cu12
 
-# Check cuDNN location
-source venv/bin/activate
-python3 -c "import nvidia.cudnn; import os; print(os.path.dirname(nvidia.cudnn.__file__))"
-# Output: venv/lib/python3.12/site-packages/nvidia/cudnn
-
-# List cuDNN libraries
-ls -la venv/lib/python3.12/site-packages/nvidia/cudnn/lib/
-# Shows: libcudnn_ops.so.9, libcudnn_adv.so.9, libcudnn_cnn.so.9, etc.
-
-# Test without LD_LIBRARY_PATH (FAILS)
-python3 -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"
-# Results in crash/abort
-
-# Test WITH LD_LIBRARY_PATH (WORKS)
-export LD_LIBRARY_PATH=$(python3 -c "import nvidia.cublas, nvidia.cudnn, os; print(os.path.dirname(nvidia.cublas.__file__)+'/lib:'+os.path.dirname(nvidia.cudnn.__file__)+'/lib')"):$LD_LIBRARY_PATH
-python3 -c "import ctranslate2; print('CT2 version:', ctranslate2.__version__); print('CUDA device count:', ctranslate2.get_cuda_device_count())"
-# Output: CT2 version: 4.6.0, CUDA device count: 1
-
-# Verify PyTorch CUDA
-python3 -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0)); print('cuDNN version:', torch.backends.cudnn.version())"
-# Output: CUDA available: True, Device: NVIDIA RTX A1000 6GB Laptop GPU, cuDNN version: 90100
+# Raw CTranslate2 probe (device count + supported CUDA compute types)
+pipx runpython -c "import ctranslate2 as c; print(c.get_cuda_device_count(), c.get_supported_compute_types('cuda'))" 2>/dev/null \
+  || python3 -c "import ctranslate2 as c; print(c.get_cuda_device_count(), c.get_supported_compute_types('cuda'))"
 ```
 
 ### Solution Options
 
-**Option 1: Use the CLI (Recommended) ⭐**
+**Option 1: Stay on CPU (Recommended unless you need speed)**
 
-The `lt` CLI handles CUDA/cuDNN setup automatically:
+Nothing to do. A clean `pipx install` yields a working CPU backend
+(`int8`); `lt doctor` reports it as healthy and exits 0.
+
+**Option 2: Enable CUDA acceleration**
 
 ```bash
-# Single video (URL or path to an audio file on disk)
-lt transcribe "https://youtube.com/watch?v=VIDEO_ID" --device cuda
+# GPU hosts with a working driver (>= 525.60)
+./install_local_transcribe.py --cuda
+#   equivalent: pipx inject local-transcribe -r requirements-cuda.txt
 
-# Batch processing with resume capability
-lt batch --input inputfile.txt
-
-# If interrupted, just resume
-lt batch --resume
-
-# Check status anytime
-lt status
-
-# Reconcile and see what's done
-lt reconcile
+lt doctor            # confirms "ctranslate2 CUDA: ... usable"
 ```
 
-**Why use the CLI?**
-- ✅ **Resume capability** - Never lose progress
-- ✅ **File verification** - Checks actual output files
-- ✅ **Status tracking** - JSON state for every video
-- ✅ **Retry logic** - Automatic retry for failures
-- ✅ **Detailed logging** - Complete audit trail
-- ✅ **Failure reports** - Know what failed and why
-- ✅ **Smart detection** - Auto-detects URLs vs files
-- ✅ **Unified interface** - One command for everything
+If cuDNN still cannot be loaded after installing the CUDA profile, add the
+wheel library directories to `LD_LIBRARY_PATH`:
 
-**Option 3: Add to activation script (Persistent for this venv)**
-Add to `venv/bin/activate`:
 ```bash
-# Add near the end, before the final comments
-CUDNN_LIBS=$(python3 -c "import nvidia.cublas, nvidia.cudnn, os; print(os.path.dirname(nvidia.cublas.__file__)+'/lib:'+os.path.dirname(nvidia.cudnn.__file__)+'/lib')" 2>/dev/null)
-if [ -n "$CUDNN_LIBS" ]; then
-    export LD_LIBRARY_PATH="$CUDNN_LIBS:$LD_LIBRARY_PATH"
-fi
+export LD_LIBRARY_PATH=$(
+  python3 -c "import nvidia.cublas, nvidia.cudnn, os; \
+print(os.path.dirname(nvidia.cublas.__file__)+'/lib:'+os.path.dirname(nvidia.cudnn.__file__)+'/lib')"
+):$LD_LIBRARY_PATH
 ```
 
 ### Current Status
-- GPU detected: ✅ NVIDIA RTX A1000 6GB (Driver 535.274.02)
-- CUDA Toolkit: ✅ 12.0.140 installed
-- cuDNN libraries: ✅ Present in venv (version 9.1.0)
-- PyTorch CUDA: ✅ Works when LD_LIBRARY_PATH is set
-- ctranslate2 CUDA: ✅ Works when LD_LIBRARY_PATH is set
-- **Issue**: LD_LIBRARY_PATH not configured by default
+- CPU backend: ✅ always available (`ctranslate2`, `faster-whisper`)
+- GPU detected: reported by `lt doctor` (informational)
+- CUDA usability: reported by `lt doctor`; falls back to CPU automatically
+- PyTorch: not required — CTranslate2 is the inference backend
 
 ### Verification
-Run diagnostics to verify your setup:
 ```bash
 lt doctor
 ```
 
-This will check:
-- GPU detection (nvidia-smi)
-- CUDA toolkit (nvcc)
-- Python packages (nvidia-cudnn, torch, ctranslate2)
-- Library paths and LD_LIBRARY_PATH
-- ctranslate2 CUDA functionality
-- PyTorch CUDA functionality
+This checks the required inference stack, the active backend (CPU or CUDA),
+ffmpeg, and yt-dlp, and treats CUDA/GPU/Deno as optional components.
 
 ### Next Steps
-Choose one of the solution options above to ensure the cuDNN libraries are in the library search path when running the transcription script.
+If you want GPU inference, install the CUDA profile on a host with a compatible
+driver. Otherwise use CPU — no further configuration is needed.
 
 ### FAQ
 
@@ -391,7 +367,7 @@ Choose one of the solution options above to ensure the cuDNN libraries are in th
 A: No, this is harmless. It's just ONNX Runtime scanning for GPUs and encountering a virtual display device (EVDI/DisplayLink). Your actual NVIDIA GPU (card2) is detected and works fine.
 
 **Q: The script works now, but why did this happen?**  
-A: The NVIDIA cuDNN libraries installed via pip go into your venv's `site-packages` directory. These need to be in `LD_LIBRARY_PATH` for native libraries (like ctranslate2) to find them at runtime. The wrapper script handles this automatically.
+A: The NVIDIA cuDNN/cuBLAS wheels installed via pip go into your venv's `site-packages` directory. CTranslate2 needs to find them at runtime; the CUDA profile (`install_local_transcribe.py --cuda` or `pipx inject local-transcribe -r requirements-cuda.txt`) installs matching CUDA 12 wheels. Without them, `local-transcribe` simply uses CPU.
 
 **Q: Can I suppress the DRM warning?**  
 A: The DRM warning is harmless and can be ignored. It's just ONNX Runtime scanning for GPUs.
