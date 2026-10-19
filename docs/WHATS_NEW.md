@@ -1,5 +1,17 @@
 # What's New
 
+## 0.7.0 — AMD ROCm GPU acceleration (2026-10-19)
+
+- **AMD ROCm acceleration** via CTranslate2's official ROCm/HIP build. `--device auto` picks it up automatically; `--device rocm` requires it.
+- New installer profile: `./install_local_transcribe.py --rocm` downloads the pinned, hash-verified CTranslate2 ROCm wheel and the matching TheRock ROCm SDK wheels into the pipx venv. `--auto` now also detects supported AMD GPUs.
+- **No root, no global library changes**: ROCm SDK libraries ship in the venv and are preloaded at runtime, so the systemd worker resolves them with no `LD_LIBRARY_PATH` editing.
+- `lt doctor` reports one of three backends (AMD ROCm / NVIDIA CUDA / CPU) with the GPU architecture and compute types.
+- CPU and NVIDIA CUDA installs are unchanged; existing queue jobs with `device=auto` need no modification.
+
+Docs: [README.md](../README.md) · [CHANGELOG.md](../CHANGELOG.md)
+
+---
+
 ## 0.6.0 — Portable CPU/CUDA installation (2026-10-19)
 
 - `pipx install git+https://github.com/draeician/local_transcribe.git` now works on **CPU-only Linux**: the core dependencies no longer pull `nvidia-cublas`, `nvidia-cudnn`, or PyTorch. CTranslate2 + faster-whisper run CPU inference directly.

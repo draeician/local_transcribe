@@ -6,7 +6,7 @@
 - ✅ Durable NFSv3 transcription queue (`pending` → `processing` → `completed` / `failed` / `retry`)
 - ✅ Single exclusive worker via NLM lock (`lt worker` + systemd user unit)
 - ✅ Producers enqueue from any host (`lt transcribe`, `lt batch`, `lt queue add`, ref-cli)
-- ✅ CUDA GPU acceleration + CPU fallback; ModelCache keeps Whisper loaded
+- ✅ CUDA GPU acceleration + AMD ROCm acceleration + CPU fallback; ModelCache keeps Whisper loaded
 - ✅ Auth profiles (cookies file / browser) for YouTube downloads
 - ✅ FOSS only (yt-dlp + faster-whisper)
 - ✅ Legacy in-process mode still available via `--direct`
@@ -28,26 +28,56 @@ pipx install git+https://github.com/draeician/local_transcribe.git
 lt doctor
 ```
 
-**Adding CUDA acceleration (optional, GPU hosts only):**
+**Adding CUDA acceleration (optional, NVIDIA GPU hosts):**
 
 ```bash
-# --auto (default) picks CUDA only when a working NVIDIA GPU + driver is found,
-# otherwise installs the CPU profile.
+# --auto (default) picks the best available GPU profile, else CPU.
 ./install_local_transcribe.py
 
-# Force CPU, or force CUDA with a clear error when CUDA is unusable:
+# Force CPU, NVIDIA CUDA, or AMD ROCm (each errors clearly if unusable):
 ./install_local_transcribe.py --cpu
 ./install_local_transcribe.py --cuda
+./install_local_transcribe.py --rocm
 
 # Equivalent one-liner with pipx (CUDA 12 wheel profile, stays in the venv):
 pipx inject local-transcribe -r requirements-cuda.txt
 ```
 
+**Adding AMD ROCm acceleration (optional, AMD GPU hosts):**
+
+```bash
+# Installs the official CTranslate2 ROCm wheel + TheRock ROCm SDK libraries
+# into the pipx venv. Verified by SHA-256; no root and no global library changes.
+./install_local_transcribe.py --rocm
+
+# Verify the GPU backend
+lt doctor
+```
+
+`--rocm` uses CTranslate2's **official ROCm/HIP build** (the PyPI `ctranslate2`
+wheel is the CUDA build). It pins:
+
+* `rocm-python-wheels-Linux.zip` from CTranslate2 **v4.8.3** (SHA-256 verified),
+* TheRock ROCm SDK `rocm-sdk-core` + `rocm-sdk-libraries-gfxNNNN` (currently
+  `7.13.0a20260515`, gfx1151/gfx1150) from AMD's ROCm index.
+
+The ROCm runtime libraries ship inside the venv and are preloaded by
+`local_transcribe`, so the systemd worker resolves them **without** editing
+`LD_LIBRARY_PATH` or `/etc/ld.so.conf.d`. `HSA_OVERRIDE_GFX_VERSION` is not
+used. This path was validated on a Radeon 8060S (gfx1151): ~1.7× faster than CPU
+on the same model. See [CHANGELOG.md](CHANGELOG.md) 0.7.0.
+
 `install_local_transcribe.py` replaces the old `install_with_gpu.sh`
-(which is now a thin wrapper forwarding to it). Detection uses a functional
-`nvidia-smi` probe plus a driver-version threshold — an NVIDIA GPU alone does
-not imply a compatible CUDA driver/library stack. Deno is **not** required to
-install the application or to transcribe local audio files.
+(which is now a thin wrapper forwarding to it). Detection uses functional
+probes — `nvidia-smi` plus a driver-version threshold for NVIDIA, and
+`/dev/kfd` + `rocminfo` for AMD — so a GPU alone never implies a compatible
+driver/library stack. Deno is **not** required to install the application or to
+transcribe local audio files.
+
+**Repairing / upgrading ROCm installs:** a plain `pipx install --force` (or
+`pipx upgrade`) reinstalls the *CPU* CTranslate2 wheel and drops the ROCm build.
+Re-run `./install_local_transcribe.py --rocm` afterwards to restore GPU
+acceleration; it is idempotent and reuses the cached, verified wheel archive.
 
 **Option 2: Local Development**
 

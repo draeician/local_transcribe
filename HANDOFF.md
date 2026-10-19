@@ -703,6 +703,123 @@ YouTube video to confirm CUDA acceleration end-to-end.
   pushed.
 * No new tag was pushed (0.6.0 is not declared an official release here).
 
+## AMD ROCm acceleration for the Radeon 8060S / Strix Halo (AMD-ROCM-8060S)
+
+Date: 2026-10-19 (UTC)
+Agent: OpenCode
+Branch: `feat/amd-rocm-transcription` (based on `origin/main` at `3e0e236`)
+Target host: `aether` (AMD Ryzen AI Max+ 395, Radeon 8060S, gfx1151)
+
+### Phase 1 — Aether environment (observed)
+
+| Item | Value |
+|------|-------|
+| `hostname` | `aether` (reached over SSH from the `minion` dev checkout) |
+| kernel | `6.17.0-41-generic` |
+| OS | Ubuntu 25.10 |
+| GPU | `c5:00.0` AMD/ATI **Radeon 8060S** (Strix Halo), PCI `1002:1586` |
+| Device nodes | `/dev/kfd` and `/dev/dri/renderD128` present; user in `video`+`render` |
+| `rocminfo` | reports `Name: gfx1151`, "Radeon 8060S Graphics", `amdgcn-amd-amdhsa--gfx1151` |
+| Python | 3.13.7 (`/usr/bin/python3`), pipx 1.7.1 |
+| Existing install | pipx `local-transcribe 0.6.0`, `lt` on PATH |
+| Existing worker | **active** (`/dev/kfd` holder absent; worker state active, heartbeat live) |
+| Other GPU users | llama.cpp `llama-server` in podman containers (must not be disturbed) |
+| Disk | `/` 97% used, 33 GB free |
+
+#### Critical ROCm finding: mixed 5.x system stack
+
+`rocm-core` is **7.2.0**, but the actual runtime libraries on the host are the
+*distribution* 5.x builds, and `/opt/rocm-7.2.0/lib` contains only
+`librocm-core.so`:
+
+* installed: `libamdhip64-5` (5.7.1), `librocblas0` (5.5.1) → `libamdhip64.so.5`,
+  `libhipblas.so.0`
+* the CTranslate2 ROCm wheel requires `libamdhip64.so.7`, `libhipblas.so.3`,
+  `libhiprand.so.1`
+
+So `/opt/rocm` on Aether **cannot** satisfy the CTranslate2 ROCm wheel. Fixing
+this with system packages (`apt install rocm`, `rocm-hip-runtime`) needs root
+and risks the llama.cpp stack; per the task's "do not install or replace system
+GPU drivers, kernels, or ROCm libraries automatically" rule this was **not**
+done. No privileged change was applied.
+
+#### Non-privileged solution found
+
+TheRock's ROCm SDK ships the matching ROCm 7.x libraries as ordinary Python
+wheels (`rocm-sdk-core`, `rocm-sdk-libraries-gfx1151`) on AMD's own index
+(`https://rocm.nightlies.amd.com/v2/gfx1151/`). Installing them inside the venv
+supplies `libamdhip64.so.7`, `libhipblas.so.3`, `libhiprand.so.1`, … with no
+root and no system modification. `HSA_OVERRIDE_GFX_VERSION` is **not** used.
+
+### Phase 2 — Validation result (real GPU, isolated venv, non-privileged)
+
+On `aether`, in a throwaway venv (`~/rocm-verify`) — **not** the production pipx
+env:
+
+```
+ctranslate2 4.8.3 (official ROCm wheel, cp313)
+rocm-sdk-core==7.13.0a20260515
+rocm-sdk-libraries-gfx1151==7.13.0a20260515
+```
+
+* `ctranslate2.get_cuda_device_count()` → **1**
+* `get_supported_compute_types("cuda")` → `bfloat16, float16, float32, int8,
+  int8_bfloat16, int8_float16, int8_float32`
+* Real transcription of `gettysburg.wav` (17.58 s) with `medium`/`float16`:
+  **wall 2.41 s, 7.31x realtime**, correct transcript text
+* GPU utilization sampled with `rocm-smi -u` during a 6-run burst: **28 → 30 →
+  72 → 85 → 90 → 91 %** — the GPU is genuinely doing the work
+* Benchmark, same audio/model/`beam_size=5`, best-of-3 warm runs:
+  * CPU `int8`: **7.061 s (2.49x realtime)**
+  * ROCm `float16`: **4.138 s (4.25x realtime)**
+  * speedup: **1.71x**
+
+Archives pinned and verified during this work:
+
+* `rocm-python-wheels-Linux.zip` sha256
+  `132eda022faed55e4d1a7093f15a9dd9d4bcdf26bd72471ec1c984bada9a3d3f`
+* cp313 inner wheel sha256
+  `f4790b7c10e668619f9ba138b6f26cdba5736c8d810628d37d76b567de3b7a2d`
+
+### Implementation (Phase 3)
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/utils/rocm.py` (new) | pinned ROCm wheel plan, SHA-256 verify, archive extraction, pipx step construction |
+| `src/local_transcribe/utils/hardware.py` | AMD detection (`/dev/kfd` + `rocminfo`), ROCm SDK library discovery + safe `RTLD_GLOBAL` preload, `gpu_backend()` (rocm/cuda/cpu from loaded libs), backend-agnostic `gpu_runtime_status`, `--device rocm` semantics, `describe_backend` |
+| `src/local_transcribe/utils/doctor.py` | three-way backend reporting (AMD ROCm / NVIDIA CUDA / CPU), GPU arch + compute types, actionable `--rocm` hint |
+| `src/local_transcribe/services/transcriber.py` | prepare ROCm runtime before resolution; `effective_backend()`; re-export `BackendUnavailableError` |
+| `src/local_transcribe/cli.py` | device help now `auto/cpu/cuda/rocm` |
+| `install_local_transcribe.py` | `--rocm` profile, AMD auto-detection, ROCm wheel download/verify/inject, ROCm verification |
+| `tests/test_rocm_support.py` (new) | 36 tests: detection, preload safety/idempotency, backend identity, auto/explicit selection, queue-on-worker ROCm, doctor three-way, install planning, hash verification |
+| `tests/test_portable_install.py` | updated to the backend-agnostic probe names |
+
+Behavior guaranteed:
+
+* `device=auto` → GPU (ROCm or CUDA) when CTranslate2 can use it, else CPU `int8`.
+* `device=rocm` → ROCm, or a clear `BackendUnavailableError`/installer error; never a silent fake GPU.
+* CTranslate2's internal `cuda` device name is preserved for ROCm.
+* Queue executions keep `device=auto`; resolution stays on the worker.
+* Model-cache keys remain `(model, effective_device, effective_compute)`; the five-minute idle-unload path is untouched.
+
+### Verification so far (dev checkout `minion`)
+
+| Check | Result |
+|-------|--------|
+| targeted ROCm + portable-install tests | **78 passed, 1 skipped** |
+| full suite | **4 failed, 292 passed, 11 skipped** |
+| baseline `origin/main` failures | the **same 4** (config pollution `test_cli_queue`, Rich/ANSI `test_update`) → **0 new** |
+| `ruff check .` | 32 findings, **0 in new/edited ROCm files**, no new findings |
+| `python3 -m build` | `local_transcribe-0.7.0` sdist + wheel |
+
+### Remaining work before this entry is final
+
+Production-safe verification (Phase 4) on aether: install the ROCm profile into
+an **isolated pipx home** (never the production one), run `lt doctor` and a real
+`lt transcribe --direct` GPU job with a private output dir, confirm the backend
+log line and GPU activity, then a controlled upgrade of the production pipx
+install and a queue-worker check without touching the NLM lock or queue UUID.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
