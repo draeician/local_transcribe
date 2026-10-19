@@ -1,0 +1,13 @@
+# CUDA 12 acceleration profile (optional).
+#
+# CTranslate2 4.x (faster-whisper backend) links against cuBLAS 12 and cuDNN 9.
+# Install these ONLY on hosts where you want GPU inference and a compatible
+# NVIDIA driver (>= 525.60) is present:
+#
+#     pipx inject local-transcribe -r requirements-cuda.txt
+#
+# or simply run:  ./install_local_transcribe.py --cuda
+#
+# Everything here lives inside the pipx/venv environment — never system-wide.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12==9.*

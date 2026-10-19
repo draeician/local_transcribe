@@ -1,3 +1,9 @@
+# Core runtime dependencies (CPU inference).
+#
+# This file mirrors the [project].dependencies in pyproject.toml and must NOT
+# pull in NVIDIA packages or PyTorch: `pipx install git+https://...` has to
+# succeed on a CPU-only Linux machine. CUDA acceleration is an opt-in profile —
+# see requirements-cuda.txt and install_local_transcribe.py.
 yt-dlp[curl-cffi,default]>=2025.1.1
 secretstorage>=3.3.0
 jeepney>=0.8
@@ -6,11 +12,7 @@ faster-whisper>=1.0.3
 tqdm>=4.66.2
 soundfile>=0.12.1
 ctranslate2>=4.3.1
-torch
-torchvision
-torchaudio
-nvidia-cublas
-nvidia-cudnn
+av>=14,<19
 PyYAML>=6.0
 typer>=0.9.0
 rich>=13.0.0

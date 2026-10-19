@@ -73,7 +73,7 @@ lt queue init --queue-dir /path/to/transcription-queue
 # verify that file, then:
 lt queue doctor
 lt cookies refresh                 # export browser cookies for the worker
-lt worker install   # also ensures CUDA torch when nvidia-smi is present
+lt worker install   # selects CPU/CUDA at runtime; installs no packages
 systemctl --user daemon-reload
 systemctl --user enable --now local-transcribe-worker.service
 ```

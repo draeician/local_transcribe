@@ -559,6 +559,133 @@ job end and that the line appears about five minutes after the last job finished
 dropping in `nvidia-smi` while the worker stays resident. Then decide whether to delete the merged
 branch and whether to schedule the test-hygiene fix branch described in caveat 1.
 
+## Portable CPU/CUDA installation and runtime selection (PORTABLE-CPU-CUDA-INSTALL)
+
+Date: 2026-10-19 (UTC)
+Agent: OpenCode
+Branch: `fix/portable-cpu-cuda-install` (based on `origin/main` at `b4ec265`)
+
+### Reported failure and root cause
+
+On **Aether** (no CUDA) `pipx install git+https://github.com/draeician/local_transcribe`
+failed while building `nvidia-cudnn`. Root cause: `pyproject.toml` listed
+`nvidia-cublas`, `nvidia-cudnn`, `torch`, `torchvision`, and `torchaudio` as
+**core** dependencies, so every install attempted to resolve/build NVIDIA
+packages. Inspection showed PyTorch is not used by any inference path:
+faster-whisper runs on CTranslate2 (`services/transcriber.py` only ever imports
+`faster_whisper`; the sole `torch` references were the CUDA auto-install helpers
+and their diagnostics).
+
+### Implementation
+
+1. **Dependencies** — core set is now CPU-only: `nvidia-*`, `torch*` removed;
+   faster-whisper/ctranslate2 retained. Optional `cuda` extra
+   (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12==9.*`) + `requirements-cuda.txt`.
+   Also pinned `av>=14,<19` (see latent bug below).
+2. **Portable installer** — new `install_local_transcribe.py` with `--auto`
+   (default), `--cpu`, `--cuda`. Detection uses a functional `nvidia-smi` probe
+   plus a driver threshold (>= 525.60 for CUDA 12); `--cuda` fails closed with a
+   clear message. Installs only via `pipx` into an isolated venv (never system
+   `pip`), `pipx install --force` makes re-runs idempotent, and it verifies the
+   result. `install_with_gpu.sh` is now a thin forwarding wrapper. Deno is not a
+   prerequisite for install or local-audio transcription.
+3. **Runtime selection** — new `utils/hardware.py` centralizes detection and
+   `resolve_device_and_compute`. `device`/`compute_type` default to `auto` in
+   the CLI, `ExecutionOptions`, `BatchConfig`, and `TranscribeConfig`.
+   Resolution happens **on the worker** in `ProductionJobRunner.run()`, so
+   producers and workers may differ in hardware. Usable CUDA → `cuda` + best
+   supported compute type; otherwise `cpu`/`int8`. Explicit `--device`/
+   `--compute-type` are preserved.
+4. **No automatic installs** — removed `ensure_pytorch_cuda` and the CLI
+   startup side effect, `lt worker install`'s CUDA-torch block, and the whole
+   PyTorch install/marker machinery. `lt doctor`, `lt queue stats`,
+   `lt worker status` never download anything.
+5. **Diagnostics** — `doctor.py` rewritten around `DiagnosticCheck` with
+   `required` flags: required = CTranslate2/faster-whisper/yt-dlp/soundfile,
+   CPU backend, ffmpeg, yt-dlp; optional = GPU probe, ctranslate2 CUDA, Deno.
+   CPU-only `lt doctor` exits 0; broken CUDA on a GPU host is still actionable.
+   PyTorch is no longer a check.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `pyproject.toml` | version 0.6.0; CPU-only core deps; `cuda` extra; `av<19`; `build` in dev |
+| `requirements.txt` / `requirements-cuda.txt` | CPU core mirror + new CUDA profile |
+| `install_local_transcribe.py` (new) | portable CPU/CUDA installer |
+| `install_with_gpu.sh` | thin wrapper forwarding to the Python installer |
+| `src/local_transcribe/utils/hardware.py` (new) | GPU/CUDA detection + device/compute resolution |
+| `src/local_transcribe/utils/doctor.py` | CPU-aware diagnostics (`DiagnosticCheck`) |
+| `src/local_transcribe/cli.py` | `auto` defaults; removed torch side effects; doctor exit code |
+| `src/local_transcribe/cli_worker.py` | `worker install` no longer installs torch |
+| `src/local_transcribe/services/transcriber.py` | delegate to hardware module |
+| `src/local_transcribe/services/queue_models.py`, `services/pipeline.py` | `auto` defaults |
+| `tests/test_portable_install.py` (new) | 41 tests for the 10 required areas |
+| `README.md`, `START_HERE.md`, `docs/QUEUE_OPERATOR.md`, `docs/WHATS_NEW.md`, `AGENTS.md`, `SPEC-queue.md`, `CHANGELOG.md`, `project_spec.md` | docs + version |
+
+Untouched by design: queue store/layout, source reservations, NLM lock, retry,
+download admission, transcript publishing, `--direct`, worker concurrency.
+
+### Verification (evidence)
+
+Environment: project venv `.venv`; clean isolated pipx homes under `/tmp/opencode`.
+
+| Check | Result |
+|-------|--------|
+| `.venv/bin/python -m pytest -q` | **4 failed, 255 passed, 11 skipped** |
+| baseline `origin/main` (`b4ec265`) full suite | **same 4 ids** fail (plus known flaky multiprocess test) → **0 new failures** |
+| new tests `tests/test_portable_install.py` | **41 passed, 1 skipped** (opt-in real-install test) |
+| worker/model-cache/queue regression set (6 files) | **99 passed, 1 skipped** |
+| `.venv/bin/python -m ruff check .` | **38 findings vs 42 baseline**; rule+file delta showed **0 new**, 4 pre-existing removed |
+| `.venv/bin/python -m build` | built `local_transcribe-0.6.0` sdist + wheel |
+| real clean pipx install (isolated `PIPX_HOME`) | `pipx install --force …` succeeded; **no nvidia/torch in `pipx runpip … list`** |
+| `lt --version` / `lt doctor` in clean CPU env | `0.6.0`; doctor **exit 0**, CPU backend "healthy (int8)", CUDA/GPU/Deno shown optional |
+| actual CPU transcription (clean pipx env) | `Introducing AgentKit.mp3` → transcript JSON with real text, device auto→cpu int8 |
+| actual queue execution (clean pipx env) | local audio enqueued `device=auto`, worker processed 1 job, `local_….json` published with real transcript |
+| installer `--cuda` on CPU host | exit 2, message: "CUDA is not usable here: no NVIDIA GPU detected…" |
+| installer idempotency | `--cpu`, repeat `--cpu`, then `--auto` all succeeded against the same venv; env stayed free of nvidia/torch |
+| installer `--cuda` with mocked GPU | resolves profile `cuda`, commands `pipx inject --force local-transcribe nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*` |
+| `git diff --check` | clean except 3 intentional Markdown hard-break lines (two trailing spaces) that match the surrounding header/bullet style in `README.md`, `SPEC-queue.md`, `project_spec.md` |
+
+### Latent bug found during clean-install verification
+
+A truly clean resolve pulled **PyAV 19**, which removed the `metadata_errors`
+kwarg that `faster-whisper 1.2.1` still passes in `faster_whisper/audio.py`.
+Real transcription then failed with `open() got an unexpected keyword argument
+'metadata_errors'`. This was masked in the dev venv (PyAV 17.1.0). Fixed by
+pinning `av>=14,<19` in the core dependencies and `requirements.txt`. Verified
+by reinstalling the clean pipx env and transcribing real audio successfully.
+
+### Pre-existing failures (unchanged, not caused by this task)
+
+* `tests/test_cli_queue.py::test_queue_retry_all_failed` and 3 ×
+  `tests/test_update.py` — Rich/ANSI colour output and operator config
+  pollution already documented in the 0.5.1 entries above; identical on
+  `origin/main`.
+* `tests/test_queue_concurrency.py::test_multiprocess_force_no_dual_current` —
+  known flaky multiprocess test (also flaky at baseline).
+
+### Remaining caveats / not verified
+
+1. **No physical GPU validation was performed.** The CUDA profile selection,
+   inject command, and driver threshold were verified with **mocked** detection
+   and dry-runs only; this host has no NVIDIA GPU (`nvidia-smi` absent,
+   `ctranslate2.get_cuda_device_count() == 0`). On real GPU hardware, run
+   `./install_local_transcribe.py --cuda` and confirm `lt doctor` reports
+   `ctranslate2 CUDA: … usable`.
+2. Idle-unload/model-cache behavior is unchanged; regression protection comes
+   from the existing `tests/test_model_cache.py` and `tests/test_worker_model_idle.py`
+   (both still green), plus new queue-on-CPU tests.
+3. Version bumped `0.5.1 → 0.6.0` (minor: user-facing default change + new
+   installer/extra), so `pyproject.toml`, `__init__.py`, `project_spec.md`, and
+   `CHANGELOG.md` agree. No tag pushed here.
+
+### Recommended next step
+
+Merge to `main`, then on a real GPU host run
+`./install_local_transcribe.py --cuda` and `lt doctor`, and transcribe one
+YouTube video to confirm CUDA acceleration end-to-end.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

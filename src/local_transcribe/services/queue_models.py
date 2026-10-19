@@ -111,8 +111,10 @@ def source_key_filename(source_key: str) -> str:
 @dataclass
 class ExecutionOptions:
     model: str = "medium"
-    device: str = "cuda"
-    compute_type: str = "float16"
+    # Declarative requests resolved on the *worker* that claims the job, so
+    # producers on GPU-less hosts and workers on GPU hosts interoperate.
+    device: str = "auto"
+    compute_type: str = "auto"
     language: Optional[str] = None
     keep_audio: bool = False
     auth_profile: Optional[str] = None

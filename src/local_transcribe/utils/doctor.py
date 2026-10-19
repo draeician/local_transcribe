@@ -1,187 +1,77 @@
-"""Environment diagnostics for CUDA/cuDNN setup."""
+"""Environment diagnostics for local-transcribe.
 
-import ctypes
+CPU-only operation is a first-class, healthy configuration. Required checks are
+the packages needed to transcribe at all (CTranslate2, faster-whisper, ffmpeg,
+yt-dlp). CUDA libraries, a GPU driver, and Deno are *optional acceleration /
+YouTube* components: their absence is reported but never fails diagnostics, and
+nothing is ever installed here.
+"""
+
+from __future__ import annotations
+
+import importlib
 import os
 import subprocess
-import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import List, Tuple
 
 
-CUDNN_CANDIDATES = [
-    "libcudnn_ops.so.9.1.0", "libcudnn_ops.so.9.1", "libcudnn_ops.so.9",
-    "libcudnn.so.9", "libcudnn.so",
-]
+@dataclass(frozen=True)
+class DiagnosticCheck:
+    """One diagnostic result. ``required=False`` never fails the exit code."""
+
+    name: str
+    ok: bool
+    detail: str
+    required: bool = True
+
+
+def check_required_modules() -> Tuple[bool, str]:
+    """Verify the required inference/download dependency set (no torch/nvidia)."""
+    required = {
+        "ctranslate2": "ctranslate2",
+        "faster-whisper": "faster_whisper",
+        "yt-dlp": "yt_dlp",
+        "soundfile": "soundfile",
+    }
+    missing: List[str] = []
+    for label, module in required.items():
+        try:
+            importlib.import_module(module)
+        except Exception as exc:  # noqa: BLE001 — report, never raise
+            missing.append(f"{label} ({exc})")
+    if missing:
+        return False, f"Missing: {', '.join(missing)}"
+    return True, "ctranslate2, faster-whisper, yt-dlp, soundfile present"
+
+
+def check_cpu_backend() -> Tuple[bool, str]:
+    """Confirm CTranslate2 can actually run CPU inference."""
+    from local_transcribe.utils.hardware import supported_compute_types
+
+    types = supported_compute_types("cpu")
+    if not types:
+        return False, "ctranslate2 reports no CPU compute types"
+    preferred = "int8" if "int8" in types else sorted(types)[0]
+    return True, f"CPU inference healthy (compute_type={preferred}; supported={', '.join(sorted(types))})"
 
 
 def check_nvidia_smi() -> Tuple[bool, str]:
-    """Check if nvidia-smi is available and working."""
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return True, result.stdout.strip()
-        return False, "nvidia-smi returned no output"
-    except FileNotFoundError:
-        return False, "nvidia-smi not found"
-    except subprocess.TimeoutExpired:
-        return False, "nvidia-smi timeout"
-    except Exception as e:
-        return False, f"Error: {e}"
+    """Check whether a working NVIDIA GPU/driver is visible."""
+    from local_transcribe.utils.hardware import detect_nvidia_gpu
+
+    return detect_nvidia_gpu()
 
 
-def check_nvcc() -> Tuple[bool, str]:
-    """Check if nvcc (CUDA compiler) is available."""
-    try:
-        result = subprocess.run(
-            ["nvcc", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            # Extract version line
-            for line in result.stdout.split('\n'):
-                if 'release' in line.lower():
-                    return True, line.strip()
-            return True, "CUDA toolkit found"
-        return False, "nvcc returned error"
-    except FileNotFoundError:
-        return False, "nvcc not found"
-    except subprocess.TimeoutExpired:
-        return False, "nvcc timeout"
-    except Exception as e:
-        return False, f"Error: {e}"
+def check_cuda_runtime() -> Tuple[bool, str]:
+    """Check whether CTranslate2 can actually execute on CUDA."""
+    from local_transcribe.utils.hardware import cuda_runtime_status
 
-
-def check_python_packages() -> Tuple[bool, str]:
-    """Check if required Python packages are installed."""
-    packages = ["nvidia-cudnn", "nvidia-cublas", "torch", "ctranslate2", "faster-whisper"]
-    found = []
-    missing = []
-    
-    for pkg in packages:
-        try:
-            if pkg == "nvidia-cudnn":
-                import nvidia.cudnn
-                found.append("nvidia-cudnn")
-            elif pkg == "nvidia-cublas":
-                # nvidia-cublas package installs as nvidia.cu13 (for CUDA 13)
-                # Try both possible import names
-                try:
-                    import nvidia.cublas
-                    found.append("nvidia-cublas")
-                except ImportError:
-                    try:
-                        import nvidia.cu13
-                        found.append("nvidia-cublas")
-                    except ImportError:
-                        raise ImportError("nvidia-cublas not found")
-            elif pkg == "torch":
-                import torch
-                found.append("torch")
-            elif pkg == "ctranslate2":
-                import ctranslate2
-                found.append("ctranslate2")
-            elif pkg == "faster-whisper":
-                import faster_whisper
-                found.append("faster-whisper")
-        except ImportError:
-            missing.append(pkg)
-    
-    if missing:
-        return False, f"Missing: {', '.join(missing)}"
-    return True, f"Found: {', '.join(found)}"
-
-
-def check_cudnn_location() -> Tuple[bool, str]:
-    """Check cuDNN library location."""
-    try:
-        import nvidia.cudnn
-        import nvidia.cublas
-        import os
-        
-        # Handle namespace packages where __file__ might be None
-        cudnn_file = getattr(nvidia.cudnn, '__file__', None)
-        cublas_file = getattr(nvidia.cublas, '__file__', None)
-        
-        if cudnn_file is None or cublas_file is None:
-            # Try to find the package location using __path__
-            cudnn_paths = getattr(nvidia.cudnn, '__path__', [])
-            cublas_paths = getattr(nvidia.cublas, '__path__', [])
-            
-            if cudnn_paths and cublas_paths:
-                cudnn_path = str(Path(cudnn_paths[0]) / 'lib')
-                cublas_path = str(Path(cublas_paths[0]) / 'lib')
-                return True, f"cuDNN: {cudnn_path}, cuBLAS: {cublas_path}"
-            else:
-                return False, "nvidia.cudnn or nvidia.cublas __path__ not found"
-        
-        cudnn_path = os.path.dirname(cudnn_file) + '/lib'
-        cublas_path = os.path.dirname(cublas_file) + '/lib'
-        return True, f"cuDNN: {cudnn_path}, cuBLAS: {cublas_path}"
-    except ImportError:
-        return False, "nvidia.cudnn or nvidia.cublas not found"
-    except Exception as e:
-        return False, f"Error: {e}"
-
-
-def check_ld_library_path() -> Tuple[bool, str]:
-    """Check if CUDA paths are in LD_LIBRARY_PATH."""
-    ld_path = os.environ.get("LD_LIBRARY_PATH", "")
-    cuda_paths = [p for p in ld_path.split(':') if 'cuda' in p.lower() or 'cudnn' in p.lower()]
-    
-    if cuda_paths:
-        return True, f"Found: {len(cuda_paths)} CUDA path(s)"
-    return False, "No CUDA paths in LD_LIBRARY_PATH"
-
-
-def check_ctranslate2_cuda() -> Tuple[bool, str]:
-    """Check if ctranslate2 can see CUDA devices."""
-    try:
-        import ctranslate2 as ct2
-        get_cnt = getattr(ct2, "get_cuda_device_count", None)
-        if callable(get_cnt):
-            count = get_cnt()
-            if count > 0:
-                return True, f"CUDA device count: {count}"
-            return False, "No CUDA devices visible to ctranslate2"
-        return False, "get_cuda_device_count not available"
-    except Exception as e:
-        return False, f"Error: {e}"
-
-
-def check_pytorch_cuda() -> Tuple[bool, str]:
-    """Check if PyTorch can use CUDA."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name(0)
-            cudnn_version = torch.backends.cudnn.version()
-            return True, f"Device: {device_name}, cuDNN: {cudnn_version}"
-        return False, "CUDA not available in PyTorch"
-    except Exception as e:
-        return False, f"Error: {e}"
-
-
-def check_cudnn_so() -> Tuple[bool, str]:
-    """Check if cuDNN .so files can be loaded."""
-    found = []
-    for name in CUDNN_CANDIDATES:
-        try:
-            ctypes.CDLL(name)
-            found.append(name)
-            break  # Found one, that's enough
-        except OSError:
-            continue
-    
-    if found:
-        return True, f"Found: {found[0]}"
-    return False, "No cuDNN .so files found"
+    ok, reason = cuda_runtime_status()
+    if ok:
+        return True, "CTranslate2 CUDA inference usable"
+    return False, reason
 
 
 def check_ffmpeg() -> Tuple[bool, str]:
@@ -194,8 +84,7 @@ def check_ffmpeg() -> Tuple[bool, str]:
             timeout=5,
         )
         if result.returncode == 0:
-            # Extract version from first line
-            version_line = result.stdout.split('\n')[0]
+            version_line = result.stdout.split("\n")[0]
             return True, version_line.strip()
         return False, "ffmpeg returned error"
     except FileNotFoundError:
@@ -226,7 +115,7 @@ def check_yt_dlp() -> Tuple[bool, str]:
 
 
 def check_deno() -> Tuple[bool, str]:
-    """Check if Deno is installed and accessible."""
+    """Check if Deno is installed and accessible (YouTube downloads only)."""
     try:
         result = subprocess.run(
             ["deno", "--version"],
@@ -235,12 +124,10 @@ def check_deno() -> Tuple[bool, str]:
             timeout=5,
         )
         if result.returncode == 0:
-            # Extract version from first line (e.g., "deno 2.6.6")
-            version_line = result.stdout.split('\n')[0]
+            version_line = result.stdout.split("\n")[0]
             return True, version_line.strip()
         return False, "deno returned error"
     except FileNotFoundError:
-        # Check common locations
         common_paths = [
             "/usr/local/bin/deno",
             os.path.expanduser("~/.deno/bin/deno"),
@@ -255,11 +142,11 @@ def check_deno() -> Tuple[bool, str]:
                         timeout=5,
                     )
                     if result.returncode == 0:
-                        version_line = result.stdout.split('\n')[0]
+                        version_line = result.stdout.split("\n")[0]
                         return True, f"{version_line.strip()} (found at {path})"
                 except Exception:
                     continue
-        return False, "deno not found in PATH or common locations"
+        return False, "deno not found (only needed for YouTube downloads)"
     except subprocess.TimeoutExpired:
         return False, "deno timeout"
     except Exception as e:
@@ -268,7 +155,7 @@ def check_deno() -> Tuple[bool, str]:
 
 def get_deno_installation_guidance() -> str:
     """Get installation instructions for Deno."""
-    return """Deno is required for YouTube 2026 SABR support.
+    return """Deno is required for YouTube 2026 SABR support (not for local audio files).
 Install with:
   curl -fsSL https://deno.land/install.sh | sh
   export DENO_INSTALL="$HOME/.deno"
@@ -286,221 +173,61 @@ def check_deno_with_guidance() -> Tuple[bool, str]:
     return False, get_deno_installation_guidance()
 
 
-def check_pytorch_installed() -> Tuple[bool, str]:
-    """Check if PyTorch is installed (separate from full package check)."""
-    try:
-        import torch
-        version = torch.__version__
-        return True, f"PyTorch {version}"
-    except ImportError:
-        return False, "PyTorch not installed"
-
-
-def get_pytorch_installation_guidance() -> str:
-    """Get installation instructions for PyTorch with CUDA support."""
-    return """PyTorch is required for GPU/CUDA acceleration.
-Install with:
-  pipx runpip local-transcribe install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-Note: CPU mode works without PyTorch, but will be slower."""
-
-
-def check_pytorch_with_guidance() -> Tuple[bool, str]:
-    """Check if PyTorch is installed, returning guidance if missing."""
-    is_available, result = check_pytorch_installed()
-    if is_available:
-        return True, result
-    return False, get_pytorch_installation_guidance()
-
-
-def detect_cuda_availability() -> bool:
-    """Detect if CUDA is available on the system."""
-    # Check nvidia-smi first (most reliable)
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    
-    # Fallback: check nvcc
-    try:
-        result = subprocess.run(
-            ["nvcc", "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    
-    return False
-
-
 def is_pipx_environment() -> bool:
     """Detect if running in a pipx environment."""
-    # Check for pipx environment indicators
-    # pipx sets PIPX_HOME and PIPX_BIN_DIR, or we can check the Python path
+    import sys
+
     if os.environ.get("PIPX_HOME") or os.environ.get("PIPX_BIN_DIR"):
         return True
-    
-    # Check if Python executable is in a pipx venv
+
     python_path = Path(sys.executable)
-    # pipx venvs are typically in ~/.local/pipx/venvs/ or similar
     if "pipx" in str(python_path).lower() or ".local/pipx" in str(python_path):
         return True
-    
-    # Check if we can find pipx metadata
+
     try:
-        # Try to detect by checking if we're in a venv that pipx manages
         venv_parent = python_path.parent.parent
         if venv_parent.name == "venvs" and "pipx" in str(venv_parent):
             return True
     except Exception:
         pass
-    
+
     return False
 
 
-def get_pytorch_upgrade_marker_path() -> Path:
-    """Get the path to the PyTorch upgrade marker file."""
-    # Use XDG config dir if available, otherwise ~/.local/share
-    xdg_data_home = os.environ.get("XDG_DATA_HOME")
-    if xdg_data_home:
-        base_dir = Path(xdg_data_home)
-    else:
-        base_dir = Path.home() / ".local" / "share"
-    
-    marker_dir = base_dir / "local-transcribe"
-    marker_dir.mkdir(parents=True, exist_ok=True)
-    return marker_dir / "pytorch_cuda_upgraded"
+def run_diagnostics() -> List[DiagnosticCheck]:
+    """Run all diagnostic checks, required checks first.
 
+    Returns an ordered list; the CLI fails only if a ``required`` check is not ok.
+    """
+    ffmpeg_ok, ffmpeg_detail = check_ffmpeg()
+    ytdlp_ok, ytdlp_detail = check_yt_dlp()
+    modules_ok, modules_detail = check_required_modules()
+    cpu_ok, cpu_detail = check_cpu_backend()
+    gpu_ok, gpu_detail = check_nvidia_smi()
+    cuda_ok, cuda_detail = check_cuda_runtime()
+    deno_ok, deno_detail = check_deno()
 
-def has_pytorch_upgrade_marker() -> bool:
-    """Check if PyTorch upgrade marker file exists."""
-    marker_path = get_pytorch_upgrade_marker_path()
-    return marker_path.exists()
-
-
-def create_pytorch_upgrade_marker() -> None:
-    """Create the PyTorch upgrade marker file."""
-    marker_path = get_pytorch_upgrade_marker_path()
-    marker_path.touch()
-
-
-def _install_pytorch_cuda_wheels() -> Tuple[bool, str]:
-    """Install/upgrade CUDA torch wheels into the current pipx env."""
-    if not is_pipx_environment():
-        # Fall back to the active interpreter's pip (venv / editable installs).
-        cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            "torch",
-            "torchvision",
-            "torchaudio",
-            "--index-url",
-            "https://download.pytorch.org/whl/cu124",
-        ]
-    else:
-        cmd = [
-            "pipx",
-            "runpip",
-            "local-transcribe",
-            "install",
-            "--upgrade",
-            "torch",
-            "torchvision",
-            "torchaudio",
-            "--index-url",
-            "https://download.pytorch.org/whl/cu124",
-        ]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=900,
+    backend = "CUDA" if cuda_ok else "CPU"
+    if not cuda_ok and gpu_ok:
+        # GPU visible but not usable: actionable CUDA diagnostics.
+        cuda_detail = (
+            f"{cuda_detail}. GPU detected but CTranslate2 cannot use it; "
+            "install CUDA libraries with install_local_transcribe.py --cuda "
+            "or rely on CPU."
         )
-    except subprocess.TimeoutExpired:
-        return False, "PyTorch CUDA install timed out"
-    except FileNotFoundError:
-        return False, "pip/pipx not found, cannot auto-install CUDA torch"
-    except Exception as exc:  # noqa: BLE001
-        return False, f"Error during PyTorch CUDA install: {str(exc)[:200]}"
 
-    if result.returncode != 0:
-        error_msg = result.stderr or result.stdout or "Unknown error"
-        return False, f"PyTorch CUDA install failed: {error_msg[:300]}"
-
-    try:
-        import importlib
-
-        importlib.invalidate_caches()
-        import torch
-
-        if torch.cuda.is_available():
-            create_pytorch_upgrade_marker()
-            return True, "PyTorch with CUDA installed successfully"
-        return False, "PyTorch installed but CUDA not available (may need process restart)"
-    except ImportError:
-        return False, "PyTorch install completed but import failed"
-
-
-def ensure_pytorch_cuda() -> Tuple[bool, str]:
-    """Ensure PyTorch with CUDA when an NVIDIA GPU is present.
-
-    Detects ``nvidia-smi`` / ``nvcc``. If CUDA hardware is present and torch is
-    missing or CPU-only, installs CUDA wheels automatically (no manual
-    ``pipx inject`` / ``runpip`` step).
-    """
-    if not detect_cuda_availability():
-        return False, "CUDA not available on this system"
-
-    pytorch_installed, _ = check_pytorch_installed()
-    if pytorch_installed:
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                if not has_pytorch_upgrade_marker():
-                    create_pytorch_upgrade_marker()
-                return True, "PyTorch with CUDA already installed"
-        except ImportError:
-            pass
-
-    return _install_pytorch_cuda_wheels()
-
-
-def run_diagnostics() -> Dict[str, Tuple[bool, str]]:
-    """
-    Run all diagnostic checks.
-    
-    Returns:
-        Dictionary mapping check name -> (success, details)
-    """
-    results = {}
-    
-    results["Deno Runtime"] = check_deno()
-    results["FFmpeg"] = check_ffmpeg()
-    results["yt-dlp"] = check_yt_dlp()
-    results["GPU Detection (nvidia-smi)"] = check_nvidia_smi()
-    results["CUDA Toolkit (nvcc)"] = check_nvcc()
-    results["Python Packages"] = check_python_packages()
-    results["cuDNN Location"] = check_cudnn_location()
-    results["LD_LIBRARY_PATH"] = check_ld_library_path()
-    results["cuDNN .so Files"] = check_cudnn_so()
-    results["ctranslate2 CUDA"] = check_ctranslate2_cuda()
-    results["PyTorch CUDA"] = check_pytorch_cuda()
-    
-    return results
-
+    return [
+        DiagnosticCheck("Required Python Packages", modules_ok, modules_detail, True),
+        DiagnosticCheck("CPU Backend", cpu_ok, cpu_detail, True),
+        DiagnosticCheck("FFmpeg", ffmpeg_ok, ffmpeg_detail, True),
+        DiagnosticCheck("yt-dlp", ytdlp_ok, ytdlp_detail, True),
+        DiagnosticCheck(
+            "Acceleration Backend",
+            True,
+            f"active: {backend}",
+            False,
+        ),
+        DiagnosticCheck("GPU Detection (nvidia-smi)", gpu_ok, gpu_detail, False),
+        DiagnosticCheck("ctranslate2 CUDA", cuda_ok, cuda_detail, False),
+        DiagnosticCheck("Deno Runtime (YouTube)", deno_ok, deno_detail, False),
+    ]
