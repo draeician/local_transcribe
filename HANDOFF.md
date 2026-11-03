@@ -1018,6 +1018,73 @@ Review `feat/queue-list-reporting`, especially the UUID-not-found semantics and
 the new default (all states, limit 60), then merge if approved. Do not release
 or upgrade production before review.
 
+## Correction — queue list UUID filters (task 037 follow-up)
+
+Date: 2026-11-03
+Agent: OpenCode
+Branch: `feat/queue-list-reporting`, based on feature commit `df60e1e`.
+Correction commit: `bda86ce` (`fix(queue): honor UUID filters in queue list`).
+
+### Findings corrected
+
+1. **UUID selection + nonzero `--offset` could silently hide the record.**
+   A UUID now rejects any nonzero `--offset` with:
+   `A UUID selection cannot be combined with a nonzero --offset; omit --offset to show the selected execution.`
+   `--offset 0` remains valid. Normal status/all-record pagination is
+   unchanged.
+2. **`--origin` was accepted but ignored for UUID selection.**
+   The origin filter is now applied to the selected execution. A mismatch
+   returns exit 0 with
+   `No matching execution for UUID <id> with origin '<origin>'.`
+   No filtering option is silently ignored.
+
+Decision recorded in `docs/QUEUE_DESIGN_DECISIONS.md` §12. Task 037 was moved
+back to `wip/` during the correction and returned to `review/` before commit.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/cli_queue.py` | reject UUID+nonzero offset; apply origin to UUID selection; help text |
+| `tests/test_cli_queue.py` | regression tests for both findings |
+| `README.md`, `QUICK_REFERENCE.md`, `CHANGELOG.md` | document UUID offset/origin behavior |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | correction decision |
+| `.crules/tasks/review/037-queue-list-reporting.md` | review status + correction notes |
+
+### Verification
+
+| Command | Result |
+|---------|--------|
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q tests/test_cli_queue.py tests/test_queue_store.py` | **41 passed** |
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q` | **328 passed, 11 skipped** |
+| normal color terminal full suite | 4 failed, 324 passed, 11 skipped; the same pre-existing Rich/ANSI `test_update` + `test_cli_queue` failures reproduced on `main` |
+| `uvx ruff check --config pyproject.toml …changed Python files…` | **40 findings**, identical to the pre-correction HEAD baseline (0 new) |
+| `uvx ruff check --config pyproject.toml src/local_transcribe/services/queue_listing.py` | **All checks passed** |
+| `uv build --out-dir /tmp/opencode/lt-dist` | built `local_transcribe-0.7.0.tar.gz` and `local_transcribe-0.7.0-py3-none-any.whl` |
+
+### Read-only performance (synthetic queue, no production data)
+
+Created `/tmp/opencode/lt-queue-list-perf` with **6,430** execution records
+(100 pending, 50 processing, 50 retry, 6,000 completed, 200 failed, 30
+cancelled). No production queue directory was read or modified.
+
+| Case | CLI end-to-end median (3 runs) |
+|------|--------------------------------|
+| all/default (`--limit 60`) | **1.269 s** |
+| `completed` status filter | **1.135 s** |
+| UUID selection | **0.544 s** |
+| `completed --offset 5900 --limit 60` | **1.171 s** |
+
+Store-level medians (5 runs): all/default **0.614 s**, completed **0.570 s**,
+direct UUID lookup **~0.000 s**. CLI timings include Python startup and the
+Deno warning path.
+
+### Blockers / open items
+
+- None for review. The only full-suite failures under a color terminal are the
+  pre-existing ANSI-sensitive tests; they pass with `TERM=dumb`.
+- Version remains `0.7.0`; no merge, tag, release, or Aether upgrade was done.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
