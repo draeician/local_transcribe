@@ -145,9 +145,11 @@ lt batch --input inputfile.txt
 
 # Watch the queue
 lt queue stats
-lt queue list
-lt queue list --status completed
-lt queue list --status processing
+lt queue list                              # all states, oldest first (limit 60)
+lt queue list pending                      # one status
+lt queue list --status completed           # option form remains supported
+lt queue list --sort newest --offset 60    # next page, newest first
+lt queue list <execution_id>               # one execution
 ```
 
 ### Emergency / legacy in-process (bypass queue)
@@ -412,7 +414,7 @@ A: In queue mode nothing is lost; the worker continues from `pending` / `retry`.
 A: Prefer `lt queue stats` and `lt queue list --status completed`. Legacy `lt reconcile` still compares input / `finished.dat` / transcript files.
 
 **Q: Why does `lt queue list` still show many pending rows while transcripts appear?**  
-A: `lt queue list` defaults to pending (first 50). Completed jobs leave that list — use `lt queue stats` to see counts drop.
+A: `lt queue list` shows all states by default (oldest first, limit 60). Completed jobs move to `completed/`; filter with `lt queue list pending` or use `lt queue stats` to see counts drop.
 
 ---
 

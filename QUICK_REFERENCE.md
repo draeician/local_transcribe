@@ -52,11 +52,13 @@ lt queue add "https://www.youtube.com/watch?v=VIDEO_ID" --origin cli --priority 
 
 ```bash
 lt queue stats                         # counts by state (use this to see backlog shrink)
-lt queue list                          # pending (default, first 50)
-lt queue list --status processing
-lt queue list --status completed
-lt queue list --status failed --limit 100
-lt queue show <execution_id>
+lt queue list                          # all states, oldest first (limit 60)
+lt queue list pending                  # positional status filter
+lt queue list --status processing      # option form remains supported
+lt queue list --sort newest --limit 100
+lt queue list --offset 60              # next page
+lt queue list <execution_id>           # one execution
+lt queue show <execution_id>           # full record
 lt queue show-source youtube:VIDEO_ID
 ```
 
@@ -189,7 +191,7 @@ Transcript JSON still lands under your configured transcripts root (e.g. `~/refe
 ## Troubleshooting
 
 ### List looks stuck but transcripts appear
-Use `lt queue stats`. `lt queue list` only shows pending by default.
+Use `lt queue stats`. `lt queue list` shows all states by default; filter with a status positional or `--status`.
 
 ### Worker not draining
 ```bash

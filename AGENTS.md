@@ -81,7 +81,7 @@ Local paths are detected when `Path.expanduser` resolves to an existing regular 
 1. **Producer** enqueues via `lt transcribe` / `lt batch` / `lt queue add` / `enqueue_youtube_safe`.
 2. **Reservation** records the source key so duplicates do not spawn parallel active work.
 3. **Worker** (sole NLM lock holder) claims pending → processing, downloads under `~/.cache/local-transcribe/jobs/<id>/`, transcribes, publishes transcript JSON, moves job to completed/failed/retry.
-4. **Observers** use `lt queue stats` / `list` (list defaults to pending — prefer stats for backlog).
+4. **Observers** use `lt queue stats` / `lt queue list` (list shows all states by default, oldest first, limit 60; filter with a status positional or `--status`).
 
 ## Extending the Tool
 * New commands: Typer in `cli.py` / `cli_queue.py` / `cli_worker.py`.
