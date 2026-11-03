@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `lt queue list` now defaults to **all execution states**, oldest first, with a limit of 60 (previously pending-only, limit 50).
 
+### Fixed
+- `lt queue list <UUID>` rejects a nonzero `--offset` instead of silently hiding the selected record, and applies `--origin` instead of ignoring it.
+
 ## [0.7.0] - 2026-10-19
 
 ### Added

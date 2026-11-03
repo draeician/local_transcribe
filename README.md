@@ -149,7 +149,8 @@ lt queue list                              # all states, oldest first (limit 60)
 lt queue list pending                      # one status
 lt queue list --status completed           # option form remains supported
 lt queue list --sort newest --offset 60    # next page, newest first
-lt queue list <execution_id>               # one execution
+lt queue list <execution_id>               # one execution (offset must be 0)
+lt queue list <execution_id> --origin cli  # UUID + origin filter
 ```
 
 ### Emergency / legacy in-process (bypass queue)

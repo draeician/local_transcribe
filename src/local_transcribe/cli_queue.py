@@ -248,9 +248,17 @@ def queue_list(
         "--status",
         help="Filter: pending, processing, retry, completed, failed, cancelled",
     ),
-    origin: str | None = typer.Option(None, "--origin"),
+    origin: str | None = typer.Option(
+        None,
+        "--origin",
+        help="Filter by origin (also applies to a UUID selection)",
+    ),
     limit: int = typer.Option(60, "--limit", help="Maximum rows to show"),
-    offset: int = typer.Option(0, "--offset", help="Rows to skip after sorting"),
+    offset: int = typer.Option(
+        0,
+        "--offset",
+        help="Rows to skip after sorting (must be 0 with a UUID)",
+    ),
     sort_order: str = typer.Option(
         "oldest",
         "--sort",
@@ -271,17 +279,37 @@ def queue_list(
         )
 
     status_filter, execution_id = _resolve_list_target(target, status)
+    if execution_id is not None and offset != 0:
+        _list_error(
+            "A UUID selection cannot be combined with a nonzero --offset; "
+            "omit --offset to show the selected execution."
+        )
+
     store = QueueStore(_queue_dir_opt(queue_dir))
     sort_value = cast(SortOrder, normalized_sort)
 
     if execution_id is not None:
         execution, _ = store.find_execution(execution_id)
+        if (
+            execution is not None
+            and origin is not None
+            and execution.origin != origin
+        ):
+            execution = None
         ordered = sort_executions(
             [execution] if execution is not None else [],
             sort=sort_value,
         )
-        rows, total = paginate_executions(ordered, offset=offset, limit=limit)
-        empty_message = f"No matching execution for UUID {execution_id}."
+        # UUID selection is always shown from the start; nonzero offsets were
+        # rejected above so pagination cannot hide the selected record.
+        rows, total = paginate_executions(ordered, offset=0, limit=limit)
+        if origin is not None:
+            empty_message = (
+                f"No matching execution for UUID {execution_id} "
+                f"with origin {origin!r}."
+            )
+        else:
+            empty_message = f"No matching execution for UUID {execution_id}."
     else:
         rows, total = store.query_executions(
             status=status_filter,

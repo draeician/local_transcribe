@@ -42,6 +42,8 @@ lt queue list [STATUS|UUID] [--limit N] [--offset N] [--sort oldest|newest]
 - [x] Operations remain read-only.
 - [x] Regression tests cover defaults, every status filter, UUID selection, both
       sort orders, offset boundaries, pagination consistency, and errors.
+- [x] UUID selection cannot be hidden by pagination; nonzero offsets are rejected.
+- [x] `--origin` is applied to UUID selection, never silently ignored.
 
 ## Files
 
@@ -89,3 +91,21 @@ destructive schema migrations, and merging/releasing.
   concurrency race fail; both were reproduced on `main` before this branch.
 - `ruff check` on the changed files reports fewer findings than the same files
   on `main`; the new `queue_listing.py` is clean under the project config.
+
+### Review corrections (2026-11-03)
+
+- **UUID pagination:** a UUID selection with a nonzero `--offset` is rejected
+  with an actionable error instead of bypassing or silently applying
+  pagination. `--offset 0` remains valid, and status/all-record pagination is
+  unchanged.
+- **UUID + `--origin`:** the origin filter is now applied to the selected
+  execution. A mismatch returns an explicit empty result
+  (`No matching execution for UUID ... with origin ...`) and exit 0.
+- Added regression tests for both findings, including a missing UUID with a
+  nonzero offset and matching/mismatching UUID origins.
+- Decision recorded in `docs/QUEUE_DESIGN_DECISIONS.md` §12.
+- Read-only performance measured on a synthetic 6,430-record queue in
+  `/tmp/opencode/lt-queue-list-perf`: CLI all/default median **1.269 s**,
+  status/completed median **1.135 s**, UUID selection median **0.544 s**;
+  direct store query median **0.614 s** (all) and **0.570 s** (completed).
+  Production queue data was not read or modified.

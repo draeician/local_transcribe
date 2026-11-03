@@ -57,7 +57,8 @@ lt queue list pending                  # positional status filter
 lt queue list --status processing      # option form remains supported
 lt queue list --sort newest --limit 100
 lt queue list --offset 60              # next page
-lt queue list <execution_id>           # one execution
+lt queue list <execution_id>           # one execution (offset must be 0)
+lt queue list <execution_id> --origin cli  # UUID + origin filter
 lt queue show <execution_id>           # full record
 lt queue show-source youtube:VIDEO_ID
 ```

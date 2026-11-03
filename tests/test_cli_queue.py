@@ -260,6 +260,70 @@ def test_queue_list_unknown_uuid_is_empty_not_an_error(tmp_path: Path) -> None:
     assert "Showing 0-0 of 0 matching executions" in r.output
 
 
+def test_queue_list_uuid_rejects_nonzero_offset(tmp_path: Path) -> None:
+    q = tmp_path / "queue"
+    initialize_queue_layout(q)
+    ids = _seed_one_per_status(q)
+    selected = ids["pending"]
+
+    r = _list(q, selected, "--offset", "1")
+    assert r.exit_code != 0
+    assert (
+        "A UUID selection cannot be combined with a nonzero --offset"
+        in r.output
+    )
+    assert selected not in r.output
+
+    # Zero is compatible and still shows the selected record.
+    zero = _list(q, selected, "--offset", "0")
+    assert zero.exit_code == 0, zero.output
+    assert _row_ids(zero.output) == [selected]
+
+    # Validation happens before lookup: a missing UUID plus nonzero offset is
+    # also rejected rather than silently returning an empty list.
+    missing = "99999999-9999-4999-8999-999999999999"
+    missing_offset = _list(q, missing, "--offset", "1")
+    assert missing_offset.exit_code != 0
+    assert (
+        "A UUID selection cannot be combined with a nonzero --offset"
+        in missing_offset.output
+    )
+
+
+def test_queue_list_uuid_applies_origin_filter(tmp_path: Path) -> None:
+    q = tmp_path / "queue"
+    initialize_queue_layout(q)
+    alpha = "11111111-1111-4111-8111-111111111111"
+    beta = "22222222-2222-4222-8222-222222222222"
+    _seed_execution(
+        q,
+        execution_id=alpha,
+        status="pending",
+        created_at="2026-11-01T10:00:00+00:00",
+        origin="alpha",
+    )
+    _seed_execution(
+        q,
+        execution_id=beta,
+        status="pending",
+        created_at="2026-11-01T11:00:00+00:00",
+        origin="beta",
+    )
+
+    match = _list(q, alpha, "--origin", "alpha")
+    assert match.exit_code == 0, match.output
+    assert _row_ids(match.output) == [alpha]
+
+    mismatch = _list(q, alpha, "--origin", "beta")
+    assert mismatch.exit_code == 0, mismatch.output
+    assert _row_ids(mismatch.output) == []
+    assert (
+        f"No matching execution for UUID {alpha} with origin 'beta'."
+        in mismatch.output
+    )
+    assert "Showing 0-0 of 0 matching executions" in mismatch.output
+
+
 def test_queue_list_empty_queue_and_empty_status_filter(tmp_path: Path) -> None:
     q = tmp_path / "queue"
     initialize_queue_layout(q)
