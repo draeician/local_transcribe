@@ -1085,6 +1085,92 @@ Deno warning path.
   pre-existing ANSI-sensitive tests; they pass with `TERM=dumb`.
 - Version remains `0.7.0`; no merge, tag, release, or Aether upgrade was done.
 
+## Fix — unnecessary Deno startup warnings (DENO-STARTUP-QUIET)
+
+Date: 2026-11-04 (UTC)
+Agent: pi
+Branch: `fix/deno-startup-warning`, based on `origin/main` at `25b89f1`.
+Task record: `.crules/tasks/review/038-deno-startup-warning.md`
+Type: `fix` (patch; recorded under `[Unreleased]`)
+
+### Investigated / changed
+
+**Root cause.** The root Typer callback (`main`, `@app.callback`) in
+`src/local_transcribe/cli.py` called `check_deno_with_guidance()` for *every*
+subcommand (guarded by the module-level `_startup_warnings_shown` flag). On a
+host without Deno this printed the full install-guidance block before queue
+statistics, list output, version strings, and sub-app help. Reproduced with the
+installed CLI: `lt queue list`, `lt version`, `lt --version`, `lt queue --help`,
+and `lt doctor` all emitted "⚠️ Warning: Deno runtime not detected".
+
+**Fix.** The callback performs no probe at all; `_startup_warnings_shown` was
+removed with the probe it guarded. Deno is now checked only where a YouTube
+download actually happens:
+- `transcribe`: the probe moved inside `if not is_local`, so local audio files
+  never touch it and queue/local paths stay quiet.
+- `batch --direct`: keeps its prerequisite warning (that pipeline always
+  downloads URLs); the queue branch returns before reaching that code.
+`lt doctor` retains "Deno Runtime (YouTube)" as an optional diagnostic via
+`run_diagnostics()`, and `lt update` still fails clearly when Deno is absent.
+No package installation or system configuration was added anywhere. Worker,
+job runner, download admission, queue store, and ROCm code were not touched.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/cli.py` | removed callback-level Deno probe + `_startup_warnings_shown`; transcribe probe scoped to non-local sources; direct-batch comment clarified (10 insertions, 24 deletions) |
+| `tests/test_deno_startup_warnings.py` | new regression suite, 10 tests, simulating a host without Deno and recording every probe call |
+| `CHANGELOG.md` | `[Unreleased] → Fixed` entry |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | §13 append-only decision record |
+| `README.md`, `AGENTS.md` | state the warning is download-path only |
+| `.crules/tasks/review/038-deno-startup-warning.md` | task record with acceptance + evidence |
+
+### Verification
+
+| Command | Result |
+|---------|--------|
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q tests/test_deno_startup_warnings.py` | **10 passed** |
+| Same suite run against an `origin/main` worktree (`25b89f1`) | **2 failed, 8 passed** — the two failures reproduce this bug (`queue list` prints the warning; `_startup_warnings_shown` still present) |
+| `pytest -q tests/test_deno_startup_warnings.py tests/test_cli_queue.py tests/test_update.py tests/test_cli_batch_queue.py tests/test_cli_transcribe_queue.py` | **48 passed** |
+| Full suite, 5 consecutive runs on this branch (`TERM=dumb`) | 308 passed / 1 failed+307 / 308 / 308 / 308 (11 skipped every run) |
+| Full suite on `origin/main` worktree, 5 runs | 298 / 1 failed+297 / 1 failed+297 / 298 / 298 (11 skipped) |
+| `uvx ruff check --config pyproject.toml src tests` on this branch vs `origin/main` | **413 findings both** — identical per-rule counts; only difference is the line number in the pre-existing duplicate-`main` F811 (1117 vs 1118). **0 new findings.** |
+| `/…pipx venv…/python -m compileall src/local_transcribe/cli.py tests/test_deno_startup_warnings.py` + AST parse | OK |
+| `uv build --out-dir /tmp/pi-build` | built `local_transcribe-0.7.0.tar.gz` and `local_transcribe-0.7.0-py3-none-any.whl` |
+
+**Real CLI check on this host (no Deno on PATH, real queue in a temp dir):**
+`lt version`, `--version`, `queue list`, `queue stats`, `queue path`,
+`queue doctor`, `--help`, `queue --help` are all warning-free; `transcribe
+https://youtu.be/dQw4w9WgXcQ` still prints the Deno warning plus the HTTP 403
+note before enqueuing; `transcribe <local>.m4a` enqueues silently; `lt doctor`
+still lists "Deno Runtime (YouTube) … deno not found (only needed for YouTube
+downloads)" as optional.
+
+### Baseline exceptions (pre-existing, reproduced on origin/main)
+
+- `tests/test_queue_concurrency.py::test_concurrent_enqueue_one_active` and
+  `…::test_concurrent_force_single_current_generation` are timing-flaky under a
+  loaded machine: they pass in isolation on both branches and intermittently fail
+  inside the full-suite run on **both** this branch (1/5 runs) and `origin/main`
+  (2/5 runs). Not caused by this change; not suppressed, not weakened.
+- Ruff reports 413 findings repo-wide at baseline (`F401`, `UP045`, `I001`,
+  `RUF100`, the duplicate `main` F811 in `cli.py`). Left untouched — out of scope.
+
+### Blockers / open items
+
+- None blocking review. No Deno installation or system change was performed.
+- Version remains `0.7.0`; this fix is recorded under `[Unreleased]`. The patch
+  bump to `0.7.1` (fix per GIT_POLICY) is a merge/release decision for review,
+  matching how task 037 was staged.
+
+### Recommended next step
+
+Review `fix/deno-startup-warning`; if approved, merge into `main`, apply the
+patch version bump consistently (`pyproject.toml` +
+`src/local_transcribe/__init__.py`) or fold it into the next release, then move
+task 038 to `done/`. Do not upgrade production before review.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

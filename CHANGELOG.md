@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `lt queue list <UUID>` rejects a nonzero `--offset` instead of silently hiding the selected record, and applies `--origin` instead of ignoring it.
+- The CLI no longer probes Deno at startup for commands that never download. `lt queue list/show/stats/path/doctor`, `lt version`, and help output are quiet on hosts without Deno, and missing Deno cannot block inspecting or managing queue records. Deno is still checked (with the prerequisite warning) on YouTube download paths — `lt transcribe <URL>` and `--direct` batch — and `lt doctor` keeps reporting Deno availability as an optional diagnostic.
 
 ## [0.7.0] - 2026-10-19
 

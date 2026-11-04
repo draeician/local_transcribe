@@ -227,3 +227,32 @@ Task 037 review follow-up. Two edge cases were corrected in `lt queue list`:
 | `--origin` was accepted but ignored for UUID selection. | **Apply** the origin filter to the selected record. A mismatch produces an explicit empty result rather than silently returning the record. |
 
 The governing rule is that filtering and pagination options must never be silently ignored. Implementation is in `src/local_transcribe/cli_queue.py`; regression coverage is in `tests/test_cli_queue.py`.
+---
+
+## 13. Deno is probed only on download paths (task 038, 2026-11-04)
+
+**Decision.** The root Typer callback no longer runs any startup probe. Deno
+availability is checked where a YouTube download actually happens:
+`lt transcribe <URL>` (queue or `--direct`) and the legacy `--direct` batch
+pipeline, which keep the prerequisite warning. Local-file transcription, all
+`lt queue *` reporting/management commands, `lt worker *`, `lt cookies *`,
+`lt version`, and help output never touch the probe.
+
+**Why.** The callback-level check ran for every subcommand, so operators on a
+host without Deno saw an install-guidance block before queue statistics, list
+output, or version strings. That noise implied the queue depended on Deno, which
+it does not: producers only write reservation/execution JSON and the worker owns
+downloading. A missing Deno must never interfere with inspecting or managing
+queue records.
+
+**Preserved.** `lt doctor` still reports "Deno Runtime (YouTube)" as an optional
+diagnostic check; `lt update` still fails clearly when Deno is not on PATH. No
+package installation or system configuration was added to any code path. The
+module-level `_startup_warnings_shown` flag was removed with the startup probe it
+guarded.
+
+**Verification.** `tests/test_deno_startup_warnings.py` simulates a host without
+Deno and asserts (a) queue reporting/version/help output carries no Deno warning
+and invokes no probe, (b) YouTube paths still warn, (c) local audio enqueue does
+not probe, (d) `lt doctor` keeps the diagnostic. The suite fails on `origin/main`
+(2 failures reproducing the bug) and passes here.
