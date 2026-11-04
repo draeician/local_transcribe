@@ -41,9 +41,6 @@ DEFAULT_DEVICE = "auto"
 DEFAULT_COMPUTE_TYPE = "auto"
 DEFAULT_OUTPUT_DIR = Path.home() / "references" / "transcripts"
 
-# Module-level flag to show startup warnings only once
-_startup_warnings_shown = False
-
 
 @app.command(name="version")
 def version_cmd():
@@ -128,9 +125,11 @@ def transcribe(
 
     logger = configure_logging(verbose=verbose, log_file_prefix="transcribe")
 
-    from local_transcribe.utils.doctor import check_deno_with_guidance
-
+    # Deno is a prerequisite for YouTube downloads only. Local audio files and
+    # queue-only work never probe it.
     if not is_local:
+        from local_transcribe.utils.doctor import check_deno_with_guidance
+
         deno_available, deno_info = check_deno_with_guidance()
         if not deno_available:
             console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
@@ -383,10 +382,10 @@ def batch(
             console.print("[dim]--wait: nothing active to wait for[/dim]")
         return
     
-    # Check prerequisites
+    # Check prerequisites for the legacy in-process pipeline.
+    # The queue path returned above; a direct batch always downloads URLs.
     from local_transcribe.utils.doctor import check_deno_with_guidance
-    
-    # Always check Deno (required for YouTube downloads)
+
     deno_available, deno_info = check_deno_with_guidance()
     if not deno_available:
         console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
@@ -1120,27 +1119,14 @@ def main(
     version: bool = typer.Option(False, "--version", help="Show version and exit"),
 ):
     """Local transcription with Whisper (YouTube URLs or audio files)."""
-    global _startup_warnings_shown
-    
     # Handle --version flag
     if version:
         console.print(f"local-transcribe version {__version__}")
         raise typer.Exit(0)
-    
-    # Show startup warnings once per session (only for actual commands, not --help).
-    # Deno is needed for YouTube downloads only; no package is ever installed here.
-    if not _startup_warnings_shown and ctx.invoked_subcommand is not None:
-        from local_transcribe.utils.doctor import check_deno_with_guidance
 
-        deno_available, deno_info = check_deno_with_guidance()
-        if not deno_available:
-            console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
-            console.print(f"[dim]{deno_info}[/dim]")
-
-        if not deno_available:
-            console.print()  # Add spacing before command output
-
-        _startup_warnings_shown = True
+    # No unconditional startup probes here: Deno matters only for YouTube
+    # downloads, so each download path checks it when it is actually needed.
+    # Inspecting or managing the queue must stay quiet even without Deno.
     
     # If a subcommand is being invoked, let it handle everything
     if ctx.invoked_subcommand is not None:
