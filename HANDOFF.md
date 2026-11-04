@@ -1172,6 +1172,94 @@ patch version bump consistently (`pyproject.toml` +
 `src/local_transcribe/__init__.py`) or fold it into the next release, then move
 task 038 to `done/`. Do not upgrade production before review.
 
+## Integration — CLI reporting + Deno probe scope, version 0.8.0 (task 039, 2026-11-04)
+
+Branch `chore/cli-reporting-integration` from `origin/main` @ `25b89f1`. Integrates task 037
+(`feat/queue-list-reporting`) and task 038 (`fix/deno-startup-warning`) into one reviewable
+branch. **No merge into main, no tag, no branch deletion, no production queue or Aether change.**
+
+### What was changed
+
+- `feat/queue-list-reporting` merged with `--no-ff` (merge commit `25be670`) so its four commits
+  stay reachable exactly as authored: `df60e1e`, `0a571e8`, `bda86ce`, `29e402a`.
+- `fix/deno-startup-warning` applied with `git cherry-pick`; authorship, dates and message bodies
+  preserved (new SHAs `0e83077`, `2f247c4`, `1a4e931` for `3b78d5c`, `c6bc375`, `259a0c9`).
+  Conflicts were documentation-only (`CHANGELOG.md`, `docs/QUEUE_DESIGN_DECISIONS.md`,
+  `HANDOFF.md`); the Deno decision is renumbered §13 and the task 039 refinement recorded as §14.
+- **Integration refinement** in `src/local_transcribe/cli.py`: the Deno probe moved from the
+  `lt transcribe` entry to (a) the queue **wait** path, before `wait_for_execution`, and (b) the
+  `--direct` URL branch. Consequence: `lt transcribe <URL> --no-wait` — a producer-only call that
+  only writes reservation/execution JSON — no longer probes Deno; local-file transcription,
+  `lt batch` queue-mode enqueue, `lt queue *`, version and help remain quiet. Waiting or
+  in-process YouTube transcription still warns with the HTTP 403 note; `lt doctor` keeps the
+  optional diagnostic row; the `lt update` hard gate is unchanged.
+- Version synchronized to **0.8.0**: `pyproject.toml`, `src/local_transcribe/__init__.py`,
+  `project_spec.md`, `CHANGELOG.md` (`[Unreleased]` → `[0.8.0] - 2026-11-04`), new
+  `docs/WHATS_NEW.md` section.
+- `tests/test_deno_startup_warnings.py` now 14 tests: added
+  `test_transcribe_url_no_wait_does_not_probe_deno`,
+  `test_transcribe_url_wait_warns_without_deno`,
+  `test_transcribe_direct_url_warns_without_deno`. One assertion corrected to the task 037 output
+  shape (the `SOURCE` column carries the recorded source URL, not the `youtube:<id>` key). No
+  existing assertion was weakened.
+
+### Verification evidence
+
+Environment: checked-in `.venv`/`venv` are empty; pipx venv has runtime deps but no pytest. Tests
+ran with system pytest plus `PYTHONPATH=src:$PIPX_SITE`
+(`$PIPX_SITE=/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`),
+`TERM=dumb` for the ANSI-sensitive assertions.
+
+| Check | Result |
+|-------|--------|
+| Targeted suites (Deno, queue store/list, transcribe/batch queue, update) | **86 passed** on this branch |
+| Full suite ×5, integration vs `origin/main` worktree @ `25b89f1` | identical failure classes; only the timing-flaky `test_queue_concurrency.py` cases appear intermittently on **both** (pass in isolation) |
+| Ruff (`uvx ruff check --config pyproject.toml src tests`) | 408 findings vs baseline 413 — strictly fewer, 0 new findings in changed files |
+| `uv build --out-dir /tmp/pi-integration-dist` | `local_transcribe-0.8.0.tar.gz` + `-py3-none-any.whl`; wheel METADATA `Version: 0.8.0` |
+| Isolated install `/tmp/lt-venv-080` (production pipx untouched) | `importlib.metadata.version('local-transcribe') == 0.8.0`, `__version__ == 0.8.0`; production pipx still reports **0.7.0** |
+| Upgrade detection | installed 0.7.0 vs wheel 0.8.0 → detected as an upgrade; isolated `lt version` prints `local-transcribe version 0.8.0` |
+
+**Real CLI smoke on this host (no Deno on PATH, throwaway queue dir under `/tmp`, removed after;
+real `~/.config/local-transcribe/config.yaml` and production queue untouched):**
+`lt version`, `--version`, `queue list/stats/path/doctor`, `--help`, `queue --help` warning-free.
+`transcribe <URL> --no-wait` enqueues silently (`✓ Queue enqueued: youtube:9bZkp7q19f0`,
+`--no-wait: not waiting for worker`) with no Deno block. Local `.m4a` enqueue silent. Waiting
+YouTube `transcribe <URL>` still prints the full Deno guidance plus the HTTP 403 note before
+waiting. `lt doctor` lists "Deno Runtime (YouTube) … deno not found (only needed for YouTube
+downloads) (optional)"; `lt update --dry-run` fails closed with "✗ Deno is not on PATH".
+Queue list reporting verified live: default 3-column-ordered oldest-first table with
+ENQUEUED/AGE/STATUS/PRIORITY/SOURCE/ORIGIN, `Showing 1-N of N (limit=60, offset=0, sort=oldest)`,
+`--limit/--offset` paging (`Showing 0-0 of 1 … offset=1` beyond end), `--sort newest`, positional
+status filter and UUID selection, UUID + nonzero `--offset` rejected with exit 1, UUID + mismatched
+`--origin` renders an explicit empty result (exit 0).
+
+### Test-isolation finding (documented, not suppressed)
+
+With a **production-shaped** config present (`queue.path` + `expected_uuid: 8c6fc098…`, supplied
+to the test process through an isolated `XDG_CONFIG_HOME` copy — the real user config was never
+modified), `tests/test_cli_batch_queue.py`, `test_cli_transcribe_queue.py`,
+`test_deno_startup_warnings.py` and `test_update.py` are green on this branch: **45 passed** with
+the same 6 pre-existing `test_cli_batch_queue.py` failures that fail identically on baseline main
+(diffed failure lists: identical). The task-037 `test_queue_list_*` tests do not pin
+`XDG_CONFIG_HOME`, so they inherit the operator config and fail against tmp-path queues with
+"Queue UUID mismatch … expected 8c6fc098…" — this is a test-isolation gap in those new tests, not
+a behaviour regression; baseline main has no such tests. Recommend a follow-up to add the
+`monkeypatch.setenv("XDG_CONFIG_HOME", …)` isolation used by the neighbouring tests.
+
+### Blockers / open items
+
+- None blocking review. No Deno installation, worker/ROCm/job-runner edit, service restart, or
+  production data change was performed.
+- Version 0.8.0 is staged on this branch only; merge/tag/publish and any Aether upgrade belong to
+  review.
+
+### Recommended next step
+
+Review `chore/cli-reporting-integration` (both feature lines plus the probe-scope refinement).
+If approved: merge into `main`, tag `v0.8.0`, then upgrade the production pipx install and restart
+the NLM-locked worker only after isolated validation, and schedule the test-isolation follow-up
+for `test_queue_list_*`.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

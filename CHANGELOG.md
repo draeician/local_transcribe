@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-11-04
 
 ### Added
 - `lt queue list [STATUS|UUID]` reporting with `--limit`, `--offset`, and `--sort oldest|newest`. The command shows enqueue time, age, status, source, priority, total matching records, and the displayed range. Existing `--status`, `--origin`, and `--limit` options remain supported; `lt queue show <UUID>` is unchanged.
@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `lt queue list <UUID>` rejects a nonzero `--offset` instead of silently hiding the selected record, and applies `--origin` instead of ignoring it.
-- The CLI no longer probes Deno at startup for commands that never download. `lt queue list/show/stats/path/doctor`, `lt version`, and help output are quiet on hosts without Deno, and missing Deno cannot block inspecting or managing queue records. Deno is still checked (with the prerequisite warning) on YouTube download paths — `lt transcribe <URL>` and `--direct` batch — and `lt doctor` keeps reporting Deno availability as an optional diagnostic.
+- The CLI no longer probes Deno at startup for commands that never download. `lt queue list/show/stats/path/doctor`, `lt version`, and help output are quiet on hosts without Deno — including `lt transcribe <URL> --no-wait` and local-file transcription, which enqueue without touching the probe. Deno is still checked (with the prerequisite warning) on YouTube download paths that actually wait for a result (`lt transcribe <URL>`, `--direct` batch), and `lt doctor` keeps reporting Deno availability as an optional diagnostic.
+
+Integrated on `chore/cli-reporting-integration` from task 037 (`feat/queue-list-reporting`: `df60e1e`, `0a571e8`, `bda86ce`, `29e402a`) and task 038 (`fix/deno-startup-warning`: `3b78d5c`, `c6bc375`, `259a0c9`). See `docs/QUEUE_DESIGN_DECISIONS.md` §12–§14.
 
 ## [0.7.0] - 2026-10-19
 

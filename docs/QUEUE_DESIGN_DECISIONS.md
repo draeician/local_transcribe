@@ -227,6 +227,7 @@ Task 037 review follow-up. Two edge cases were corrected in `lt queue list`:
 | `--origin` was accepted but ignored for UUID selection. | **Apply** the origin filter to the selected record. A mismatch produces an explicit empty result rather than silently returning the record. |
 
 The governing rule is that filtering and pagination options must never be silently ignored. Implementation is in `src/local_transcribe/cli_queue.py`; regression coverage is in `tests/test_cli_queue.py`.
+
 ---
 
 ## 13. Deno is probed only on download paths (task 038, 2026-11-04)
@@ -256,3 +257,19 @@ Deno and asserts (a) queue reporting/version/help output carries no Deno warning
 and invokes no probe, (b) YouTube paths still warn, (c) local audio enqueue does
 not probe, (d) `lt doctor` keeps the diagnostic. The suite fails on `origin/main`
 (2 failures reproducing the bug) and passes here.
+
+---
+
+## 14. Producer paths never probe Deno, including `--no-wait` (task 039, 2026-11-04)
+
+Within `lt transcribe <URL>`, the probe now
+runs only when this session actually depends on a YouTube download: it moved from
+the command entry to the queue **wait** path (`--no-wait` returns before it) and to
+the `--direct` URL branch. Consequence: `lt transcribe <URL> --no-wait` is quiet, so
+every producer-only invocation (queue add, batch enqueue, local files, `--no-wait`)
+never probes Deno; a waiting or in-process YouTube transcription still warns.
+Coverage: `test_transcribe_url_no_wait_does_not_probe_deno`,
+`test_transcribe_url_wait_warns_without_deno`, `test_transcribe_direct_url_warns_without_deno`.
+Version synchronized to **0.8.0** across `pyproject.toml`,
+`src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
+`docs/WHATS_NEW.md`; the release decision (merge/tag) remains with review.
