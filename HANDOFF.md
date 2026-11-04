@@ -1038,7 +1038,7 @@ Correction commit: `bda86ce` (`fix(queue): honor UUID filters in queue list`).
    `No matching execution for UUID <id> with origin '<origin>'.`
    No filtering option is silently ignored.
 
-Decision recorded in `docs/QUEUE_DESIGN_DECISIONS.md` §12. Task 037 was moved
+Decision recorded in `docs/QUEUE_DESIGN_DECISIONS.md` §13. Task 037 was moved
 back to `wip/` during the correction and returned to `review/` before commit.
 
 ### Files changed
@@ -1122,6 +1122,7 @@ job runner, download admission, queue store, and ROCm code were not touched.
 | `src/local_transcribe/cli.py` | removed callback-level Deno probe + `_startup_warnings_shown`; transcribe probe scoped to non-local sources; direct-batch comment clarified (10 insertions, 24 deletions) |
 | `tests/test_deno_startup_warnings.py` | new regression suite, 10 tests, simulating a host without Deno and recording every probe call |
 | `CHANGELOG.md` | `[Unreleased] → Fixed` entry |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | §13 append-only decision record |
 | `docs/QUEUE_DESIGN_DECISIONS.md` | §13 append-only decision record |
 | `README.md`, `AGENTS.md` | state the warning is download-path only |
 | `.crules/tasks/review/038-deno-startup-warning.md` | task record with acceptance + evidence |
