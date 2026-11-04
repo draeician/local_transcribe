@@ -125,17 +125,6 @@ def transcribe(
 
     logger = configure_logging(verbose=verbose, log_file_prefix="transcribe")
 
-    # Deno is a prerequisite for YouTube downloads only. Local audio files and
-    # queue-only work never probe it.
-    if not is_local:
-        from local_transcribe.utils.doctor import check_deno_with_guidance
-
-        deno_available, deno_info = check_deno_with_guidance()
-        if not deno_available:
-            console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
-            console.print(f"[dim]{deno_info}[/dim]")
-            console.print("[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n")
-
     try:
         output_dir_path = Path(output_dir).expanduser()
 
@@ -152,7 +141,9 @@ def transcribe(
         )
 
         if not direct:
-            # Queue mode (default)
+            # Queue mode (default). This is a producer path: it only writes the
+            # reservation/execution JSON, so it never probes Deno. Local audio and
+            # `--no-wait` enqueue stay quiet on hosts without Deno.
             from local_transcribe.services.queue_models import ExecutionOptions
             from local_transcribe.services.queue_paths import (
                 QueuePathError,
@@ -208,6 +199,19 @@ def transcribe(
                 )
                 raise typer.Exit(1)
 
+            # Waiting on a YouTube job means this session depends on the worker's
+            # download succeeding, so the Deno prerequisite is reported here only.
+            if not is_local:
+                from local_transcribe.utils.doctor import check_deno_with_guidance
+
+                deno_available, deno_info = check_deno_with_guidance()
+                if not deno_available:
+                    console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
+                    console.print(f"[dim]{deno_info}[/dim]")
+                    console.print(
+                        "[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n"
+                    )
+
             from local_transcribe.services.queue_wait import wait_for_execution
 
             console.print("[dim]Waiting for worker…[/dim]")
@@ -237,6 +241,17 @@ def transcribe(
             logger.info(f"Transcribing local file: {expanded.resolve()}")
             result_path = transcribe_local_file(expanded, cfg)
         else:
+            # In-process YouTube download happens in this session: Deno is a
+            # prerequisite here even though no queue wait follows.
+            from local_transcribe.utils.doctor import check_deno_with_guidance
+
+            deno_available, deno_info = check_deno_with_guidance()
+            if not deno_available:
+                console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
+                console.print(f"[dim]{deno_info}[/dim]")
+                console.print(
+                    "[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n"
+                )
             logger.info(f"Transcribing: {raw}")
             result_path = transcribe_url(raw, cfg)
         console.print(f"[green]✓[/green] Done. Wrote: {result_path}")

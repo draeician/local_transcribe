@@ -87,7 +87,8 @@ def test_queue_list_reports_records_without_deno(tmp_path: Path, monkeypatch) ->
 
     assert result.exit_code == 0, result.output
     assert DENO_WARNING not in result.output
-    assert "youtube:dQw4w9WgXcQ" in result.output
+    # The SOURCE column carries the recorded source URL/key.
+    assert "youtu.be/dQw4w9WgXcQ" in result.output
     assert calls == []
 
 
@@ -108,8 +109,8 @@ def test_version_and_help_are_quiet_without_deno(monkeypatch) -> None:
     assert calls == []
 
 
-def test_transcribe_url_still_warns_without_deno(tmp_path: Path, monkeypatch) -> None:
-    """YouTube download path keeps the Deno prerequisite warning."""
+def test_transcribe_url_no_wait_does_not_probe_deno(tmp_path: Path, monkeypatch) -> None:
+    """`lt transcribe URL --no-wait` is a producer path: enqueue only, no Deno probe."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     q = _queue(tmp_path)
 
@@ -126,9 +127,37 @@ def test_transcribe_url_still_warns_without_deno(tmp_path: Path, monkeypatch) ->
     )
 
     assert result.exit_code == 0, result.output
-    assert DENO_WARNING in result.output
+    assert DENO_WARNING not in result.output, result.output
+    assert "Queue enqueued: youtube:dQw4w9WgXcQ" in result.output
+    assert "--no-wait: not waiting for worker" in result.output
+    assert calls == [], f"--no-wait enqueue invoked the Deno probe: {calls}"
+
+
+def test_transcribe_url_wait_warns_without_deno(tmp_path: Path, monkeypatch) -> None:
+    """A YouTube transcribe that waits for the worker keeps the Deno warning."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    q = _queue(tmp_path)
+
+    calls = _no_deno(monkeypatch)
+    with patch(
+        "local_transcribe.services.queue_wait.wait_for_execution",
+        side_effect=typer.Exit(0),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "transcribe",
+                "https://youtu.be/dQw4w9WgXcQ",
+                "--queue-dir",
+                str(q),
+                "--timeout",
+                "1",
+            ],
+        )
+
+    assert DENO_WARNING in result.output, result.output
     assert "HTTP 403" in result.output
-    assert calls, "YouTube path must probe Deno"
+    assert calls, "waiting YouTube path must probe Deno"
 
 
 def test_transcribe_local_file_does_not_probe_deno(tmp_path: Path, monkeypatch) -> None:
@@ -148,6 +177,30 @@ def test_transcribe_local_file_does_not_probe_deno(tmp_path: Path, monkeypatch) 
     assert DENO_WARNING not in result.output
     assert "Queue enqueued: local:" in result.output
     assert calls == []
+
+
+def test_transcribe_direct_url_warns_without_deno(tmp_path: Path, monkeypatch) -> None:
+    """`--direct` transcribes a URL in-process, so it keeps the warning."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+    def fake_transcribe_url(raw: str, cfg) -> Path:
+        return tmp_path / "out.json"
+
+    calls = _no_deno(monkeypatch)
+    with patch(
+        "local_transcribe.cli.transcribe_url", fake_transcribe_url
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "transcribe",
+                "https://youtu.be/dQw4w9WgXcQ",
+                "--direct",
+            ],
+        )
+
+    assert DENO_WARNING in result.output, result.output
+    assert calls, "direct URL transcribe must probe Deno"
 
 
 def test_batch_queue_mode_does_not_probe_deno(tmp_path: Path, monkeypatch) -> None:
