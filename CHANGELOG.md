@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `lt queue list [STATUS|UUID]` reporting with `--limit`, `--offset`, and `--sort oldest|newest`. The command shows enqueue time, age, status, source, priority, total matching records, and the displayed range. Existing `--status`, `--origin`, and `--limit` options remain supported; `lt queue show <UUID>` is unchanged.
+
+### Changed
+- `lt queue list` now defaults to **all execution states**, oldest first, with a limit of 60 (previously pending-only, limit 50).
+
+### Fixed
+- `lt queue list <UUID>` rejects a nonzero `--offset` instead of silently hiding the selected record, and applies `--origin` instead of ignoring it.
+
 ## [0.7.0] - 2026-10-19
 
 ### Added

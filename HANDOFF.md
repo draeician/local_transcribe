@@ -943,6 +943,148 @@ contention, not a code path. The steady-state numbers above are reproducible.
   `src/local_transcribe/__init__.py`, `project_spec.md`, and `CHANGELOG.md`.
   No tag pushed (not declared an official release here).
 
+## Implementation — queue list reporting (task 037)
+
+Date: 2026-11-03
+Agent: OpenCode
+Branch: `feat/queue-list-reporting`, based on `origin/main` at `25b89f1`.
+Task file: `.crules/tasks/review/037-queue-list-reporting.md`.
+Feature commit: `df60e1e` (`feat(queue): add filtered and paginated queue list reporting`).
+
+### What changed
+
+- `lt queue list [STATUS|UUID] [--limit N] [--offset N] [--sort oldest|newest]`
+  now lists all execution states by default (`--limit 60`, `--offset 0`,
+  `--sort oldest`).
+- Positional input accepts any of `pending`, `processing`, `retry`,
+  `completed`, `failed`, `cancelled`, or a UUID. A UUID selects one execution;
+  an unknown but valid UUID renders an empty result (exit 0).
+- Existing `--status`, `--origin`, and `--limit` options remain available. A
+  positional status and `--status` must agree; a UUID cannot be combined with
+  `--status`.
+- Output is tab-separated and includes execution ID, enqueue timestamp in local
+  time with timezone abbreviation/offset, age, status, priority, source, and
+  origin. The footer reports `Showing start-end of total`, limit/offset/sort,
+  and the local timezone.
+- `QueueStore.query_executions()` performs read-only filtering (state
+  directory), sorting by `created_at`, and pagination after filtering. Ties use
+  the execution ID as a deterministic secondary key.
+- Invalid negative offsets, nonpositive limits, unknown statuses, malformed
+  UUIDs, and invalid sort values exit 1 with actionable messages.
+- No worker scheduling, queue transition, ROCm, or transcription code changed.
+  No schema migration or timestamp synthesis was introduced.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/cli_queue.py` | new list interface, validation, local-time/age rendering |
+| `src/local_transcribe/services/queue_listing.py` (new) | pure timestamp, age, sort, pagination helpers |
+| `src/local_transcribe/services/queue_store.py` | read-only `query_executions()` |
+| `tests/test_cli_queue.py` | 28 new regression tests |
+| `README.md`, `QUICK_REFERENCE.md`, `AGENTS.md`, `docs/QUEUE_OPERATOR.md`, `docs/WHATS_NEW.md` | updated list defaults/examples |
+| `CHANGELOG.md` | `[Unreleased]` entry (no version bump) |
+| `.crules/tasks/review/037-queue-list-reporting.md` | task moved to review with coder notes |
+
+### Verification
+
+Environment note: the checked-in `.venv`/`venv` are broken (no packages), and
+the pipx environment has runtime dependencies but no pytest. Tests were run with
+the system pytest and the pipx site-packages on `PYTHONPATH`. `TERM=dumb`
+disables Rich color for the four pre-existing ANSI-sensitive tests.
+
+| Command | Result |
+|---------|--------|
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q tests/test_cli_queue.py tests/test_queue_store.py` | **39 passed** |
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q` | **326 passed, 11 skipped** |
+| same full suite with normal color terminal | 4 failed, 322 passed, 11 skipped; the 4 failures are the pre-existing Rich/ANSI `test_update` + `test_cli_queue` set (reproduced on `main` before edits). The pre-existing `test_queue_concurrency::test_concurrent_force_single_current_generation` race also failed intermittently on both `main` and this branch and passed on rerun. |
+| `uvx ruff check --config pyproject.toml src/local_transcribe/cli_queue.py src/local_transcribe/services/queue_store.py src/local_transcribe/services/queue_listing.py tests/test_cli_queue.py` | 40 findings, all pre-existing style classes (`B008`, `UP045`, `TRY203`, `UP035`); baseline HEAD versions of the same tracked files had 45. New `queue_listing.py` alone: **All checks passed** |
+| `PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m local_transcribe.cli version` | `local-transcribe version 0.7.0` |
+| `PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m local_transcribe.cli doctor` | exit 1: environment missing `ffmpeg`; unrelated to this change |
+
+`$PIPX_SITE` = `~/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+
+### Blockers / open items
+
+- None for review. The only full-suite failures seen under a color terminal are
+  pre-existing and disappear with `TERM=dumb`; the concurrency test remains
+  timing-flaky on `main` and this branch.
+- Package version intentionally remains `0.7.0`; the change is recorded under
+  `[Unreleased]`. Version bump/merge/release is for review approval.
+
+### Recommended next step
+
+Review `feat/queue-list-reporting`, especially the UUID-not-found semantics and
+the new default (all states, limit 60), then merge if approved. Do not release
+or upgrade production before review.
+
+## Correction — queue list UUID filters (task 037 follow-up)
+
+Date: 2026-11-03
+Agent: OpenCode
+Branch: `feat/queue-list-reporting`, based on feature commit `df60e1e`.
+Correction commit: `bda86ce` (`fix(queue): honor UUID filters in queue list`).
+
+### Findings corrected
+
+1. **UUID selection + nonzero `--offset` could silently hide the record.**
+   A UUID now rejects any nonzero `--offset` with:
+   `A UUID selection cannot be combined with a nonzero --offset; omit --offset to show the selected execution.`
+   `--offset 0` remains valid. Normal status/all-record pagination is
+   unchanged.
+2. **`--origin` was accepted but ignored for UUID selection.**
+   The origin filter is now applied to the selected execution. A mismatch
+   returns exit 0 with
+   `No matching execution for UUID <id> with origin '<origin>'.`
+   No filtering option is silently ignored.
+
+Decision recorded in `docs/QUEUE_DESIGN_DECISIONS.md` §12. Task 037 was moved
+back to `wip/` during the correction and returned to `review/` before commit.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/cli_queue.py` | reject UUID+nonzero offset; apply origin to UUID selection; help text |
+| `tests/test_cli_queue.py` | regression tests for both findings |
+| `README.md`, `QUICK_REFERENCE.md`, `CHANGELOG.md` | document UUID offset/origin behavior |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | correction decision |
+| `.crules/tasks/review/037-queue-list-reporting.md` | review status + correction notes |
+
+### Verification
+
+| Command | Result |
+|---------|--------|
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q tests/test_cli_queue.py tests/test_queue_store.py` | **41 passed** |
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q` | **328 passed, 11 skipped** |
+| normal color terminal full suite | 4 failed, 324 passed, 11 skipped; the same pre-existing Rich/ANSI `test_update` + `test_cli_queue` failures reproduced on `main` |
+| `uvx ruff check --config pyproject.toml …changed Python files…` | **40 findings**, identical to the pre-correction HEAD baseline (0 new) |
+| `uvx ruff check --config pyproject.toml src/local_transcribe/services/queue_listing.py` | **All checks passed** |
+| `uv build --out-dir /tmp/opencode/lt-dist` | built `local_transcribe-0.7.0.tar.gz` and `local_transcribe-0.7.0-py3-none-any.whl` |
+
+### Read-only performance (synthetic queue, no production data)
+
+Created `/tmp/opencode/lt-queue-list-perf` with **6,430** execution records
+(100 pending, 50 processing, 50 retry, 6,000 completed, 200 failed, 30
+cancelled). No production queue directory was read or modified.
+
+| Case | CLI end-to-end median (3 runs) |
+|------|--------------------------------|
+| all/default (`--limit 60`) | **1.269 s** |
+| `completed` status filter | **1.135 s** |
+| UUID selection | **0.544 s** |
+| `completed --offset 5900 --limit 60` | **1.171 s** |
+
+Store-level medians (5 runs): all/default **0.614 s**, completed **0.570 s**,
+direct UUID lookup **~0.000 s**. CLI timings include Python startup and the
+Deno warning path.
+
+### Blockers / open items
+
+- None for review. The only full-suite failures under a color terminal are the
+  pre-existing ANSI-sensitive tests; they pass with `TERM=dumb`.
+- Version remains `0.7.0`; no merge, tag, release, or Aether upgrade was done.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

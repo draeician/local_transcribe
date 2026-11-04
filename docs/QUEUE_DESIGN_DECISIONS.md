@@ -214,3 +214,16 @@ Ownership = NLM. Identity/dedup = reservations. Safety of artifacts = atomic pub
 ## 11. One-sentence summary
 
 This is a **feature** that adds a durable NFSv3 transcription queue and a single **NLM-locked** worker, with permanent source reservations and idempotent publication — an **execution-model rework**, not a pure refactor and not a from-scratch rewrite of transcription itself.
+
+---
+
+## 12. Queue list reporting corrections (2026-11-03)
+
+Task 037 review follow-up. Two edge cases were corrected in `lt queue list`:
+
+| Finding | Decision |
+|---------|----------|
+| A UUID selection plus a nonzero `--offset` could silently hide the selected record. | **Reject** the combination with an actionable error. UUID selection is a single-record lookup, so nonzero offsets are incompatible; normal status/all-record pagination is unchanged. |
+| `--origin` was accepted but ignored for UUID selection. | **Apply** the origin filter to the selected record. A mismatch produces an explicit empty result rather than silently returning the record. |
+
+The governing rule is that filtering and pagination options must never be silently ignored. Implementation is in `src/local_transcribe/cli_queue.py`; regression coverage is in `tests/test_cli_queue.py`.

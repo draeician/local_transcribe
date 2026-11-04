@@ -45,7 +45,7 @@ Default execution is now **queue-first**:
 
 - `lt transcribe` / `lt batch` **enqueue** into a durable NFSv3 queue and (for transcribe) wait for the worker unless `--no-wait`.
 - One host runs `lt worker` (systemd user unit) holding an **NLM exclusive lock**.
-- Use `lt queue stats` to watch backlog; `lt queue list` defaults to pending only.
+- Use `lt queue stats` to watch backlog; `lt queue list` shows all states by default (limit 60, oldest first) and accepts a status or execution UUID positional.
 - Configure cookies with `queue.default_auth_profile` + `auth_profiles` (not a YouTube Data API key).
 - Escape hatch: `--direct` for legacy in-process `BatchPipeline` / single-shot runs.
 - Logs: `~/.local/state/local-transcribe/logs/`.
