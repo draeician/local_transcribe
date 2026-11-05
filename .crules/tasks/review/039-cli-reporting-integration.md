@@ -3,6 +3,8 @@
 Mode: Integration agent
 Branch: `chore/cli-reporting-integration` (based on `origin/main` @ `25b89f1`)
 Task created: 2026-11-04 (UTC) — created in `.crules/tasks/wip/`, moved to `review/` after verification.
+Owner: OpenCode (reassigned 2026-11-05 from the cancelled Pi agent)
+Status: `review` — review corrections complete, pushed for review
 
 ## Objective
 
@@ -104,3 +106,63 @@ runtime deps but no pytest. Tests ran with system pytest + the pipx site-package
   belongs to review.
 - Pre-existing repo-wide Ruff baseline and the timing-flaky concurrency tests are documented,
   not suppressed.
+
+## Review corrections (2026-11-05, OpenCode)
+
+The Pi agent that owned this task was cancelled after an apparent loop. GitHub
+showed `main` unchanged at `25b89f1` and this branch unchanged at `23626c0`, so
+OpenCode claimed task 039, moved it back to `wip/`, and addressed only the two
+outstanding review findings. No Pi work was recovered or restarted.
+
+### Correction 1 — queue-list test isolation
+
+`tests/test_cli_queue.py` now has a module-level autouse fixture that sets
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` under the test's `tmp_path`. The
+task-037 queue-list tests previously inherited the operator's real config; when
+that config carried a production `expected_uuid`, temporary queues failed
+identity validation with a UUID mismatch. Application identity validation is
+untouched, production configuration is untouched, and no assertion was weakened.
+
+### Correction 2 — no Deno probe for queue clients
+
+`src/local_transcribe/cli.py` no longer probes Deno on the queue **wait** path.
+Queue mode is Deno-free for `lt transcribe <URL> --no-wait`, `lt transcribe
+<URL>` (including waiting), `lt batch` (enqueue and `--wait`), local files, and
+all `lt queue *` commands. `lt transcribe <URL> --direct` and `lt batch --direct`
+retain the prerequisite warning; `lt doctor` retains its optional diagnostic and
+`lt update` its hard requirement. Worker-side download failures still surface to
+the waiting client as `category: detail`; worker execution was not changed.
+
+Tests: `test_transcribe_url_wait_does_not_probe_deno`,
+`test_transcribe_url_wait_surfaces_worker_failure`, and
+`test_batch_queue_wait_does_not_probe_deno` replace the old
+wait-warns assertion. Docs updated: `CHANGELOG.md`, `docs/WHATS_NEW.md`,
+`README.md`, `AGENTS.md`, and `docs/QUEUE_DESIGN_DECISIONS.md` §15.
+
+### Verification evidence (this correction round)
+
+Environment: system `pytest` 9.0.2 with the pipx runtime site-packages on
+`PYTHONPATH`; `TERM=dumb`. The operator's real `~/.config/local-transcribe/config.yaml`
+points at a stale `/tmp` smoke queue with `expected_uuid`
+`6a058908-116f-41c9-987f-d5f4ef38667e`; that is the production-shaped external
+config used for the isolation check.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Correction-targeted | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_cli_transcribe_queue.py` | **63 passed** |
+| Queue-list isolation, empty external XDG | `XDG_CONFIG_HOME=/tmp/opencode/lt-empty-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Queue-list isolation, production-shaped external XDG | `XDG_CONFIG_HOME=/tmp/opencode/lt-prod-shaped-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Identity validation preserved | `pytest -q tests/test_queue_paths.py` | **11 passed** |
+| Full suite, default operator config | `pytest -q` | 8 failed, **334 passed, 11 skipped**; 6 pre-existing `test_cli_batch_queue` failures + `test_enqueue_youtube_safe_success` (stale operator `expected_uuid`) + one timing-flaky force-generation case |
+| Baseline full suite (`origin/main` @ `25b89f1`), same env | same command in a detached worktree | 7 failed, **291 passed, 11 skipped**; identical failure classes minus the flake |
+| Full suite, isolated empty XDG | `XDG_CONFIG_HOME=/tmp/opencode/lt-empty-config pytest -q` | **342 passed, 11 skipped** |
+| Concurrency case in isolation | `pytest -q tests/test_queue_concurrency.py::test_enqueue_youtube_safe_success` with empty XDG | **1 passed** (fails with the stale operator config on baseline too) |
+| Ruff | `uvx ruff check --config pyproject.toml src tests` | **408 findings** vs baseline **413**; changed `cli.py` + `test_cli_queue.py` **26 both**; new Deno suite **0** |
+| Syntax | `python3 -m compileall` + `ast.parse` on changed files | OK |
+| Build | `uv build --out-dir /tmp/opencode/lt-dist-039` | 0.8.0 sdist + wheel |
+| Isolated install | `PIPX_HOME=/tmp/opencode/pipx-039 pipx install …whl` | **0.8.0**; production pipx still **0.7.0** |
+| CLI smoke, no Deno on PATH | isolated `lt` with throwaway queue/XDG | `queue list/stats`, `transcribe --no-wait`, waiting `transcribe --timeout 0`, `batch --wait` → **0** Deno warnings; `doctor` still lists the optional Deno row; `--direct` transcribe and `--direct` batch each warn once |
+| Diff hygiene | `git diff --check` | clean |
+
+No production queue record, worker service, ROCm/CUDA path, or production pipx
+installation was changed.
