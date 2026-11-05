@@ -1365,6 +1365,48 @@ Review the pushed correction commits on `chore/cli-reporting-integration`. If
 approved, merge into `main`, tag `v0.8.0`, then upgrade the production pipx
 install and restart the NLM-locked worker only after isolated validation.
 
+## Recovery verification — task 039 (2026-11-05, OpenCode re-check)
+
+State found before this round: local `HEAD` and
+`origin/chore/cli-reporting-integration` were both `615497b`, i.e. five commits
+ahead of the `23626c0` review baseline. Both required corrections were already
+committed and pushed (`25fb167` test isolation, `6a2078d` Deno queue-client
+fix), with follow-up docs in `3c64e6d`, `9a57bac`, `615497b`. No correction was
+missing locally, so nothing was reset, discarded, or overwritten; this round
+re-verified the pushed content independently and recorded fresh evidence.
+
+Version remains **0.8.0**. No merge, tag, branch deletion, production queue
+change, worker restart, or production install was performed.
+
+### Verification evidence (this round)
+
+Environment: system `pytest` 9.0.2; `TERM=dumb`;
+`PYTHONPATH=src:/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+External XDG fixtures were created under `/tmp/opencode/verify-039/`: an empty
+config dir and a production-shaped config with
+`expected_uuid: 6a058908-116f-41c9-987f-d5f4ef38667e`.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Correction-targeted, operator real config | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_cli_transcribe_queue.py` | **63 passed** |
+| Queue-list isolation, empty external XDG | `XDG_CONFIG_HOME=…/empty-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Queue-list isolation, production-shaped external XDG | `XDG_CONFIG_HOME=…/prod-shaped pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Identity validation preserved | `pytest -q tests/test_queue_paths.py` | **11 passed** |
+| Full suite (one run), isolated empty XDG | `XDG_CONFIG_HOME=…/full-xdg-config pytest -q` | **342 passed, 11 skipped** |
+| Ruff, branch | `uvx ruff check --config pyproject.toml src tests` | **408** findings |
+| Ruff, baseline `25b89f1` | same command in `/tmp/lt-baseline-main` | **413** findings (no new findings) |
+| Ruff, changed files | `uvx ruff check … src/local_transcribe/cli.py tests/test_cli_queue.py tests/test_deno_startup_warnings.py` | **26**, same count documented for `cli.py` + `test_cli_queue.py`; new Deno suite **0** |
+| Syntax | `python3 -m compileall -q src` + `ast.parse` on changed files | OK |
+| Build | `uv build --out-dir /tmp/opencode/verify-039/dist` | 0.8.0 sdist + wheel; METADATA `Version: 0.8.0`, entry point `lt = local_transcribe.cli:main` |
+| Secret scan | regex scan of `git diff 23626c0..HEAD` (AWS/GitHub/OpenAI/Slack/Google/private-key/generic-assignment patterns) | **CLEAN**; no credential files tracked |
+| Diff hygiene | `git diff --check` (working tree and `origin..HEAD`) | clean |
+
+The full suite passed in this round, so no isolated re-run of a failed test was
+needed. The previously documented operator-config failures (`test_cli_batch_queue`
+×6, stale `expected_uuid` in `test_enqueue_youtube_safe_success`, and the
+force-generation timing flake) are pre-existing and were avoided by the isolated
+XDG configuration, exactly as recorded in the prior round.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
