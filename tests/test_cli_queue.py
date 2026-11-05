@@ -25,6 +25,18 @@ runner = CliRunner()
 STATUSES = ("pending", "processing", "retry", "completed", "failed", "cancelled")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_xdg_config(tmp_path: Path, monkeypatch) -> None:
+    """Keep every test off the operator's real config.
+
+    Queue identity validation still runs, but against an empty isolated XDG
+    configuration instead of a production config whose ``expected_uuid`` would
+    reject the temporary queue used by each test.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+
+
 def _seed_execution(
     queue_dir: Path,
     *,
