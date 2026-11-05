@@ -26,8 +26,9 @@ queue change, no Aether upgrade.
       `bda86ce`, `29e402a` as authored ancestors; Deno fix content of `3b78d5c`,
       `c6bc375`, `259a0c9`).
 - [x] Queue-only producers emit **no** Deno warning, including `lt transcribe URL --no-wait`.
-- [x] YouTube download paths still warn when Deno is missing (waiting `lt transcribe URL`,
-      `--direct` transcribe/batch); `lt doctor` keeps the optional diagnostic; `lt update` gate intact.
+- [x] Queue-mode producers **and waiters** emit no Deno warning (`--no-wait`, waiting
+      `lt transcribe URL`, `lt batch` and `--wait`); in-process download paths still warn
+      (`--direct` transcribe/batch); `lt doctor` keeps the optional diagnostic; `lt update` gate intact.
 - [x] `lt queue list [STATUS|UUID]`: default limit 60, offset 0, oldest-first sort, pagination.
 - [x] Version `0.8.0` consistent across `pyproject.toml`, `src/local_transcribe/__init__.py`,
       `project_spec.md`, `CHANGELOG.md`, `docs/WHATS_NEW.md`; CLI reports the same value.
@@ -64,17 +65,19 @@ downloads anything. The probe moved to the paths that actually depend on a YouTu
 |------|-------|-------|
 | `lt queue *`, `lt worker *`, `lt cookies *`, version, help | none | root callback has no probe |
 | `lt transcribe <local file>` (queue or `--direct`) | none | local audio never needs Deno |
-| `lt batch` queue-mode bulk enqueue | none | producer path returns before any download code |
+| `lt batch` queue-mode bulk enqueue and `--wait` | none | producer/watcher path never downloads |
 | `lt transcribe <URL> --no-wait` | **none** (was: warned) | enqueue only; returns before the wait block |
-| `lt transcribe <URL>` (waits for worker) | warns | before `wait_for_execution` |
+| `lt transcribe <URL>` (waits for worker) | **none** (was: warned) | review correction: the worker downloads, not the client |
 | `lt transcribe <URL> --direct` | warns | in-process `transcribe_url()` branch |
 | `lt batch --input … --direct` | warns | legacy in-process pipeline prerequisites |
 | `lt doctor` | optional diagnostic row "Deno Runtime (YouTube)" | unchanged |
 | `lt update` | hard gate, exits 1 without Deno on PATH | unchanged |
 
-New/changed coverage in `tests/test_deno_startup_warnings.py` (14 tests):
+Coverage in `tests/test_deno_startup_warnings.py` (14 tests):
 `test_transcribe_url_no_wait_does_not_probe_deno`,
-`test_transcribe_url_wait_warns_without_deno`,
+`test_transcribe_url_wait_does_not_probe_deno` (supersedes the earlier
+wait-warns assertion), `test_transcribe_url_wait_surfaces_worker_failure`,
+`test_batch_queue_wait_does_not_probe_deno`, and
 `test_transcribe_direct_url_warns_without_deno`. The existing producer/reporting and
 download-path assertions are unchanged in strength; one assertion was corrected to match the
 task 037 output shape (the `SOURCE` column carries the recorded source URL, not the
@@ -96,7 +99,7 @@ runtime deps but no pytest. Tests ran with system pytest + the pipx site-package
 | Ruff | `uvx ruff check --config pyproject.toml src tests` vs baseline counts | identical per-rule counts, 0 new findings (details in HANDOFF) |
 | Build | `uv build --out-dir /tmp/pi-integration-dist` | `local_transcribe-0.8.0` sdist + wheel |
 | Isolated pipx install | `pipx install --venv /tmp/lt-pipx-080 --force /tmp/pi-integration-dist/local_transcribe-0.8.0-py3-none-any.whl` | installs 0.8.0; production `local-transcribe 0.7.0` untouched |
-| CLI smoke (no Deno on PATH) | isolated venv `lt queue list`, `version`, `--help`, `transcribe URL --no-wait`, local `.m4a`, YouTube URL + wait | warning-free on producer/reporting paths; warns only where a download is awaited |
+| CLI smoke (no Deno on PATH) | isolated venv `lt queue list`, `version`, `--help`, `transcribe URL --no-wait`, local `.m4a`, YouTube URL + wait | warning-free on producer/reporting paths; at that time the wait path still warned — **superseded by the 2026-11-05 correction** (queue wait is now quiet; only `--direct` warns) |
 | Upgrade detection | installed 0.7.0 vs wheel 0.8.0 metadata + `lt version` output | 0.7.0 → 0.8.0 detected as an upgrade; both report their own version consistently with metadata |
 
 ## Blockers / notes for review
