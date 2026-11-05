@@ -5,7 +5,7 @@
 - **`lt queue list [STATUS|UUID]`** now accepts a status or execution UUID positionally, with `--limit`, `--offset`, and `--sort oldest|newest`. Output includes enqueue time (local timezone), age, status, priority, source, origin, and the displayed range.
 - **New defaults:** all execution states, oldest first, limit 60 (was pending-only, limit 50). Pagination is deterministic — sorted after filtering, with the execution ID as a stable secondary key.
 - **No silently ignored filters:** `lt queue list <UUID>` rejects a nonzero `--offset` and honours `--origin`; an unknown-but-valid UUID renders an empty result (exit 0).
-- **Deno is probed only where YouTube downloads happen.** `lt queue *`, `lt version`, help output, local-file transcription, and `lt transcribe <URL> --no-wait` are quiet on hosts without Deno. `lt transcribe <URL>` (waiting for a result) and `--direct` batch still show the prerequisite warning; `lt doctor` keeps Deno as an optional diagnostic.
+- **Deno is probed only where this process downloads YouTube audio.** `lt queue *`, `lt version`, help output, local-file transcription, and all queue-mode producers/waiters (`lt transcribe <URL> --no-wait`, `lt transcribe <URL>` while waiting, `lt batch` and `--wait`) are quiet on hosts without Deno. Only `--direct` transcribe/batch still show the prerequisite warning; `lt doctor` keeps Deno as an optional diagnostic. Worker download failures surface through the wait outcome (`category: detail`).
 - No queue transition, worker scheduling, ROCm, or transcription behaviour changed.
 
 Docs: [README.md](../README.md) · [CHANGELOG.md](../CHANGELOG.md) · [docs/QUEUE_DESIGN_DECISIONS.md](QUEUE_DESIGN_DECISIONS.md)

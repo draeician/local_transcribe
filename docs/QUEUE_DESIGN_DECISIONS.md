@@ -273,3 +273,40 @@ Coverage: `test_transcribe_url_no_wait_does_not_probe_deno`,
 Version synchronized to **0.8.0** across `pyproject.toml`,
 `src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
 `docs/WHATS_NEW.md`; the release decision (merge/tag) remains with review.
+
+---
+
+## 15. Queue clients never probe Deno; queue-list tests isolate XDG (task 039 review corrections, 2026-11-05)
+
+**Decision 1 — queue mode is Deno-free end to end.** The client Deno probe was
+removed from the queue **wait** path as well as the producer paths. In queue
+mode the remote worker performs the download, so `lt transcribe <URL>` (waiting),
+`lt transcribe <URL> --no-wait`, `lt batch`, `lt batch --wait`, local files, and
+all `lt queue *` commands never probe Deno. The probe now runs only where this
+process downloads YouTube audio itself: `lt transcribe <URL> --direct` and
+`lt batch --direct`. `lt doctor` keeps its optional diagnostic and `lt update`
+keeps its hard requirement.
+
+**Why.** Probing on the client while waiting was still wrong: the client only
+observes queue state and may be a different host from the worker. A missing
+client Deno install cannot affect a remote worker's download, and warning there
+reintroduced the misleading implication that the queue depends on Deno.
+
+**Actionability.** The wait outcome continues to print the worker's failure as
+`category: detail` (for example `temporary_forbidden: ERROR: HTTP Error 403`),
+and `lt queue show <UUID>` retains the stored error. Operators diagnose the
+worker host with `lt doctor` / `lt queue doctor`; no worker execution behaviour
+changed.
+
+**Decision 2 — queue-list tests own their XDG configuration.** The task-037
+queue-list tests now install an autouse fixture that points `XDG_CONFIG_HOME`
+and `XDG_STATE_HOME` at the test's temporary directory. Application queue
+identity validation is unchanged: an explicitly configured `expected_uuid` is
+still enforced. The fixture prevents an operator's production config from
+rejecting temporary queues with a UUID mismatch, and the tests pass under both
+empty and production-shaped external configuration.
+
+Coverage: `test_transcribe_url_wait_does_not_probe_deno`,
+`test_transcribe_url_wait_surfaces_worker_failure`,
+`test_batch_queue_wait_does_not_probe_deno`, plus the existing direct-path
+warning tests and the queue-list suite under the autouse XDG fixture.

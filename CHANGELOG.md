@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `lt queue list <UUID>` rejects a nonzero `--offset` instead of silently hiding the selected record, and applies `--origin` instead of ignoring it.
-- The CLI no longer probes Deno at startup for commands that never download. `lt queue list/show/stats/path/doctor`, `lt version`, and help output are quiet on hosts without Deno — including `lt transcribe <URL> --no-wait` and local-file transcription, which enqueue without touching the probe. Deno is still checked (with the prerequisite warning) on YouTube download paths that actually wait for a result (`lt transcribe <URL>`, `--direct` batch), and `lt doctor` keeps reporting Deno availability as an optional diagnostic.
+- The CLI no longer probes Deno at startup for commands that never download. `lt queue list/show/stats/path/doctor`, `lt version`, and help output are quiet on hosts without Deno — including queue-mode producers and waiters: `lt transcribe <URL> --no-wait`, `lt transcribe <URL>` (waiting for the remote worker), `lt batch` (enqueue and `--wait`), and local-file transcription. Deno is still checked (with the prerequisite warning) where this process downloads YouTube audio itself (`lt transcribe <URL> --direct`, `lt batch --direct`), and `lt doctor` keeps reporting Deno availability as an optional diagnostic. Worker download failures still surface through the wait outcome as `category: detail`.
 
 Integrated on `chore/cli-reporting-integration` from task 037 (`feat/queue-list-reporting`: `df60e1e`, `0a571e8`, `bda86ce`, `29e402a`) and task 038 (`fix/deno-startup-warning`: `3b78d5c`, `c6bc375`, `259a0c9`). See `docs/QUEUE_DESIGN_DECISIONS.md` §12–§14.
 

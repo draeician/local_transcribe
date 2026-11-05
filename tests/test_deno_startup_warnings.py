@@ -1,9 +1,11 @@
-"""Regression tests: Deno is probed only on YouTube download paths (task 038).
+"""Regression tests: Deno is probed only on in-process download paths.
 
 The root Typer callback used to run ``check_deno_with_guidance()`` for every
 subcommand, so queue reporting, version and help output printed an unrelated
 "Deno runtime not detected" warning. These tests simulate a host without Deno
-and assert the probe runs only where YouTube downloading actually occurs.
+and assert the probe runs only where this process actually downloads YouTube
+audio (``--direct``). Queue-mode producers and waiters never probe: the worker
+owns the download.
 
 The CLI imports the probe inside each command body, so patching
 ``local_transcribe.utils.doctor.check_deno_with_guidance`` intercepts every
@@ -22,6 +24,7 @@ import local_transcribe.cli as cli_mod
 from local_transcribe.cli import app
 from local_transcribe.services.queue_paths import initialize_queue_layout
 from local_transcribe.services.queue_store import QueueStore
+from local_transcribe.services.queue_wait import WaitOutcome
 
 runner = CliRunner()
 
@@ -133,15 +136,22 @@ def test_transcribe_url_no_wait_does_not_probe_deno(tmp_path: Path, monkeypatch)
     assert calls == [], f"--no-wait enqueue invoked the Deno probe: {calls}"
 
 
-def test_transcribe_url_wait_warns_without_deno(tmp_path: Path, monkeypatch) -> None:
-    """A YouTube transcribe that waits for the worker keeps the Deno warning."""
+def test_transcribe_url_wait_does_not_probe_deno(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Waiting on a queued YouTube job is still a client path: no Deno probe."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     q = _queue(tmp_path)
 
     calls = _no_deno(monkeypatch)
     with patch(
         "local_transcribe.services.queue_wait.wait_for_execution",
-        side_effect=typer.Exit(0),
+        return_value=WaitOutcome(
+            status="completed",
+            execution=None,
+            output_path=str(tmp_path / "out.json"),
+            message="Execution completed",
+        ),
     ):
         result = runner.invoke(
             app,
@@ -155,9 +165,84 @@ def test_transcribe_url_wait_warns_without_deno(tmp_path: Path, monkeypatch) -> 
             ],
         )
 
-    assert DENO_WARNING in result.output, result.output
-    assert "HTTP 403" in result.output
-    assert calls, "waiting YouTube path must probe Deno"
+    assert result.exit_code == 0, result.output
+    assert DENO_WARNING not in result.output, result.output
+    assert calls == [], f"waiting YouTube path invoked the Deno probe: {calls}"
+
+
+def test_transcribe_url_wait_surfaces_worker_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Without a client probe, worker download failures stay actionable."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    q = _queue(tmp_path)
+
+    calls = _no_deno(monkeypatch)
+    message = (
+        "temporary_forbidden: ERROR: HTTP Error 403: Forbidden "
+        "(run lt doctor on the worker host)"
+    )
+    with patch(
+        "local_transcribe.services.queue_wait.wait_for_execution",
+        return_value=WaitOutcome(
+            status="failed",
+            execution=None,
+            output_path=None,
+            message=message,
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "transcribe",
+                "https://youtu.be/dQw4w9WgXcQ",
+                "--queue-dir",
+                str(q),
+            ],
+        )
+
+    assert result.exit_code == 1
+    assert "temporary_forbidden" in result.output, result.output
+    assert "HTTP Error 403" in result.output, result.output
+    assert DENO_WARNING not in result.output
+    assert calls == []
+
+
+def test_batch_queue_wait_does_not_probe_deno(tmp_path: Path, monkeypatch) -> None:
+    """`lt batch --wait` only observes worker results, so it never probes Deno."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+    q = _queue(tmp_path)
+    urls = tmp_path / "urls.txt"
+    urls.write_text("https://youtu.be/dQw4w9WgXcQ\n", encoding="utf-8")
+
+    calls = _no_deno(monkeypatch)
+    with patch(
+        "local_transcribe.services.queue_wait.wait_for_execution",
+        return_value=WaitOutcome(
+            status="completed",
+            execution=None,
+            output_path=str(tmp_path / "out.json"),
+            message="Execution completed",
+        ),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "batch",
+                "--input",
+                str(urls),
+                "--queue-dir",
+                str(q),
+                "--wait",
+                "--timeout",
+                "1",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert DENO_WARNING not in result.output, result.output
+    assert "Batch wait complete" in result.output
+    assert calls == [], f"batch wait invoked the Deno probe: {calls}"
 
 
 def test_transcribe_local_file_does_not_probe_deno(tmp_path: Path, monkeypatch) -> None:

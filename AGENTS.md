@@ -89,7 +89,7 @@ Local paths are detected when `Path.expanduser` resolves to an existing regular 
 * Auth: local `auth_profiles` only — never store cookie contents in job JSON.
 
 ## Troubleshooting
-* **Missing Deno** — required for YouTube SABR; symlink to `/usr/local/bin/deno` for pipx. The warning appears only on YouTube download paths (`lt transcribe <URL>`, `--direct` batch); queue inspection, `lt version`, and help stay quiet without Deno.
+* **Missing Deno** — required for YouTube SABR; symlink to `/usr/local/bin/deno` for pipx. The warning appears only where this process downloads YouTube audio (`lt transcribe <URL> --direct`, `lt batch --direct`); queue mode (including waiting and `lt batch --wait`), queue inspection, `lt version`, and help stay quiet without Deno.
 * **HTTP 403** — configure worker cookies via `default_auth_profile`; API keys do not authorize yt-dlp.
 * **NFS / lock** — `lt queue doctor`; reject `nolock` / soft mounts; see `docs/QUEUE_OPERATOR.md`.
 * **Corrupt transcripts** — `lt verify --mode quick`.

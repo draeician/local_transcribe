@@ -142,8 +142,9 @@ def transcribe(
 
         if not direct:
             # Queue mode (default). This is a producer path: it only writes the
-            # reservation/execution JSON, so it never probes Deno. Local audio and
-            # `--no-wait` enqueue stay quiet on hosts without Deno.
+            # reservation/execution JSON, so it never probes Deno. Local audio,
+            # `--no-wait`, and waiting for the remote worker all stay quiet on
+            # hosts without Deno; the worker performs the download.
             from local_transcribe.services.queue_models import ExecutionOptions
             from local_transcribe.services.queue_paths import (
                 QueuePathError,
@@ -199,19 +200,9 @@ def transcribe(
                 )
                 raise typer.Exit(1)
 
-            # Waiting on a YouTube job means this session depends on the worker's
-            # download succeeding, so the Deno prerequisite is reported here only.
-            if not is_local:
-                from local_transcribe.utils.doctor import check_deno_with_guidance
-
-                deno_available, deno_info = check_deno_with_guidance()
-                if not deno_available:
-                    console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
-                    console.print(f"[dim]{deno_info}[/dim]")
-                    console.print(
-                        "[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n"
-                    )
-
+            # Queue mode never probes Deno, even when waiting: the remote
+            # worker performs the download. Worker-side failures are surfaced
+            # through the wait outcome below (`category: detail`).
             from local_transcribe.services.queue_wait import wait_for_execution
 
             console.print("[dim]Waiting for worker…[/dim]")
