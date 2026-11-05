@@ -1272,6 +1272,11 @@ unfinished Pi work was recovered.
 Task 039 was claimed by OpenCode and moved from `review/` back to `wip/` before
 coding. Scope was limited to the two outstanding review corrections.
 
+Correction commits on `chore/cli-reporting-integration`:
+`25fb167` (test isolation), `6a2078d` (Deno queue-client fix + docs),
+`3c64e6d` (task/HANDOFF evidence), `9a57bac` (task scope alignment). Branch head
+was verified against `origin` after each push; `main` remained at `25b89f1`.
+
 ### Correction 1 — queue-list test isolation
 
 `tests/test_cli_queue.py` now installs an autouse fixture that sets
