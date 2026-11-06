@@ -1407,6 +1407,40 @@ needed. The previously documented operator-config failures (`test_cli_batch_queu
 force-generation timing flake) are pre-existing and were avoided by the isolated
 XDG configuration, exactly as recorded in the prior round.
 
+## Delivery confirmation — task 039 (2026-11-06, OpenCode)
+
+State found: local `HEAD` and `origin/chore/cli-reporting-integration` were both
+`571bf2b`, working tree clean, and the remote already contained both review
+corrections. Nothing was local-only, so no implementation was repeated and
+nothing was reset or overwritten. The correction commits were re-inspected at
+this SHA: `25fb167` (autouse XDG isolation in `tests/test_cli_queue.py`) and
+`6a2078d` (queue wait path no longer probes Deno; `--direct` transcribe/batch
+retain the warning; `lt doctor` and `lt update` unchanged).
+
+This round re-ran the full required verification instead of relying on the
+previous record:
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Correction-targeted, operator real config | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_cli_transcribe_queue.py` | **63 passed** |
+| Queue-list isolation, empty external XDG | `XDG_CONFIG_HOME=…/empty-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Queue-list isolation, production-shaped external XDG | `XDG_CONFIG_HOME=…/prod-shaped pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Identity validation preserved | `pytest -q tests/test_queue_paths.py` | **11 passed** |
+| Full suite (one run), isolated empty XDG | `XDG_CONFIG_HOME=…/full-xdg-config pytest -q` | **342 passed, 11 skipped** |
+| Ruff, branch | `uvx ruff check --config pyproject.toml src tests` | **408** findings |
+| Ruff, baseline `25b89f1` | same command in `/tmp/lt-baseline-main` | **413** findings (no new findings) |
+| Ruff, changed files | `uvx ruff check … cli.py test_cli_queue.py test_deno_startup_warnings.py` | **26**, unchanged |
+| Syntax | `python3 -m compileall -q src` + `ast.parse` on changed files | OK |
+| Build | `uv build --out-dir /tmp/opencode/verify-039-1106/dist` | 0.8.0 sdist + wheel; METADATA `Version: 0.8.0`, entry point `lt = local_transcribe.cli:main` |
+| Secret scan | regex scan of `git diff 23626c0..HEAD` | **CLEAN**; no credential files tracked |
+| Diff hygiene | `git diff --check` (working tree and `origin..HEAD`) | clean |
+
+No new Decision Journal entry was required: `docs/QUEUE_DESIGN_DECISIONS.md` §15
+already records both review decisions (queue clients never probe Deno; queue-list
+tests own their XDG configuration) and matches the code at this SHA. Version
+remains **0.8.0**. No merge, tag, branch deletion, production queue change,
+worker restart, or production install was performed. No blockers.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
