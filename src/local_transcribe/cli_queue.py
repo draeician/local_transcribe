@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, NoReturn, cast
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
 from local_transcribe.logging_setup import configure_logging
 from local_transcribe.services.config import load_config
 from local_transcribe.services.mount_validation import validate_queue_mount
+from local_transcribe.services.queue_listing import (
+    VALID_SORT_ORDERS,
+    SortOrder,
+    format_age,
+    format_local_timestamp,
+    local_timezone_label,
+    paginate_executions,
+    sort_executions,
+)
+from local_transcribe.services.queue_models import STATE_DIRS
 from local_transcribe.services.queue_paths import (
     QueueIdentityError,
     QueuePathError,
     initialize_queue_layout,
-    queue_id_path,
     resolve_queue_dir,
     verify_queue_identity,
 )
@@ -28,7 +37,7 @@ queue_app = typer.Typer(help="Manage the transcription queue")
 
 
 def _queue_dir_opt(
-    queue_dir: Optional[Path],
+    queue_dir: Path | None,
     *,
     verify: bool = True,
 ) -> Path:
@@ -43,16 +52,18 @@ def _queue_dir_opt(
 
 @queue_app.command("init")
 def queue_init(
-    queue_dir: Path = typer.Option(
-        ...,
-        "--queue-dir",
-        help="Explicit path for the queue directory",
-        exists=False,
-        file_okay=False,
-        dir_okay=True,
-        writable=True,
-        resolve_path=False,
-    ),
+    queue_dir: Annotated[
+        Path,
+        typer.Option(
+            "--queue-dir",
+            help="Explicit path for the queue directory",
+            exists=False,
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=False,
+        ),
+    ],
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Create queue layout, write queue.id, and update user config.yaml."""
@@ -87,20 +98,17 @@ def queue_init(
 
 @queue_app.command("path")
 def queue_path_cmd(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Show configured and resolved queue path details."""
     configure_logging(verbose=verbose, log_file_prefix="queue")
     cfg = load_config()
     console.print(f"Configured path: {cfg.queue.path}")
-    try:
-        resolved = _queue_dir_opt(queue_dir, verify=True)
-        qid = verify_queue_identity(resolved, expected_uuid=cfg.queue.expected_uuid)
-        console.print(f"Resolved path: {resolved}")
-        console.print(f"Queue UUID: {qid}")
-    except typer.Exit:
-        raise
+    resolved = _queue_dir_opt(queue_dir, verify=True)
+    qid = verify_queue_identity(resolved, expected_uuid=cfg.queue.expected_uuid)
+    console.print(f"Resolved path: {resolved}")
+    console.print(f"Queue UUID: {qid}")
     mount = validate_queue_mount(resolved if queue_dir or cfg.queue.path else Path("."), validate_nfs=True)
     if mount.mount:
         console.print(f"Mount: {mount.mount.fstype} {mount.mount.source} -> {mount.mount.target}")
@@ -113,18 +121,15 @@ def queue_path_cmd(
 
 @queue_app.command("doctor")
 def queue_doctor(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Diagnose queue path, identity, and NFS mount safety."""
     configure_logging(verbose=verbose, log_file_prefix="queue")
     cfg = load_config()
     ok = True
-    try:
-        resolved = _queue_dir_opt(queue_dir, verify=True)
-        console.print(f"[green]✓[/green] Queue resolves: {resolved}")
-    except typer.Exit:
-        raise
+    resolved = _queue_dir_opt(queue_dir, verify=True)
+    console.print(f"[green]✓[/green] Queue resolves: {resolved}")
     result = validate_queue_mount(resolved, queue_config=cfg.queue, validate_nfs=True)
     for k, v in result.checks.items():
         console.print(f"  {k}: {v}")
@@ -150,7 +155,7 @@ def queue_doctor(
 @queue_app.command("add")
 def queue_add(
     source: str = typer.Argument(..., help="YouTube URL or local audio path"),
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     priority: int = typer.Option(50, "--priority"),
     force: bool = typer.Option(False, "--force"),
     origin: str = typer.Option("manual", "--origin"),
@@ -167,35 +172,192 @@ def queue_add(
         console.print(f"  source_key={result.source_key}")
 
 
+def _list_error(message: str) -> NoReturn:
+    console.print(f"[red]✗[/red] {message}")
+    raise typer.Exit(1)
+
+
+def _looks_like_uuid(value: str) -> bool:
+    stripped = value.strip()
+    if len(stripped) == 32:
+        return True
+    return (
+        len(stripped) == 36
+        and stripped[8] == "-"
+        and stripped[13] == "-"
+        and stripped[18] == "-"
+        and stripped[23] == "-"
+    )
+
+
+def _resolve_list_target(
+    target: str | None, status: str | None
+) -> tuple[str | None, str | None]:
+    """Return ``(status_filter, execution_id)`` for the list command."""
+    if status is not None:
+        status = status.strip()
+        if status not in STATE_DIRS:
+            _list_error(
+                f"Unknown status {status!r}. "
+                f"Valid statuses: {', '.join(STATE_DIRS)}."
+            )
+
+    if target is None:
+        return status, None
+
+    value = target.strip()
+    if value in STATE_DIRS:
+        if status is not None and status != value:
+            _list_error(
+                f"Conflicting status filters: positional {value!r} "
+                f"and --status {status!r}."
+            )
+        return value, None
+
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        if _looks_like_uuid(value):
+            _list_error(
+                f"Invalid UUID {value!r}; expected 8-4-4-4-12 hexadecimal digits."
+            )
+        _list_error(
+            f"Unknown status or invalid UUID {value!r}. "
+            f"Valid statuses: {', '.join(STATE_DIRS)}."
+        )
+
+    if status is not None:
+        _list_error("A UUID selection cannot be combined with --status.")
+    return None, str(parsed)
+
+
 @queue_app.command("list")
 def queue_list(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
-    status: Optional[str] = typer.Option(
+    target: str | None = typer.Argument(
+        None,
+        metavar="STATUS|UUID",
+        help="Optional status or execution UUID (all records when omitted)",
+    ),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
+    status: str | None = typer.Option(
         None,
         "--status",
         help="Filter: pending, processing, retry, completed, failed, cancelled",
     ),
-    origin: Optional[str] = typer.Option(None, "--origin"),
-    limit: int = typer.Option(50, "--limit"),
+    origin: str | None = typer.Option(
+        None,
+        "--origin",
+        help="Filter by origin (also applies to a UUID selection)",
+    ),
+    limit: int = typer.Option(60, "--limit", help="Maximum rows to show"),
+    offset: int = typer.Option(
+        0,
+        "--offset",
+        help="Rows to skip after sorting (must be 0 with a UUID)",
+    ),
+    sort_order: str = typer.Option(
+        "oldest",
+        "--sort",
+        help="Sort by enqueue time: oldest or newest",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """List queue executions (full execution_id for use with retry/show/cancel)."""
     configure_logging(verbose=verbose, log_file_prefix="queue")
-    store = QueueStore(_queue_dir_opt(queue_dir))
-    rows = store.list_executions(status=status, origin=origin, limit=limit)
-    # Plain lines so execution_id is never truncated by Rich table width.
-    for ex in rows:
-        console.print(
-            f"{ex.execution_id}\t{ex.status}\t{ex.priority}\t"
-            f"{ex.source_key}\t{ex.origin}"
+    if limit <= 0:
+        _list_error(f"--limit must be a positive integer (got {limit}).")
+    if offset < 0:
+        _list_error(f"--offset must be zero or greater (got {offset}).")
+    normalized_sort = sort_order.strip().lower()
+    if normalized_sort not in VALID_SORT_ORDERS:
+        _list_error(
+            f"Invalid --sort value {sort_order!r}; expected 'oldest' or 'newest'."
         )
-    console.print(f"Total shown: {len(rows)}")
+
+    status_filter, execution_id = _resolve_list_target(target, status)
+    if execution_id is not None and offset != 0:
+        _list_error(
+            "A UUID selection cannot be combined with a nonzero --offset; "
+            "omit --offset to show the selected execution."
+        )
+
+    store = QueueStore(_queue_dir_opt(queue_dir))
+    sort_value = cast(SortOrder, normalized_sort)
+
+    if execution_id is not None:
+        execution, _ = store.find_execution(execution_id)
+        if (
+            execution is not None
+            and origin is not None
+            and execution.origin != origin
+        ):
+            execution = None
+        ordered = sort_executions(
+            [execution] if execution is not None else [],
+            sort=sort_value,
+        )
+        # UUID selection is always shown from the start; nonzero offsets were
+        # rejected above so pagination cannot hide the selected record.
+        rows, total = paginate_executions(ordered, offset=0, limit=limit)
+        if origin is not None:
+            empty_message = (
+                f"No matching execution for UUID {execution_id} "
+                f"with origin {origin!r}."
+            )
+        else:
+            empty_message = f"No matching execution for UUID {execution_id}."
+    else:
+        rows, total = store.query_executions(
+            status=status_filter,
+            origin=origin,
+            sort=sort_value,
+            offset=offset,
+            limit=limit,
+        )
+        empty_message = "No matching executions."
+
+    # Plain tab-separated lines keep the full execution_id and source intact;
+    # Rich would expand tabs and could truncate/wrap the row.
+    typer.echo("EXECUTION_ID\tENQUEUED\tAGE\tSTATUS\tPRIORITY\tSOURCE\tORIGIN")
+    for ex in rows:
+        typer.echo(
+            "\t".join(
+                [
+                    ex.execution_id,
+                    format_local_timestamp(ex.created_at),
+                    format_age(ex.created_at),
+                    ex.status,
+                    str(ex.priority),
+                    ex.source,
+                    ex.origin,
+                ]
+            )
+        )
+
+    if total == 0:
+        typer.echo(empty_message)
+    elif offset >= total:
+        typer.echo(
+            f"Offset {offset} is beyond the matching count ({total}); no rows shown."
+        )
+
+    shown = len(rows)
+    if shown:
+        start = offset + 1
+        end = offset + shown
+    else:
+        start = end = 0
+    typer.echo(
+        f"Showing {start}-{end} of {total} matching executions "
+        f"(limit={limit}, offset={offset}, sort={normalized_sort})"
+    )
+    typer.echo(f"Timestamps are local time: {local_timezone_label()}")
 
 
 @queue_app.command("show")
 def queue_show(
     execution_id: str = typer.Argument(...),
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Show one execution record."""
     store = QueueStore(_queue_dir_opt(queue_dir))
@@ -210,7 +372,7 @@ def queue_show(
 @queue_app.command("show-source")
 def queue_show_source(
     source_key: str = typer.Argument(...),
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Show reservation and executions for a source key."""
     from local_transcribe.services.source_reservations import read_reservation
@@ -229,7 +391,7 @@ def queue_show_source(
 @queue_app.command("cancel")
 def queue_cancel(
     execution_id: str = typer.Argument(...),
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Cancel a pending execution (pending only)."""
     store = QueueStore(_queue_dir_opt(queue_dir))
@@ -243,7 +405,7 @@ def queue_cancel(
 
 @queue_app.command("stats")
 def queue_stats(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Show counts by state directory."""
     qdir = _queue_dir_opt(queue_dir)
@@ -255,11 +417,11 @@ def queue_stats(
 
 @queue_app.command("purge")
 def queue_purge(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     completed: bool = typer.Option(False, "--completed"),
     failed: bool = typer.Option(False, "--failed"),
     cancelled: bool = typer.Option(False, "--cancelled"),
-    older_than_days: Optional[int] = typer.Option(None, "--older-than-days"),
+    older_than_days: int | None = typer.Option(None, "--older-than-days"),
 ) -> None:
     """Purge terminal execution records (never deletes transcript JSON)."""
     if not any([completed, failed, cancelled]):
@@ -293,8 +455,8 @@ def queue_purge(
 
 @queue_app.command("import")
 def queue_import(
-    pending_file: Path = typer.Argument(..., exists=True, dir_okay=False),
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    pending_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Import URLs from a legacy transcript-pending.md style file."""
@@ -308,8 +470,8 @@ def queue_import(
 
 @queue_app.command("export-pending")
 def queue_export_pending(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
-    output: Optional[Path] = typer.Option(None, "--output", "-o"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
 ) -> None:
     """Export a human-readable report of pending/retry/processing jobs."""
     store = QueueStore(_queue_dir_opt(queue_dir))
@@ -327,7 +489,7 @@ def queue_export_pending(
 
 @queue_app.command("repair")
 def queue_repair(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Repair queue state (requires NLM worker lock)."""
     from local_transcribe.services.worker import promote_retries, recover_processing
@@ -348,11 +510,11 @@ def queue_repair(
 
 @queue_app.command("retry")
 def queue_retry(
-    execution_id: Optional[str] = typer.Argument(
+    execution_id: str | None = typer.Argument(
         None,
         help="Optional execution id. If omitted, retries all failed jobs.",
     ),
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     include_cancelled: bool = typer.Option(
         False,
         "--include-cancelled",

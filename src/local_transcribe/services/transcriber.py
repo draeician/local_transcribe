@@ -19,7 +19,6 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from faster_whisper import WhisperModel
 
@@ -31,6 +30,8 @@ from local_transcribe.utils.hardware import (
     BACKEND_ROCM,
     BackendUnavailableError,
     prepare_gpu_runtime,
+)
+from local_transcribe.utils.hardware import (
     resolve_device_and_compute as _resolve_device_and_compute,
 )
 from local_transcribe.utils.youtube import pick_channel
@@ -38,10 +39,10 @@ from local_transcribe.utils.youtube import pick_channel
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "BackendUnavailableError",
     "BACKEND_CPU",
     "BACKEND_CUDA",
     "BACKEND_ROCM",
+    "BackendUnavailableError",
 ]
 
 
@@ -54,22 +55,22 @@ class TranscribeConfig:
     compute_type: str = "auto"
     output_dir: Path = Path("./out")
     keep_audio: bool = False
-    cookies_from_browser: Optional[str] = None
-    cookies_file: Optional[str] = None
-    language: Optional[str] = None
+    cookies_from_browser: str | None = None
+    cookies_file: str | None = None
+    language: str | None = None
     beam_size: int = 5
     vad_filter: bool = True
-    limit_rate: Optional[str] = None
-    sleep_interval_requests: Optional[float] = None
+    limit_rate: str | None = None
+    sleep_interval_requests: float | None = None
 
 
-def iso8601_from_ts(ts: Optional[float]) -> str:
+def iso8601_from_ts(ts: float | None) -> str:
     """Convert Unix timestamp to ISO8601 string."""
     if ts is None:
         return ""
     try:
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
+    except (OSError, OverflowError, ValueError):
         return ""
 
 
@@ -181,7 +182,7 @@ def transcribe_with_model(
     model: WhisperModel,
     audio_path: Path,
     *,
-    language: Optional[str] = None,
+    language: str | None = None,
     beam_size: int = 5,
     vad_filter: bool = True,
 ) -> str:
@@ -204,7 +205,7 @@ def transcribe_with_model(
 def transcribe_audio(
     audio_path: Path,
     model_name: str = "medium",
-    language: Optional[str] = None,
+    language: str | None = None,
     beam_size: int = 5,
     vad_filter: bool = True,
     device: str = "cpu",

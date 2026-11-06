@@ -1,5 +1,17 @@
 # What's New
 
+## 0.8.0 — Queue list reporting and download-path Deno checks (2026-11-04)
+
+- **`lt queue list [STATUS|UUID]`** now accepts a status or execution UUID positionally, with `--limit`, `--offset`, and `--sort oldest|newest`. Output includes enqueue time (local timezone), age, status, priority, source, origin, and the displayed range.
+- **New defaults:** all execution states, oldest first, limit 60 (was pending-only, limit 50). Pagination is deterministic — sorted after filtering, with the execution ID as a stable secondary key.
+- **No silently ignored filters:** `lt queue list <UUID>` rejects a nonzero `--offset` and honours `--origin`; an unknown-but-valid UUID renders an empty result (exit 0).
+- **Deno is probed only where this process downloads YouTube audio.** `lt queue *`, `lt version`, help output, local-file transcription, and all queue-mode producers/waiters (`lt transcribe <URL> --no-wait`, `lt transcribe <URL>` while waiting, `lt batch` and `--wait`) are quiet on hosts without Deno. Only `--direct` transcribe/batch still show the prerequisite warning; `lt doctor` keeps Deno as an optional diagnostic. Worker download failures surface through the wait outcome (`category: detail`).
+- No queue transition, worker scheduling, ROCm, or transcription behaviour changed.
+
+Docs: [README.md](../README.md) · [CHANGELOG.md](../CHANGELOG.md) · [docs/QUEUE_DESIGN_DECISIONS.md](QUEUE_DESIGN_DECISIONS.md)
+
+---
+
 ## 0.7.0 — AMD ROCm GPU acceleration (2026-10-19)
 
 - **AMD ROCm acceleration** via CTranslate2's official ROCm/HIP build. `--device auto` picks it up automatically; `--device rocm` requires it.
@@ -45,7 +57,7 @@ Default execution is now **queue-first**:
 
 - `lt transcribe` / `lt batch` **enqueue** into a durable NFSv3 queue and (for transcribe) wait for the worker unless `--no-wait`.
 - One host runs `lt worker` (systemd user unit) holding an **NLM exclusive lock**.
-- Use `lt queue stats` to watch backlog; `lt queue list` defaults to pending only.
+- Use `lt queue stats` to watch backlog; `lt queue list` shows all states by default (limit 60, oldest first) and accepts a status or execution UUID positional.
 - Configure cookies with `queue.default_auth_profile` + `auth_profiles` (not a YouTube Data API key).
 - Escape hatch: `--direct` for legacy in-process `BatchPipeline` / single-shot runs.
 - Logs: `~/.local/state/local-transcribe/logs/`.

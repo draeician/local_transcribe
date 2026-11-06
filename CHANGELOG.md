@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-11-04
+
+### Added
+- `lt queue list [STATUS|UUID]` reporting with `--limit`, `--offset`, and `--sort oldest|newest`. The command shows enqueue time, age, status, source, priority, total matching records, and the displayed range. Existing `--status`, `--origin`, and `--limit` options remain supported; `lt queue show <UUID>` is unchanged.
+
+### Changed
+- `lt queue list` now defaults to **all execution states**, oldest first, with a limit of 60 (previously pending-only, limit 50).
+
+### Fixed
+- `lt queue list <UUID>` rejects a nonzero `--offset` instead of silently hiding the selected record, and applies `--origin` instead of ignoring it.
+- The CLI no longer probes Deno at startup for commands that never download. `lt queue list/show/stats/path/doctor`, `lt version`, and help output are quiet on hosts without Deno — including queue-mode producers and waiters: `lt transcribe <URL> --no-wait`, `lt transcribe <URL>` (waiting for the remote worker), `lt batch` (enqueue and `--wait`), and local-file transcription. Deno is still checked (with the prerequisite warning) where this process downloads YouTube audio itself (`lt transcribe <URL> --direct`, `lt batch --direct`), and `lt doctor` keeps reporting Deno availability as an optional diagnostic. Worker download failures still surface through the wait outcome as `category: detail`.
+
+Integrated on `chore/cli-reporting-integration` from task 037 (`feat/queue-list-reporting`: `df60e1e`, `0a571e8`, `bda86ce`, `29e402a`) and task 038 (`fix/deno-startup-warning`: `3b78d5c`, `c6bc375`, `259a0c9`). See `docs/QUEUE_DESIGN_DECISIONS.md` §12–§14.
 
 ## [0.7.0] - 2026-10-19
 

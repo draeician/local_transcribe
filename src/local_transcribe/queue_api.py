@@ -23,7 +23,6 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from local_transcribe.services.atomic_files import fsync_directory, unique_tmp_path
 from local_transcribe.services.queue_models import ExecutionOptions
@@ -130,7 +129,7 @@ def enqueue_youtube_safe(
             options=options,
         )
         return SafeEnqueueOutcome(result=result, fell_back_to_pending=False)
-    except (QueuePathError, OSError, RuntimeError, ValueError) as exc:
+    except (QueuePathError, OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.warning("Queue enqueue failed for %s: %s", url, exc)
         if pending_fallback is None:
             raise

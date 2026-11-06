@@ -24,7 +24,6 @@ from local_transcribe.services.worker import (
     fail_or_retry,
 )
 
-
 runner = CliRunner()
 
 

@@ -6,9 +6,10 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from local_transcribe.services.atomic_files import (
     AtomicFileError,
@@ -187,7 +188,7 @@ def select_next_execution(
     hostname: str | None = None,
     max_interactive_streak: int = 5,
     interactive_streak: int = 0,
-) -> Optional[Execution]:
+) -> Execution | None:
     """Select next pending job by priority then created_at; fairness streak."""
     pending = queue_dir / "pending"
     if not pending.is_dir():
@@ -204,19 +205,18 @@ def select_next_execution(
     if not jobs:
         return None
 
-    interactive = [j for j in jobs if j.priority >= 100]
     noninteractive = [j for j in jobs if j.priority < 100]
 
     def sort_key(j: Execution) -> tuple:
         return (-j.priority, j.created_at, j.execution_id)
 
     if interactive_streak >= max_interactive_streak and noninteractive:
-        return sorted(noninteractive, key=sort_key)[0]
+        return min(noninteractive, key=sort_key)
     pool = jobs
-    return sorted(pool, key=sort_key)[0]
+    return min(pool, key=sort_key)
 
 
-def claim_execution(queue_dir: Path, execution: Execution) -> Optional[Execution]:
+def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
     """Rename pending -> processing. Returns updated execution or None if lost race."""
     src = queue_dir / "pending" / f"{execution.execution_id}.json"
     dest = queue_dir / "processing" / f"{execution.execution_id}.json"
@@ -434,7 +434,7 @@ def run_worker(
             return
         try:
             idle_maintenance()
-        except Exception:  # noqa: BLE001 — idle maintenance is best-effort
+        except Exception:
             logger.exception("Idle model maintenance failed; continuing worker loop")
 
     try:
@@ -514,7 +514,7 @@ def run_worker(
                 else:
                     interactive_streak = 0
                 processed += 1
-            except Exception as exc:  # noqa: BLE001 — job boundary
+            except Exception as exc:
                 logger.exception("Job %s failed", claimed.execution_id)
                 error = classify_job_exception(exc)
                 avail: str | None = None

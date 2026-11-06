@@ -214,3 +214,174 @@ Ownership = NLM. Identity/dedup = reservations. Safety of artifacts = atomic pub
 ## 11. One-sentence summary
 
 This is a **feature** that adds a durable NFSv3 transcription queue and a single **NLM-locked** worker, with permanent source reservations and idempotent publication — an **execution-model rework**, not a pure refactor and not a from-scratch rewrite of transcription itself.
+
+---
+
+## 12. Queue list reporting corrections (2026-11-03)
+
+Task 037 review follow-up. Two edge cases were corrected in `lt queue list`:
+
+| Finding | Decision |
+|---------|----------|
+| A UUID selection plus a nonzero `--offset` could silently hide the selected record. | **Reject** the combination with an actionable error. UUID selection is a single-record lookup, so nonzero offsets are incompatible; normal status/all-record pagination is unchanged. |
+| `--origin` was accepted but ignored for UUID selection. | **Apply** the origin filter to the selected record. A mismatch produces an explicit empty result rather than silently returning the record. |
+
+The governing rule is that filtering and pagination options must never be silently ignored. Implementation is in `src/local_transcribe/cli_queue.py`; regression coverage is in `tests/test_cli_queue.py`.
+
+---
+
+## 13. Deno is probed only on download paths (task 038, 2026-11-04)
+
+**Decision.** The root Typer callback no longer runs any startup probe. Deno
+availability is checked where a YouTube download actually happens:
+`lt transcribe <URL>` (queue or `--direct`) and the legacy `--direct` batch
+pipeline, which keep the prerequisite warning. Local-file transcription, all
+`lt queue *` reporting/management commands, `lt worker *`, `lt cookies *`,
+`lt version`, and help output never touch the probe.
+
+**Why.** The callback-level check ran for every subcommand, so operators on a
+host without Deno saw an install-guidance block before queue statistics, list
+output, or version strings. That noise implied the queue depended on Deno, which
+it does not: producers only write reservation/execution JSON and the worker owns
+downloading. A missing Deno must never interfere with inspecting or managing
+queue records.
+
+**Preserved.** `lt doctor` still reports "Deno Runtime (YouTube)" as an optional
+diagnostic check; `lt update` still fails clearly when Deno is not on PATH. No
+package installation or system configuration was added to any code path. The
+module-level `_startup_warnings_shown` flag was removed with the startup probe it
+guarded.
+
+**Verification.** `tests/test_deno_startup_warnings.py` simulates a host without
+Deno and asserts (a) queue reporting/version/help output carries no Deno warning
+and invokes no probe, (b) YouTube paths still warn, (c) local audio enqueue does
+not probe, (d) `lt doctor` keeps the diagnostic. The suite fails on `origin/main`
+(2 failures reproducing the bug) and passes here.
+
+---
+
+## 14. Producer paths never probe Deno, including `--no-wait` (task 039, 2026-11-04)
+
+Within `lt transcribe <URL>`, the probe now
+runs only when this session actually depends on a YouTube download: it moved from
+the command entry to the queue **wait** path (`--no-wait` returns before it) and to
+the `--direct` URL branch. Consequence: `lt transcribe <URL> --no-wait` is quiet, so
+every producer-only invocation (queue add, batch enqueue, local files, `--no-wait`)
+never probes Deno; a waiting or in-process YouTube transcription still warns.
+Coverage: `test_transcribe_url_no_wait_does_not_probe_deno`,
+`test_transcribe_url_wait_warns_without_deno`, `test_transcribe_direct_url_warns_without_deno`.
+Version synchronized to **0.8.0** across `pyproject.toml`,
+`src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
+`docs/WHATS_NEW.md`; the release decision (merge/tag) remains with review.
+
+---
+
+## 15. Queue clients never probe Deno; queue-list tests isolate XDG (task 039 review corrections, 2026-11-05)
+
+**Decision 1 — queue mode is Deno-free end to end.** The client Deno probe was
+removed from the queue **wait** path as well as the producer paths. In queue
+mode the remote worker performs the download, so `lt transcribe <URL>` (waiting),
+`lt transcribe <URL> --no-wait`, `lt batch`, `lt batch --wait`, local files, and
+all `lt queue *` commands never probe Deno. The probe now runs only where this
+process downloads YouTube audio itself: `lt transcribe <URL> --direct` and
+`lt batch --direct`. `lt doctor` keeps its optional diagnostic and `lt update`
+keeps its hard requirement.
+
+**Why.** Probing on the client while waiting was still wrong: the client only
+observes queue state and may be a different host from the worker. A missing
+client Deno install cannot affect a remote worker's download, and warning there
+reintroduced the misleading implication that the queue depends on Deno.
+
+**Actionability.** The wait outcome continues to print the worker's failure as
+`category: detail` (for example `temporary_forbidden: ERROR: HTTP Error 403`),
+and `lt queue show <UUID>` retains the stored error. Operators diagnose the
+worker host with `lt doctor` / `lt queue doctor`; no worker execution behaviour
+changed.
+
+**Decision 2 — queue-list tests own their XDG configuration.** The task-037
+queue-list tests now install an autouse fixture that points `XDG_CONFIG_HOME`
+and `XDG_STATE_HOME` at the test's temporary directory. Application queue
+identity validation is unchanged: an explicitly configured `expected_uuid` is
+still enforced. The fixture prevents an operator's production config from
+rejecting temporary queues with a UUID mismatch, and the tests pass under both
+empty and production-shaped external configuration.
+
+Coverage: `test_transcribe_url_wait_does_not_probe_deno`,
+`test_transcribe_url_wait_surfaces_worker_failure`,
+`test_batch_queue_wait_does_not_probe_deno`, plus the existing direct-path
+warning tests and the queue-list suite under the autouse XDG fixture.
+---
+
+## 16. Ruff verification gate restored (task 040, 2026-11-06)
+
+**Decision.** Correct all 413 pre-existing Ruff findings on `main` without
+changing the enabled rule set, adding blanket suppressions, or weakening
+`pyproject.toml`.
+
+**Why.** Ruff 0.17's default rule set reports the repository's existing style and
+typing debt (413 findings at `25b89f1`), so a zero-finding gate cannot be
+restored by configuration changes without hiding real findings. The cleanup
+therefore fixes the code and keeps the gate meaningful.
+
+**Typer options.** Path-typed options now use `typing.Annotated`, with the
+`typer.Option`/`typer.Argument` call inside the annotation and the actual default
+on the parameter. This removes the `B008` false positive without suppressing it
+and preserves every option name, default, and required flag.
+
+**Exception handling.** Blind handlers were narrowed to the exceptions each call
+can actually raise, and two best-effort probes use `contextlib.suppress`. Two
+intentional boundaries — the `lt doctor` command and the per-video batch loop —
+keep a targeted, justified `# noqa: BLE001` so a single failure still cannot
+abort diagnostics or the batch. No blanket `noqa` was introduced; four
+pre-existing broad-catch suppressions were removed.
+
+**Small semantic corrections.** Invalid config root/`queue` values now raise
+`TypeError` (the producer fallback in `queue_api` catches it as well); missing
+auth profiles still raise `ValueError`. `WorkerLock.__enter__` annotates `Self`
+imported under `TYPE_CHECKING`, which keeps Python 3.10 imports working without a
+new runtime dependency. The duplicate CLI callback was renamed `app_callback`;
+the console-script entry point remains `main`.
+
+**Verification.** `uvx ruff check --config pyproject.toml src tests` → **0
+findings** (baseline 413). Full suite: 298 passed, 11 skipped; the only baseline
+difference was the documented concurrency timing flake. Version remains `0.7.0`;
+no dependency or rule-config change.
+
+---
+
+## 17. Final v0.8.0 integration (task 041, 2026-11-06)
+
+**Decision.** Combine tasks 039 and 040 on
+`chore/0.8-final-integration` from `origin/main` @ `25b89f1` using two
+`--no-ff` merge commits. No squash, rebase, or history rewrite is used, so both
+reviewed lines remain individually auditable.
+
+**Conflict resolution principle.** Conflicts are resolved by combining both
+sides rather than preferring either branch:
+
+- `__init__.py` keeps `__version__ = "0.8.0"` **and** the
+  `contextlib.suppress` ROCm preload from task 040.
+- `cli.py` keeps the Deno-free queue/producer paths from task 039 **and** the
+  `app_callback` rename from task 040; the console-script entry point stays
+  `main`.
+- `cli_queue.py` keeps 039 positional `STATUS|UUID` filtering with default
+  `limit=60`, `offset=0`, `sort=oldest` **and** 040 `Annotated` Typer options.
+- `queue_store.py` keeps 039 `query_executions` filtering/sorting/pagination
+  under 040's PEP 604 typing.
+- `HANDOFF.md` retains both task histories.
+- The Decision Journal is append-only: 039 §12–§15 are unchanged and the task
+  040 Ruff section is renumbered from §12 to §16 so section numbers stay unique.
+
+**Markdown hygiene.** Two lines introduced by task 039 used Markdown two-space
+hard breaks, which `git diff --check` flags as trailing whitespace. They were
+converted to CommonMark backslash hard breaks on the integration branch so the
+diff gate is clean without changing rendering.
+
+**Verification.** On the combined branch: targeted queue/Deno suite **99
+passed**; full suite **342 passed, 11 skipped** under isolated XDG; Ruff **0
+findings**; `uv build` produced **0.8.0** wheel and sdist; an isolated pipx
+install reported **0.8.0**; disposable-queue operations verified positional
+status filtering, UUID selection, stable pagination, and defaults
+`limit=60/offset=0/oldest-first`. The host has no Deno, yet queue
+inspection/enqueue stayed quiet while `lt transcribe <URL> --direct` still
+emitted the Deno warning. No tests or Ruff configuration were weakened.

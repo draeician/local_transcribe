@@ -164,7 +164,6 @@ def test_cli_worker_run_wires_job_runner(tmp_path: Path, monkeypatch) -> None:
     initialize_queue_layout(tmp_path)
 
     # Patch where cli_worker imports create_default_job_runner at call time
-    import local_transcribe.services.job_runner as job_runner_mod
 
     monkeypatch.setattr(
         "local_transcribe.services.job_runner.create_default_job_runner",

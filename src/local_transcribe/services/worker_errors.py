@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
 
 from local_transcribe.services.downloader import (
     AuthenticationRequiredError,
@@ -141,7 +140,7 @@ def classify_job_exception(exc: BaseException) -> ExecutionError:
     )
 
 
-def parse_iso_timestamp(value: str | None) -> Optional[float]:
+def parse_iso_timestamp(value: str | None) -> float | None:
     """Parse ISO-8601 to epoch seconds; None if missing/unparseable."""
     if not value:
         return None

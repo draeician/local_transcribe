@@ -1,8 +1,6 @@
 """Command-line interface for local transcription."""
 
-import os
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -11,20 +9,25 @@ from rich.table import Table
 from local_transcribe import __version__
 from local_transcribe.logging_setup import configure_logging
 from local_transcribe.services.pipeline import BatchConfig, BatchPipeline
-from local_transcribe.services.reconcile import reconcile as reconcile_service, write_reconcile_outputs
+from local_transcribe.services.reconcile import reconcile as reconcile_service
+from local_transcribe.services.reconcile import write_reconcile_outputs
 from local_transcribe.services.status_store import JsonStatusStore
+from local_transcribe.services.transcriber import (
+    TranscribeConfig,
+    transcribe_local_file,
+    transcribe_url,
+)
 from local_transcribe.services.verify_status import verify_finished_dat, verify_full
-from local_transcribe.services.transcriber import TranscribeConfig, transcribe_local_file, transcribe_url
-from local_transcribe.utils.files import safe_read_lines, safe_write_lines, find_cookies_file
+from local_transcribe.utils.files import safe_read_lines, safe_write_lines
 from local_transcribe.utils.youtube import is_valid_youtube_url
 
 app = typer.Typer(help="Local transcription with Whisper (YouTube URLs or audio files)")
 console = Console(force_terminal=True)
 
 # Queue / worker / cookies sub-apps (SPEC-queue v3)
-from local_transcribe.cli_cookies import cookies_app  # noqa: E402
-from local_transcribe.cli_queue import queue_app  # noqa: E402
-from local_transcribe.cli_worker import worker_app  # noqa: E402
+from local_transcribe.cli_cookies import cookies_app
+from local_transcribe.cli_queue import queue_app
+from local_transcribe.cli_worker import worker_app
 
 app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
@@ -40,9 +43,6 @@ DEFAULT_MODEL = "medium"
 DEFAULT_DEVICE = "auto"
 DEFAULT_COMPUTE_TYPE = "auto"
 DEFAULT_OUTPUT_DIR = Path.home() / "references" / "transcripts"
-
-# Module-level flag to show startup warnings only once
-_startup_warnings_shown = False
 
 
 @app.command(name="version")
@@ -91,13 +91,13 @@ def transcribe(
         "--no-wait",
         help="Enqueue and return without waiting for the worker (queue mode)",
     ),
-    timeout: Optional[float] = typer.Option(
+    timeout: float | None = typer.Option(
         None,
         "--timeout",
         help="Seconds to wait for queue completion (default: wait indefinitely)",
     ),
     force: bool = typer.Option(False, "--force", help="Force a new queue generation"),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """Transcribe one YouTube video or one local audio file.
@@ -128,15 +128,6 @@ def transcribe(
 
     logger = configure_logging(verbose=verbose, log_file_prefix="transcribe")
 
-    from local_transcribe.utils.doctor import check_deno_with_guidance
-
-    if not is_local:
-        deno_available, deno_info = check_deno_with_guidance()
-        if not deno_available:
-            console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
-            console.print(f"[dim]{deno_info}[/dim]")
-            console.print("[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n")
-
     try:
         output_dir_path = Path(output_dir).expanduser()
 
@@ -153,7 +144,10 @@ def transcribe(
         )
 
         if not direct:
-            # Queue mode (default)
+            # Queue mode (default). This is a producer path: it only writes the
+            # reservation/execution JSON, so it never probes Deno. Local audio,
+            # `--no-wait`, and waiting for the remote worker all stay quiet on
+            # hosts without Deno; the worker performs the download.
             from local_transcribe.services.queue_models import ExecutionOptions
             from local_transcribe.services.queue_paths import (
                 QueuePathError,
@@ -209,6 +203,9 @@ def transcribe(
                 )
                 raise typer.Exit(1)
 
+            # Queue mode never probes Deno, even when waiting: the remote
+            # worker performs the download. Worker-side failures are surfaced
+            # through the wait outcome below (`category: detail`).
             from local_transcribe.services.queue_wait import wait_for_execution
 
             console.print("[dim]Waiting for worker…[/dim]")
@@ -238,6 +235,17 @@ def transcribe(
             logger.info(f"Transcribing local file: {expanded.resolve()}")
             result_path = transcribe_local_file(expanded, cfg)
         else:
+            # In-process YouTube download happens in this session: Deno is a
+            # prerequisite here even though no queue wait follows.
+            from local_transcribe.utils.doctor import check_deno_with_guidance
+
+            deno_available, deno_info = check_deno_with_guidance()
+            if not deno_available:
+                console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
+                console.print(f"[dim]{deno_info}[/dim]")
+                console.print(
+                    "[dim]Downloads may fail with HTTP 403 errors without Deno.[/dim]\n"
+                )
             logger.info(f"Transcribing: {raw}")
             result_path = transcribe_url(raw, cfg)
         console.print(f"[green]✓[/green] Done. Wrote: {result_path}")
@@ -256,9 +264,9 @@ def batch(
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
     device: str = typer.Option(DEFAULT_DEVICE, help="Device (auto/cpu/cuda/rocm)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
-    language: Optional[str] = typer.Option(None, "--language", help="Whisper language hint (queue mode)"),
+    language: str | None = typer.Option(None, "--language", help="Whisper language hint (queue mode)"),
     keep_audio: bool = typer.Option(False, "--keep-audio", help="Keep downloaded audio (queue mode)"),
-    auth_profile: Optional[str] = typer.Option(
+    auth_profile: str | None = typer.Option(
         None, "--auth-profile", help="Auth/cookies profile name stored on the execution"
     ),
     output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
@@ -272,7 +280,7 @@ def batch(
         "--wait",
         help="Wait for enqueued/active executions to finish (queue mode)",
     ),
-    timeout: Optional[float] = typer.Option(
+    timeout: float | None = typer.Option(
         None,
         "--timeout",
         help="Seconds to wait per execution when using --wait (default: indefinite)",
@@ -282,7 +290,7 @@ def batch(
         "--direct",
         help="Legacy in-process batch pipeline (bypass queue)",
     ),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """
@@ -383,10 +391,10 @@ def batch(
             console.print("[dim]--wait: nothing active to wait for[/dim]")
         return
     
-    # Check prerequisites
+    # Check prerequisites for the legacy in-process pipeline.
+    # The queue path returned above; a direct batch always downloads URLs.
     from local_transcribe.utils.doctor import check_deno_with_guidance
-    
-    # Always check Deno (required for YouTube downloads)
+
     deno_available, deno_info = check_deno_with_guidance()
     if not deno_available:
         console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
@@ -559,7 +567,7 @@ def reconcile_cmd(
             )
             
             # Print Verification Report
-            console.print(f"\n[bold]Quick Verification Report[/bold]")
+            console.print("\n[bold]Quick Verification Report[/bold]")
             table = Table(show_header=True, header_style="bold")
             table.add_column("Metric")
             table.add_column("Count")
@@ -576,7 +584,7 @@ def reconcile_cmd(
                 console.print(f"\n[yellow]⚠[/yellow] Use [bold]lt batch --input {pending_file_path.name}[/bold] to process missing videos.")
             
             if result.missing_transcripts == 0:
-                console.print(f"\n[green]✓[/green] All transcripts verified successfully!")
+                console.print("\n[green]✓[/green] All transcripts verified successfully!")
             
             return
         
@@ -598,7 +606,6 @@ def reconcile_cmd(
         )
         
         # Update transcript-pending.md if it was used as input
-        pending_file_updated = False
         if input_file.name == "transcript-pending.md":
             actually_pending_urls = [
                 url for url, vid_id in zip(input_urls, input_ids)
@@ -606,12 +613,10 @@ def reconcile_cmd(
             ]
             if actually_pending_urls:
                 safe_write_lines(input_file, actually_pending_urls)
-                pending_file_updated = True
                 console.print(f"\n[green]✓[/green] Updated {input_file.name} with {len(actually_pending_urls)} videos that need processing")
             else:
                 # Remove all URLs if nothing is pending
                 safe_write_lines(input_file, [])
-                pending_file_updated = True
                 console.print(f"\n[green]✓[/green] Cleared {input_file.name} - all videos have transcripts")
         
         # Print summary
@@ -696,7 +701,7 @@ def verify(
         
         # Run verification
         if mode == "quick":
-            logger.info(f"Running quick verification (finished.dat only)")
+            logger.info("Running quick verification (finished.dat only)")
             result = verify_finished_dat(
                 finished_path,
                 output_path,
@@ -705,7 +710,7 @@ def verify(
                 clean_finished=clean_finished,
             )
         else:  # full
-            logger.info(f"Running full verification (batch_status.json + finished.dat)")
+            logger.info("Running full verification (batch_status.json + finished.dat)")
             result = verify_full(
                 finished_path,
                 output_path,
@@ -729,13 +734,13 @@ def verify(
             console.print(f"\n[green]✓[/green] Updated pending file: {pending_path}")
         
         if result.finished_cleaned:
-            console.print(f"[green]✓[/green] Cleaned finished.dat: removed invalid entries")
+            console.print("[green]✓[/green] Cleaned finished.dat: removed invalid entries")
         
         if result.missing_transcripts > 0:
             console.print(f"\n[yellow]⚠[/yellow] Found {result.missing_transcripts} missing transcript(s)")
-            console.print(f"URLs have been added to pending file and marked as pending in status store")
+            console.print("URLs have been added to pending file and marked as pending in status store")
         else:
-            console.print(f"\n[green]✓[/green] All transcripts verified successfully!")
+            console.print("\n[green]✓[/green] All transcripts verified successfully!")
         
     except Exception as e:
         logger.error(f"Verification failed: {e}", exc_info=verbose)
@@ -755,7 +760,7 @@ def status(
         "-o",
         help=f"Transcript / compat output directory (defaults to {DEFAULT_OUTPUT_DIR})",
     ),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     write_compat: bool = typer.Option(
         True,
         "--write-compat/--no-write-compat",
@@ -819,7 +824,7 @@ def status(
             console.print(f"Worker NLM lock: {summary.worker_lock}")
             if summary.worker_state_active:
                 console.print(
-                    f"Worker state: active"
+                    "Worker state: active"
                     + (
                         f" (execution={summary.worker_current_execution_id})"
                         if summary.worker_current_execution_id
@@ -890,7 +895,7 @@ def report(
         str(Path.home() / ".local" / "state" / "local-transcribe" / "failed_videos.txt"),
         help="Output report file",
     ),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     write_compat: bool = typer.Option(
         True,
         "--write-compat/--no-write-compat",
@@ -1071,6 +1076,7 @@ def doctor(
     a CPU-only system.
     """
     import sys
+
     from local_transcribe.utils.doctor import run_diagnostics
     
     output_console = Console(file=sys.stdout, force_terminal=True)
@@ -1106,7 +1112,7 @@ def doctor(
         
     except typer.Exit:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — doctor CLI boundary reports any failure
         output_console.print(f"[red]✗[/red] Error: {e}")
         if verbose:
             import traceback
@@ -1115,32 +1121,19 @@ def doctor(
 
 
 @app.callback(invoke_without_command=True)
-def main(
+def app_callback(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show version and exit"),
 ):
     """Local transcription with Whisper (YouTube URLs or audio files)."""
-    global _startup_warnings_shown
-    
     # Handle --version flag
     if version:
         console.print(f"local-transcribe version {__version__}")
         raise typer.Exit(0)
-    
-    # Show startup warnings once per session (only for actual commands, not --help).
-    # Deno is needed for YouTube downloads only; no package is ever installed here.
-    if not _startup_warnings_shown and ctx.invoked_subcommand is not None:
-        from local_transcribe.utils.doctor import check_deno_with_guidance
 
-        deno_available, deno_info = check_deno_with_guidance()
-        if not deno_available:
-            console.print("\n[yellow]⚠️  Warning: Deno runtime not detected[/yellow]")
-            console.print(f"[dim]{deno_info}[/dim]")
-
-        if not deno_available:
-            console.print()  # Add spacing before command output
-
-        _startup_warnings_shown = True
+    # No unconditional startup probes here: Deno matters only for YouTube
+    # downloads, so each download path checks it when it is actually needed.
+    # Inspecting or managing the queue must stay quiet even without Deno.
     
     # If a subcommand is being invoked, let it handle everything
     if ctx.invoked_subcommand is not None:

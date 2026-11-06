@@ -15,7 +15,6 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
 
 
 @dataclass(frozen=True)
@@ -28,7 +27,7 @@ class DiagnosticCheck:
     required: bool = True
 
 
-def check_required_modules() -> Tuple[bool, str]:
+def check_required_modules() -> tuple[bool, str]:
     """Verify the required inference/download dependency set (no torch/nvidia)."""
     required = {
         "ctranslate2": "ctranslate2",
@@ -36,7 +35,7 @@ def check_required_modules() -> Tuple[bool, str]:
         "yt-dlp": "yt_dlp",
         "soundfile": "soundfile",
     }
-    missing: List[str] = []
+    missing: list[str] = []
     for label, module in required.items():
         try:
             importlib.import_module(module)
@@ -47,32 +46,32 @@ def check_required_modules() -> Tuple[bool, str]:
     return True, "ctranslate2, faster-whisper, yt-dlp, soundfile present"
 
 
-def check_cpu_backend() -> Tuple[bool, str]:
+def check_cpu_backend() -> tuple[bool, str]:
     """Confirm CTranslate2 can actually run CPU inference."""
     from local_transcribe.utils.hardware import supported_compute_types
 
     types = supported_compute_types("cpu")
     if not types:
         return False, "ctranslate2 reports no CPU compute types"
-    preferred = "int8" if "int8" in types else sorted(types)[0]
+    preferred = "int8" if "int8" in types else min(types)
     return True, f"CPU inference healthy (compute_type={preferred}; supported={', '.join(sorted(types))})"
 
 
-def check_nvidia_smi() -> Tuple[bool, str]:
+def check_nvidia_smi() -> tuple[bool, str]:
     """Check whether a working NVIDIA GPU/driver is visible."""
     from local_transcribe.utils.hardware import detect_nvidia_gpu
 
     return detect_nvidia_gpu()
 
 
-def check_amd_gpu() -> Tuple[bool, str]:
+def check_amd_gpu() -> tuple[bool, str]:
     """Check whether an AMD GPU/ROCm compute device is visible."""
     from local_transcribe.utils.hardware import detect_amd_gpu
 
     return detect_amd_gpu()
 
 
-def check_gpu_runtime() -> Tuple[bool, str]:
+def check_gpu_runtime() -> tuple[bool, str]:
     """Check whether CTranslate2 can actually execute on a GPU (CUDA or ROCm)."""
     from local_transcribe.utils import hardware
 
@@ -92,12 +91,12 @@ def check_gpu_runtime() -> Tuple[bool, str]:
     )
 
 
-def check_cuda_runtime() -> Tuple[bool, str]:
+def check_cuda_runtime() -> tuple[bool, str]:
     """Backward-compatible alias for :func:`check_gpu_runtime`."""
     return check_gpu_runtime()
 
 
-def check_rocm_sdk() -> Tuple[bool, str]:
+def check_rocm_sdk() -> tuple[bool, str]:
     """Report whether ROCm SDK libraries are discoverable (no root needed)."""
     from local_transcribe.utils.hardware import rocm_sdk_library_dirs
 
@@ -109,7 +108,7 @@ def check_rocm_sdk() -> Tuple[bool, str]:
     return True, f"ROCm libraries under: {listing}{suffix}"
 
 
-def check_ffmpeg() -> Tuple[bool, str]:
+def check_ffmpeg() -> tuple[bool, str]:
     """Check if ffmpeg is available."""
     try:
         result = subprocess.run(
@@ -117,6 +116,7 @@ def check_ffmpeg() -> Tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             version_line = result.stdout.split("\n")[0]
@@ -126,14 +126,15 @@ def check_ffmpeg() -> Tuple[bool, str]:
         return False, "ffmpeg not found"
     except subprocess.TimeoutExpired:
         return False, "ffmpeg timeout"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         return False, f"Error: {e}"
 
 
-def check_yt_dlp() -> Tuple[bool, str]:
+def check_yt_dlp() -> tuple[bool, str]:
     """Check if yt-dlp is available (module + downloader binary)."""
     try:
         import yt_dlp
+
         from local_transcribe.utils.ytdlp_update import (
             find_yt_dlp_binary,
             get_yt_dlp_version,
@@ -145,11 +146,11 @@ def check_yt_dlp() -> Tuple[bool, str]:
         return True, f"module={mod_ver}; binary={binary} ({bin_ver})"
     except ImportError:
         return False, "yt-dlp not installed"
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError, ValueError, TypeError) as e:
         return False, f"Error: {e}"
 
 
-def check_deno() -> Tuple[bool, str]:
+def check_deno() -> tuple[bool, str]:
     """Check if Deno is installed and accessible (YouTube downloads only)."""
     try:
         result = subprocess.run(
@@ -157,6 +158,7 @@ def check_deno() -> Tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             version_line = result.stdout.split("\n")[0]
@@ -175,16 +177,17 @@ def check_deno() -> Tuple[bool, str]:
                         capture_output=True,
                         text=True,
                         timeout=5,
+                        check=False,
                     )
                     if result.returncode == 0:
                         version_line = result.stdout.split("\n")[0]
                         return True, f"{version_line.strip()} (found at {path})"
-                except Exception:
+                except (OSError, subprocess.SubprocessError):
                     continue
         return False, "deno not found (only needed for YouTube downloads)"
     except subprocess.TimeoutExpired:
         return False, "deno timeout"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         return False, f"Error: {e}"
 
 
@@ -200,7 +203,7 @@ Install with:
 For more information, visit: https://deno.com/"""
 
 
-def check_deno_with_guidance() -> Tuple[bool, str]:
+def check_deno_with_guidance() -> tuple[bool, str]:
     """Check if Deno is installed, returning guidance if missing."""
     is_available, result = check_deno()
     if is_available:
@@ -219,17 +222,11 @@ def is_pipx_environment() -> bool:
     if "pipx" in str(python_path).lower() or ".local/pipx" in str(python_path):
         return True
 
-    try:
-        venv_parent = python_path.parent.parent
-        if venv_parent.name == "venvs" and "pipx" in str(venv_parent):
-            return True
-    except Exception:
-        pass
-
-    return False
+    venv_parent = python_path.parent.parent
+    return venv_parent.name == "venvs" and "pipx" in str(venv_parent)
 
 
-def run_diagnostics() -> List[DiagnosticCheck]:
+def run_diagnostics() -> list[DiagnosticCheck]:
     """Run all diagnostic checks, required checks first.
 
     Returns an ordered list; the CLI fails only if a ``required`` check is not ok.

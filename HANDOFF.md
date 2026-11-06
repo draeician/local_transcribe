@@ -943,6 +943,672 @@ contention, not a code path. The steady-state numbers above are reproducible.
   `src/local_transcribe/__init__.py`, `project_spec.md`, and `CHANGELOG.md`.
   No tag pushed (not declared an official release here).
 
+## Implementation — queue list reporting (task 037)
+
+Date: 2026-11-03
+Agent: OpenCode
+Branch: `feat/queue-list-reporting`, based on `origin/main` at `25b89f1`.
+Task file: `.crules/tasks/review/037-queue-list-reporting.md`.
+Feature commit: `df60e1e` (`feat(queue): add filtered and paginated queue list reporting`).
+
+### What changed
+
+- `lt queue list [STATUS|UUID] [--limit N] [--offset N] [--sort oldest|newest]`
+  now lists all execution states by default (`--limit 60`, `--offset 0`,
+  `--sort oldest`).
+- Positional input accepts any of `pending`, `processing`, `retry`,
+  `completed`, `failed`, `cancelled`, or a UUID. A UUID selects one execution;
+  an unknown but valid UUID renders an empty result (exit 0).
+- Existing `--status`, `--origin`, and `--limit` options remain available. A
+  positional status and `--status` must agree; a UUID cannot be combined with
+  `--status`.
+- Output is tab-separated and includes execution ID, enqueue timestamp in local
+  time with timezone abbreviation/offset, age, status, priority, source, and
+  origin. The footer reports `Showing start-end of total`, limit/offset/sort,
+  and the local timezone.
+- `QueueStore.query_executions()` performs read-only filtering (state
+  directory), sorting by `created_at`, and pagination after filtering. Ties use
+  the execution ID as a deterministic secondary key.
+- Invalid negative offsets, nonpositive limits, unknown statuses, malformed
+  UUIDs, and invalid sort values exit 1 with actionable messages.
+- No worker scheduling, queue transition, ROCm, or transcription code changed.
+  No schema migration or timestamp synthesis was introduced.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/cli_queue.py` | new list interface, validation, local-time/age rendering |
+| `src/local_transcribe/services/queue_listing.py` (new) | pure timestamp, age, sort, pagination helpers |
+| `src/local_transcribe/services/queue_store.py` | read-only `query_executions()` |
+| `tests/test_cli_queue.py` | 28 new regression tests |
+| `README.md`, `QUICK_REFERENCE.md`, `AGENTS.md`, `docs/QUEUE_OPERATOR.md`, `docs/WHATS_NEW.md` | updated list defaults/examples |
+| `CHANGELOG.md` | `[Unreleased]` entry (no version bump) |
+| `.crules/tasks/review/037-queue-list-reporting.md` | task moved to review with coder notes |
+
+### Verification
+
+Environment note: the checked-in `.venv`/`venv` are broken (no packages), and
+the pipx environment has runtime dependencies but no pytest. Tests were run with
+the system pytest and the pipx site-packages on `PYTHONPATH`. `TERM=dumb`
+disables Rich color for the four pre-existing ANSI-sensitive tests.
+
+| Command | Result |
+|---------|--------|
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q tests/test_cli_queue.py tests/test_queue_store.py` | **39 passed** |
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q` | **326 passed, 11 skipped** |
+| same full suite with normal color terminal | 4 failed, 322 passed, 11 skipped; the 4 failures are the pre-existing Rich/ANSI `test_update` + `test_cli_queue` set (reproduced on `main` before edits). The pre-existing `test_queue_concurrency::test_concurrent_force_single_current_generation` race also failed intermittently on both `main` and this branch and passed on rerun. |
+| `uvx ruff check --config pyproject.toml src/local_transcribe/cli_queue.py src/local_transcribe/services/queue_store.py src/local_transcribe/services/queue_listing.py tests/test_cli_queue.py` | 40 findings, all pre-existing style classes (`B008`, `UP045`, `TRY203`, `UP035`); baseline HEAD versions of the same tracked files had 45. New `queue_listing.py` alone: **All checks passed** |
+| `PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m local_transcribe.cli version` | `local-transcribe version 0.7.0` |
+| `PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m local_transcribe.cli doctor` | exit 1: environment missing `ffmpeg`; unrelated to this change |
+
+`$PIPX_SITE` = `~/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+
+### Blockers / open items
+
+- None for review. The only full-suite failures seen under a color terminal are
+  pre-existing and disappear with `TERM=dumb`; the concurrency test remains
+  timing-flaky on `main` and this branch.
+- Package version intentionally remains `0.7.0`; the change is recorded under
+  `[Unreleased]`. Version bump/merge/release is for review approval.
+
+### Recommended next step
+
+Review `feat/queue-list-reporting`, especially the UUID-not-found semantics and
+the new default (all states, limit 60), then merge if approved. Do not release
+or upgrade production before review.
+
+## Correction — queue list UUID filters (task 037 follow-up)
+
+Date: 2026-11-03
+Agent: OpenCode
+Branch: `feat/queue-list-reporting`, based on feature commit `df60e1e`.
+Correction commit: `bda86ce` (`fix(queue): honor UUID filters in queue list`).
+
+### Findings corrected
+
+1. **UUID selection + nonzero `--offset` could silently hide the record.**
+   A UUID now rejects any nonzero `--offset` with:
+   `A UUID selection cannot be combined with a nonzero --offset; omit --offset to show the selected execution.`
+   `--offset 0` remains valid. Normal status/all-record pagination is
+   unchanged.
+2. **`--origin` was accepted but ignored for UUID selection.**
+   The origin filter is now applied to the selected execution. A mismatch
+   returns exit 0 with
+   `No matching execution for UUID <id> with origin '<origin>'.`
+   No filtering option is silently ignored.
+
+Decision recorded in `docs/QUEUE_DESIGN_DECISIONS.md` §13. Task 037 was moved
+back to `wip/` during the correction and returned to `review/` before commit.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/cli_queue.py` | reject UUID+nonzero offset; apply origin to UUID selection; help text |
+| `tests/test_cli_queue.py` | regression tests for both findings |
+| `README.md`, `QUICK_REFERENCE.md`, `CHANGELOG.md` | document UUID offset/origin behavior |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | correction decision |
+| `.crules/tasks/review/037-queue-list-reporting.md` | review status + correction notes |
+
+### Verification
+
+| Command | Result |
+|---------|--------|
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q tests/test_cli_queue.py tests/test_queue_store.py` | **41 passed** |
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q` | **328 passed, 11 skipped** |
+| normal color terminal full suite | 4 failed, 324 passed, 11 skipped; the same pre-existing Rich/ANSI `test_update` + `test_cli_queue` failures reproduced on `main` |
+| `uvx ruff check --config pyproject.toml …changed Python files…` | **40 findings**, identical to the pre-correction HEAD baseline (0 new) |
+| `uvx ruff check --config pyproject.toml src/local_transcribe/services/queue_listing.py` | **All checks passed** |
+| `uv build --out-dir /tmp/opencode/lt-dist` | built `local_transcribe-0.7.0.tar.gz` and `local_transcribe-0.7.0-py3-none-any.whl` |
+
+### Read-only performance (synthetic queue, no production data)
+
+Created `/tmp/opencode/lt-queue-list-perf` with **6,430** execution records
+(100 pending, 50 processing, 50 retry, 6,000 completed, 200 failed, 30
+cancelled). No production queue directory was read or modified.
+
+| Case | CLI end-to-end median (3 runs) |
+|------|--------------------------------|
+| all/default (`--limit 60`) | **1.269 s** |
+| `completed` status filter | **1.135 s** |
+| UUID selection | **0.544 s** |
+| `completed --offset 5900 --limit 60` | **1.171 s** |
+
+Store-level medians (5 runs): all/default **0.614 s**, completed **0.570 s**,
+direct UUID lookup **~0.000 s**. CLI timings include Python startup and the
+Deno warning path.
+
+### Blockers / open items
+
+- None for review. The only full-suite failures under a color terminal are the
+  pre-existing ANSI-sensitive tests; they pass with `TERM=dumb`.
+- Version remains `0.7.0`; no merge, tag, release, or Aether upgrade was done.
+
+## Fix — unnecessary Deno startup warnings (DENO-STARTUP-QUIET)
+
+Date: 2026-11-04 (UTC)
+Agent: pi
+Branch: `fix/deno-startup-warning`, based on `origin/main` at `25b89f1`.
+Task record: `.crules/tasks/review/038-deno-startup-warning.md`
+Type: `fix` (patch; recorded under `[Unreleased]`)
+
+### Investigated / changed
+
+**Root cause.** The root Typer callback (`main`, `@app.callback`) in
+`src/local_transcribe/cli.py` called `check_deno_with_guidance()` for *every*
+subcommand (guarded by the module-level `_startup_warnings_shown` flag). On a
+host without Deno this printed the full install-guidance block before queue
+statistics, list output, version strings, and sub-app help. Reproduced with the
+installed CLI: `lt queue list`, `lt version`, `lt --version`, `lt queue --help`,
+and `lt doctor` all emitted "⚠️ Warning: Deno runtime not detected".
+
+**Fix.** The callback performs no probe at all; `_startup_warnings_shown` was
+removed with the probe it guarded. Deno is now checked only where a YouTube
+download actually happens:
+- `transcribe`: the probe moved inside `if not is_local`, so local audio files
+  never touch it and queue/local paths stay quiet.
+- `batch --direct`: keeps its prerequisite warning (that pipeline always
+  downloads URLs); the queue branch returns before reaching that code.
+`lt doctor` retains "Deno Runtime (YouTube)" as an optional diagnostic via
+`run_diagnostics()`, and `lt update` still fails clearly when Deno is absent.
+No package installation or system configuration was added anywhere. Worker,
+job runner, download admission, queue store, and ROCm code were not touched.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/cli.py` | removed callback-level Deno probe + `_startup_warnings_shown`; transcribe probe scoped to non-local sources; direct-batch comment clarified (10 insertions, 24 deletions) |
+| `tests/test_deno_startup_warnings.py` | new regression suite, 10 tests, simulating a host without Deno and recording every probe call |
+| `CHANGELOG.md` | `[Unreleased] → Fixed` entry |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | §13 append-only decision record |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | §13 append-only decision record |
+| `README.md`, `AGENTS.md` | state the warning is download-path only |
+| `.crules/tasks/review/038-deno-startup-warning.md` | task record with acceptance + evidence |
+
+### Verification
+
+| Command | Result |
+|---------|--------|
+| `TERM=dumb PYTHONPATH=src:$PIPX_SITE /usr/bin/python3 -m pytest -q tests/test_deno_startup_warnings.py` | **10 passed** |
+| Same suite run against an `origin/main` worktree (`25b89f1`) | **2 failed, 8 passed** — the two failures reproduce this bug (`queue list` prints the warning; `_startup_warnings_shown` still present) |
+| `pytest -q tests/test_deno_startup_warnings.py tests/test_cli_queue.py tests/test_update.py tests/test_cli_batch_queue.py tests/test_cli_transcribe_queue.py` | **48 passed** |
+| Full suite, 5 consecutive runs on this branch (`TERM=dumb`) | 308 passed / 1 failed+307 / 308 / 308 / 308 (11 skipped every run) |
+| Full suite on `origin/main` worktree, 5 runs | 298 / 1 failed+297 / 1 failed+297 / 298 / 298 (11 skipped) |
+| `uvx ruff check --config pyproject.toml src tests` on this branch vs `origin/main` | **413 findings both** — identical per-rule counts; only difference is the line number in the pre-existing duplicate-`main` F811 (1117 vs 1118). **0 new findings.** |
+| `/…pipx venv…/python -m compileall src/local_transcribe/cli.py tests/test_deno_startup_warnings.py` + AST parse | OK |
+| `uv build --out-dir /tmp/pi-build` | built `local_transcribe-0.7.0.tar.gz` and `local_transcribe-0.7.0-py3-none-any.whl` |
+
+**Real CLI check on this host (no Deno on PATH, real queue in a temp dir):**
+`lt version`, `--version`, `queue list`, `queue stats`, `queue path`,
+`queue doctor`, `--help`, `queue --help` are all warning-free; `transcribe
+https://youtu.be/dQw4w9WgXcQ` still prints the Deno warning plus the HTTP 403
+note before enqueuing; `transcribe <local>.m4a` enqueues silently; `lt doctor`
+still lists "Deno Runtime (YouTube) … deno not found (only needed for YouTube
+downloads)" as optional.
+
+### Baseline exceptions (pre-existing, reproduced on origin/main)
+
+- `tests/test_queue_concurrency.py::test_concurrent_enqueue_one_active` and
+  `…::test_concurrent_force_single_current_generation` are timing-flaky under a
+  loaded machine: they pass in isolation on both branches and intermittently fail
+  inside the full-suite run on **both** this branch (1/5 runs) and `origin/main`
+  (2/5 runs). Not caused by this change; not suppressed, not weakened.
+- Ruff reports 413 findings repo-wide at baseline (`F401`, `UP045`, `I001`,
+  `RUF100`, the duplicate `main` F811 in `cli.py`). Left untouched — out of scope.
+
+### Blockers / open items
+
+- None blocking review. No Deno installation or system change was performed.
+- Version remains `0.7.0`; this fix is recorded under `[Unreleased]`. The patch
+  bump to `0.7.1` (fix per GIT_POLICY) is a merge/release decision for review,
+  matching how task 037 was staged.
+
+### Recommended next step
+
+Review `fix/deno-startup-warning`; if approved, merge into `main`, apply the
+patch version bump consistently (`pyproject.toml` +
+`src/local_transcribe/__init__.py`) or fold it into the next release, then move
+task 038 to `done/`. Do not upgrade production before review.
+
+## Integration — CLI reporting + Deno probe scope, version 0.8.0 (task 039, 2026-11-04)
+
+Branch `chore/cli-reporting-integration` from `origin/main` @ `25b89f1`. Integrates task 037
+(`feat/queue-list-reporting`) and task 038 (`fix/deno-startup-warning`) into one reviewable
+branch. **No merge into main, no tag, no branch deletion, no production queue or Aether change.**
+
+### What was changed
+
+- `feat/queue-list-reporting` merged with `--no-ff` (merge commit `25be670`) so its four commits
+  stay reachable exactly as authored: `df60e1e`, `0a571e8`, `bda86ce`, `29e402a`.
+- `fix/deno-startup-warning` applied with `git cherry-pick`; authorship, dates and message bodies
+  preserved (new SHAs `0e83077`, `2f247c4`, `1a4e931` for `3b78d5c`, `c6bc375`, `259a0c9`).
+  Conflicts were documentation-only (`CHANGELOG.md`, `docs/QUEUE_DESIGN_DECISIONS.md`,
+  `HANDOFF.md`); the Deno decision is renumbered §13 and the task 039 refinement recorded as §14.
+- **Integration refinement** in `src/local_transcribe/cli.py`: the Deno probe moved from the
+  `lt transcribe` entry to (a) the queue **wait** path, before `wait_for_execution`, and (b) the
+  `--direct` URL branch. Consequence: `lt transcribe <URL> --no-wait` — a producer-only call that
+  only writes reservation/execution JSON — no longer probes Deno; local-file transcription,
+  `lt batch` queue-mode enqueue, `lt queue *`, version and help remain quiet. Waiting or
+  in-process YouTube transcription still warns with the HTTP 403 note; `lt doctor` keeps the
+  optional diagnostic row; the `lt update` hard gate is unchanged.
+- Version synchronized to **0.8.0**: `pyproject.toml`, `src/local_transcribe/__init__.py`,
+  `project_spec.md`, `CHANGELOG.md` (`[Unreleased]` → `[0.8.0] - 2026-11-04`), new
+  `docs/WHATS_NEW.md` section.
+- `tests/test_deno_startup_warnings.py` now 14 tests: added
+  `test_transcribe_url_no_wait_does_not_probe_deno`,
+  `test_transcribe_url_wait_warns_without_deno`,
+  `test_transcribe_direct_url_warns_without_deno`. One assertion corrected to the task 037 output
+  shape (the `SOURCE` column carries the recorded source URL, not the `youtube:<id>` key). No
+  existing assertion was weakened.
+
+### Verification evidence
+
+Environment: checked-in `.venv`/`venv` are empty; pipx venv has runtime deps but no pytest. Tests
+ran with system pytest plus `PYTHONPATH=src:$PIPX_SITE`
+(`$PIPX_SITE=/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`),
+`TERM=dumb` for the ANSI-sensitive assertions.
+
+| Check | Result |
+|-------|--------|
+| Targeted suites (Deno, queue store/list, transcribe/batch queue, update) | **86 passed** on this branch |
+| Full suite ×5, integration vs `origin/main` worktree @ `25b89f1` | identical failure classes; only the timing-flaky `test_queue_concurrency.py` cases appear intermittently on **both** (pass in isolation) |
+| Ruff (`uvx ruff check --config pyproject.toml src tests`) | 408 findings vs baseline 413 — strictly fewer, 0 new findings in changed files |
+| `uv build --out-dir /tmp/pi-integration-dist` | `local_transcribe-0.8.0.tar.gz` + `-py3-none-any.whl`; wheel METADATA `Version: 0.8.0` |
+| Isolated install `/tmp/lt-venv-080` (production pipx untouched) | `importlib.metadata.version('local-transcribe') == 0.8.0`, `__version__ == 0.8.0`; production pipx still reports **0.7.0** |
+| Upgrade detection | installed 0.7.0 vs wheel 0.8.0 → detected as an upgrade; isolated `lt version` prints `local-transcribe version 0.8.0` |
+
+**Real CLI smoke on this host (no Deno on PATH, throwaway queue dir under `/tmp`, removed after;
+real `~/.config/local-transcribe/config.yaml` and production queue untouched):**
+`lt version`, `--version`, `queue list/stats/path/doctor`, `--help`, `queue --help` warning-free.
+`transcribe <URL> --no-wait` enqueues silently (`✓ Queue enqueued: youtube:9bZkp7q19f0`,
+`--no-wait: not waiting for worker`) with no Deno block. Local `.m4a` enqueue silent. Waiting
+YouTube `transcribe <URL>` still prints the full Deno guidance plus the HTTP 403 note before
+waiting. `lt doctor` lists "Deno Runtime (YouTube) … deno not found (only needed for YouTube
+downloads) (optional)"; `lt update --dry-run` fails closed with "✗ Deno is not on PATH".
+Queue list reporting verified live: default 3-column-ordered oldest-first table with
+ENQUEUED/AGE/STATUS/PRIORITY/SOURCE/ORIGIN, `Showing 1-N of N (limit=60, offset=0, sort=oldest)`,
+`--limit/--offset` paging (`Showing 0-0 of 1 … offset=1` beyond end), `--sort newest`, positional
+status filter and UUID selection, UUID + nonzero `--offset` rejected with exit 1, UUID + mismatched
+`--origin` renders an explicit empty result (exit 0).
+
+### Test-isolation finding (documented, not suppressed)
+
+With a **production-shaped** config present (`queue.path` + `expected_uuid: 8c6fc098…`, supplied
+to the test process through an isolated `XDG_CONFIG_HOME` copy — the real user config was never
+modified), `tests/test_cli_batch_queue.py`, `test_cli_transcribe_queue.py`,
+`test_deno_startup_warnings.py` and `test_update.py` are green on this branch: **45 passed** with
+the same 6 pre-existing `test_cli_batch_queue.py` failures that fail identically on baseline main
+(diffed failure lists: identical). The task-037 `test_queue_list_*` tests do not pin
+`XDG_CONFIG_HOME`, so they inherit the operator config and fail against tmp-path queues with
+"Queue UUID mismatch … expected 8c6fc098…" — this is a test-isolation gap in those new tests, not
+a behaviour regression; baseline main has no such tests. Recommend a follow-up to add the
+`monkeypatch.setenv("XDG_CONFIG_HOME", …)` isolation used by the neighbouring tests.
+
+### Blockers / open items
+
+- None blocking review. No Deno installation, worker/ROCm/job-runner edit, service restart, or
+  production data change was performed.
+- Version 0.8.0 is staged on this branch only; merge/tag/publish and any Aether upgrade belong to
+  review.
+
+### Recommended next step
+
+Review `chore/cli-reporting-integration` (both feature lines plus the probe-scope refinement).
+If approved: merge into `main`, tag `v0.8.0`, then upgrade the production pipx install and restart
+the NLM-locked worker only after isolated validation, and schedule the test-isolation follow-up
+for `test_queue_list_*`.
+
+## Review corrections — task 039 (2026-11-05)
+
+Agent: OpenCode (task reassigned from the cancelled Pi agent). Branch
+`chore/cli-reporting-integration`, starting at `23626c0`, verified equal to
+`origin/chore/cli-reporting-integration` before any edit. GitHub state at
+reassignment: `main` still `25b89f1`, integration branch still `23626c0`, version
+0.8.0 staged, no Pi corrections pushed. No Pi process was restarted and no
+unfinished Pi work was recovered.
+
+Task 039 was claimed by OpenCode and moved from `review/` back to `wip/` before
+coding. Scope was limited to the two outstanding review corrections.
+
+Correction commits on `chore/cli-reporting-integration`:
+`25fb167` (test isolation), `6a2078d` (Deno queue-client fix + docs),
+`3c64e6d` (task/HANDOFF evidence), `9a57bac` (task scope alignment). Branch head
+was verified against `origin` after each push; `main` remained at `25b89f1`.
+
+### Correction 1 — queue-list test isolation
+
+`tests/test_cli_queue.py` now installs an autouse fixture that sets
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` under each test's `tmp_path`. The task-037
+queue-list tests previously inherited the operator's real config; when it held a
+production `expected_uuid`, temporary queues failed identity validation with a
+UUID mismatch. The fixture isolates tests only. Application queue-identity
+validation, production configuration, and all assertions are unchanged.
+
+### Correction 2 — queue clients never probe Deno
+
+`src/local_transcribe/cli.py` no longer probes Deno on the queue wait path.
+Queue mode is Deno-free for `lt transcribe <URL> --no-wait`, `lt transcribe
+<URL>` including waiting, `lt batch` including `--wait`, local files, and all
+`lt queue *` commands. `lt transcribe <URL> --direct` and `lt batch --direct`
+retain the prerequisite warning; `lt doctor` keeps its optional diagnostic and
+`lt update` its hard gate. Worker-side failures still reach the waiting client
+as `category: detail`; worker execution behaviour was not changed.
+
+Tests changed in `tests/test_deno_startup_warnings.py`:
+`test_transcribe_url_wait_does_not_probe_deno` replaces the old wait-warns
+assertion; new `test_transcribe_url_wait_surfaces_worker_failure` and
+`test_batch_queue_wait_does_not_probe_deno`. Docs updated: `CHANGELOG.md`,
+`docs/WHATS_NEW.md`, `README.md`, `AGENTS.md`, and
+`docs/QUEUE_DESIGN_DECISIONS.md` §15.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `tests/test_cli_queue.py` | autouse isolated XDG fixture |
+| `src/local_transcribe/cli.py` | removed queue-wait Deno probe; comments |
+| `tests/test_deno_startup_warnings.py` | wait/batch-wait no-probe + actionable-failure tests |
+| `CHANGELOG.md`, `docs/WHATS_NEW.md`, `README.md`, `AGENTS.md` | corrected Deno scope |
+| `docs/QUEUE_DESIGN_DECISIONS.md` | append-only §15 |
+| `.crules/tasks/review/039-cli-reporting-integration.md` | review status, corrections, evidence |
+| `HANDOFF.md` | this section |
+
+### Verification evidence
+
+Environment: system `pytest` 9.0.2 with
+`PYTHONPATH=src:$HOME/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`
+and `TERM=dumb`. The real operator config contains a stale `/tmp` smoke queue
+with `expected_uuid: 6a058908-116f-41c9-987f-d5f4ef38667e`; that was used as the
+production-shaped external config for the isolation check.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Correction-targeted | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_cli_transcribe_queue.py` | **63 passed** |
+| Queue-list, empty external XDG | `XDG_CONFIG_HOME=/tmp/opencode/lt-empty-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Queue-list, production-shaped external XDG | `XDG_CONFIG_HOME=/tmp/opencode/lt-prod-shaped-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Identity validation preserved | `pytest -q tests/test_queue_paths.py` | **11 passed** |
+| Full suite, default operator config | `pytest -q` | 8 failed, **334 passed, 11 skipped** |
+| Baseline full suite (`origin/main` @ `25b89f1`), same env | same command in detached worktree | 7 failed, **291 passed, 11 skipped** |
+| Full suite, isolated empty XDG | `XDG_CONFIG_HOME=/tmp/opencode/lt-empty-config pytest -q` | **342 passed, 11 skipped** |
+| Concurrency case in isolation | `pytest -q tests/test_queue_concurrency.py::test_enqueue_youtube_safe_success` (empty XDG) | **1 passed** |
+| Ruff | `uvx ruff check --config pyproject.toml src tests` | **408** vs baseline **413**; changed `cli.py`+`test_cli_queue.py` **26 both**; new Deno suite **0** |
+| Syntax | `compileall` + `ast.parse` changed files | OK |
+| Build | `uv build --out-dir /tmp/opencode/lt-dist-039` | 0.8.0 sdist + wheel |
+| Isolated install | `PIPX_HOME=/tmp/opencode/pipx-039 PIPX_BIN_DIR=/tmp/opencode/pipx-039/bin pipx install …whl` | **0.8.0**; production pipx still **0.7.0** |
+| CLI smoke (no Deno on PATH) | isolated `lt`, throwaway queue/XDG | queue list/stats, `transcribe --no-wait`, waiting `transcribe --timeout 0`, `batch --wait` all **0** Deno warnings; `doctor` lists optional Deno row; `--direct` transcribe and `--direct` batch each warn once |
+| Diff hygiene | `git diff --check` | clean |
+
+### Failure / baseline comparison
+
+- `tests/test_cli_batch_queue.py` has 6 pre-existing failures on this host,
+  reproduced identically on `origin/main` @ `25b89f1` (same six test names).
+- `tests/test_queue_concurrency.py::test_enqueue_youtube_safe_success` fails
+  only because the operator's stale config pins a different `expected_uuid`; it
+  fails identically on baseline `main` and passes in isolation with an empty
+  XDG config. Not caused by these corrections.
+- `test_concurrent_force_single_current_generation` is the documented timing
+  flake; it failed once in the default-env full run and passed in isolation.
+- With an isolated empty XDG config the full suite is **342 passed, 11 skipped**
+  with no failures.
+
+### Blockers / open items
+
+- None for the two corrections. No merge, tag, branch deletion, worker restart,
+  production queue change, or production install was performed.
+- Version remains 0.8.0.
+
+### Recommended next step
+
+Review the pushed correction commits on `chore/cli-reporting-integration`. If
+approved, merge into `main`, tag `v0.8.0`, then upgrade the production pipx
+install and restart the NLM-locked worker only after isolated validation.
+
+## Recovery verification — task 039 (2026-11-05, OpenCode re-check)
+
+State found before this round: local `HEAD` and
+`origin/chore/cli-reporting-integration` were both `615497b`, i.e. five commits
+ahead of the `23626c0` review baseline. Both required corrections were already
+committed and pushed (`25fb167` test isolation, `6a2078d` Deno queue-client
+fix), with follow-up docs in `3c64e6d`, `9a57bac`, `615497b`. No correction was
+missing locally, so nothing was reset, discarded, or overwritten; this round
+re-verified the pushed content independently and recorded fresh evidence.
+
+Version remains **0.8.0**. No merge, tag, branch deletion, production queue
+change, worker restart, or production install was performed.
+
+### Verification evidence (this round)
+
+Environment: system `pytest` 9.0.2; `TERM=dumb`;
+`PYTHONPATH=src:/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+External XDG fixtures were created under `/tmp/opencode/verify-039/`: an empty
+config dir and a production-shaped config with
+`expected_uuid: 6a058908-116f-41c9-987f-d5f4ef38667e`.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Correction-targeted, operator real config | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_cli_transcribe_queue.py` | **63 passed** |
+| Queue-list isolation, empty external XDG | `XDG_CONFIG_HOME=…/empty-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Queue-list isolation, production-shaped external XDG | `XDG_CONFIG_HOME=…/prod-shaped pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Identity validation preserved | `pytest -q tests/test_queue_paths.py` | **11 passed** |
+| Full suite (one run), isolated empty XDG | `XDG_CONFIG_HOME=…/full-xdg-config pytest -q` | **342 passed, 11 skipped** |
+| Ruff, branch | `uvx ruff check --config pyproject.toml src tests` | **408** findings |
+| Ruff, baseline `25b89f1` | same command in `/tmp/lt-baseline-main` | **413** findings (no new findings) |
+| Ruff, changed files | `uvx ruff check … src/local_transcribe/cli.py tests/test_cli_queue.py tests/test_deno_startup_warnings.py` | **26**, same count documented for `cli.py` + `test_cli_queue.py`; new Deno suite **0** |
+| Syntax | `python3 -m compileall -q src` + `ast.parse` on changed files | OK |
+| Build | `uv build --out-dir /tmp/opencode/verify-039/dist` | 0.8.0 sdist + wheel; METADATA `Version: 0.8.0`, entry point `lt = local_transcribe.cli:main` |
+| Secret scan | regex scan of `git diff 23626c0..HEAD` (AWS/GitHub/OpenAI/Slack/Google/private-key/generic-assignment patterns) | **CLEAN**; no credential files tracked |
+| Diff hygiene | `git diff --check` (working tree and `origin..HEAD`) | clean |
+
+The full suite passed in this round, so no isolated re-run of a failed test was
+needed. The previously documented operator-config failures (`test_cli_batch_queue`
+×6, stale `expected_uuid` in `test_enqueue_youtube_safe_success`, and the
+force-generation timing flake) are pre-existing and were avoided by the isolated
+XDG configuration, exactly as recorded in the prior round.
+
+## Delivery confirmation — task 039 (2026-11-06, OpenCode)
+
+State found: local `HEAD` and `origin/chore/cli-reporting-integration` were both
+`571bf2b`, working tree clean, and the remote already contained both review
+corrections. Nothing was local-only, so no implementation was repeated and
+nothing was reset or overwritten. The correction commits were re-inspected at
+this SHA: `25fb167` (autouse XDG isolation in `tests/test_cli_queue.py`) and
+`6a2078d` (queue wait path no longer probes Deno; `--direct` transcribe/batch
+retain the warning; `lt doctor` and `lt update` unchanged).
+
+This round re-ran the full required verification instead of relying on the
+previous record:
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Correction-targeted, operator real config | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_cli_transcribe_queue.py` | **63 passed** |
+| Queue-list isolation, empty external XDG | `XDG_CONFIG_HOME=…/empty-config pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Queue-list isolation, production-shaped external XDG | `XDG_CONFIG_HOME=…/prod-shaped pytest -q tests/test_cli_queue.py` | **35 passed** |
+| Identity validation preserved | `pytest -q tests/test_queue_paths.py` | **11 passed** |
+| Full suite (one run), isolated empty XDG | `XDG_CONFIG_HOME=…/full-xdg-config pytest -q` | **342 passed, 11 skipped** |
+| Ruff, branch | `uvx ruff check --config pyproject.toml src tests` | **408** findings |
+| Ruff, baseline `25b89f1` | same command in `/tmp/lt-baseline-main` | **413** findings (no new findings) |
+| Ruff, changed files | `uvx ruff check … cli.py test_cli_queue.py test_deno_startup_warnings.py` | **26**, unchanged |
+| Syntax | `python3 -m compileall -q src` + `ast.parse` on changed files | OK |
+| Build | `uv build --out-dir /tmp/opencode/verify-039-1106/dist` | 0.8.0 sdist + wheel; METADATA `Version: 0.8.0`, entry point `lt = local_transcribe.cli:main` |
+| Secret scan | regex scan of `git diff 23626c0..HEAD` | **CLEAN**; no credential files tracked |
+| Diff hygiene | `git diff --check` (working tree and `origin..HEAD`) | clean |
+
+No new Decision Journal entry was required: `docs/QUEUE_DESIGN_DECISIONS.md` §15
+already records both review decisions (queue clients never probe Deno; queue-list
+tests own their XDG configuration) and matches the code at this SHA. Version
+remains **0.8.0**. No merge, tag, branch deletion, production queue change,
+worker restart, or production install was performed. No blockers.
+
+---
+
+## Ruff verification gate cleanup (task 040, 2026-11-06, OpenCode)
+
+Branch `chore/ruff-gate-cleanup`, based on `origin/main` @ `25b89f1`. Task 040
+was opened in `.crules/tasks/wip/` and moved to `review/` only after the gate and
+verification checks passed. Task 039 and `chore/cli-reporting-integration` were
+left untouched (that branch remains at `94b40db`).
+
+### Baseline
+
+`uvx ruff check --config pyproject.toml src tests` reported **413 findings**
+across 49 files. The largest groups were `UP045` (125), `UP006` (109), `UP035`
+(40), `B008` (21), `F401` (21), and `BLE001` (15); the remainder were autofixable
+style/import findings plus `F841`, `PLW1510`, `S110`, `S112`, `FURB192`, `TRY004`,
+`TRY203`, and one-off `SIM`/`RUF`/`PYI` items.
+
+### Changes
+
+| Commit | Scope |
+|--------|-------|
+| `41c8dce` | Import sorting (`I001`) |
+| `832104b` | PEP 604/585 annotations and `collections.abc` imports (`UP006`, `UP045`, `UP035`, `UP037`, `UP012`) |
+| `d5a1a36` | Remaining safe autofixes: `F541`, `PIE790`, `FURB122`, `RUF022`, genuinely unused `RUF100` |
+| `628c4c5` | Manual findings: `B008`, `BLE001`, `S110`, `S112`, `PLW1510`, `F841`, `FURB192`, `TRY004`, `TRY203`, `F811`, `PYI034`, `UP022`, `RUF013`, `RUF059`, `RUF007`, `SIM103`, `SIM117` |
+
+Notable decisions:
+
+- **B008** was fixed properly with `typing.Annotated`, not suppressed. Only
+  Path-typed options triggered it; option names, defaults, and required flags
+  were preserved. `lt queue init --help` still marks `--queue-dir` required, and
+  CLI tests pass.
+- **BLE001/S110/S112** handlers were narrowed to the exceptions each call can
+  raise; best-effort probes use `contextlib.suppress`. Two intentional
+  boundaries (CLI `doctor`, per-video batch loop) retain targeted, justified
+  `# noqa: BLE001`. Four earlier broad-catch suppressions were removed, so the
+  branch has a net reduction in suppressions.
+- **TRY004** invalid config root/`queue` values now raise `TypeError`; the
+  producer fallback in `queue_api` catches `TypeError` too, preserving fallback.
+  Missing auth profiles still raise `ValueError`; malformed profile entries raise
+  `TypeError`.
+- **PYI034** uses `Self` imported under `TYPE_CHECKING`, so no runtime
+  dependency is added and Python 3.10 imports still work.
+- **F811** renamed the Typer callback to `app_callback`; the console-script
+  entry point `main` is unchanged.
+- `pyproject.toml` was not modified: no rule selection, ignore list, or
+  dependency changed. Version remains **0.7.0** (this branch is based on
+  `main`, which has not taken the 0.8.0 release line).
+
+### Verification evidence
+
+Environment: system `pytest` 9.0.2; `TERM=dumb`;
+`PYTHONPATH=src:/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+Queue-related tests used isolated XDG paths under `/tmp/opencode/task040/`.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Baseline gate | `uvx ruff check --config pyproject.toml src tests` | **413 findings** |
+| Final gate | same command | **0 findings — All checks passed** |
+| Targeted regression (CLI/worker/queue, default env) | `pytest -q tests/test_cli_queue.py tests/test_cli_worker.py tests/test_cli_batch_queue.py tests/test_cli_transcribe_queue.py tests/test_cookie_refresh.py tests/test_config_write.py tests/test_worker_lock.py tests/test_worker_model_idle.py tests/test_worker_atomic_transitions.py tests/test_downloader_errors.py tests/test_rocm_support.py tests/test_update.py` | **117 passed, 6 failed** |
+| Batch tests, isolated XDG | `XDG_CONFIG_HOME=… pytest -q tests/test_cli_batch_queue.py` | **10 passed** |
+| Baseline batch tests (`origin/main` @ `25b89f1`) | same command in `/tmp/lt-baseline-main` | **same 6 failures, 4 passed** |
+| Full suite, one run | `XDG_CONFIG_HOME=… XDG_STATE_HOME=… pytest -q` | **298 passed, 11 skipped** |
+| Baseline full suite (`origin/main`) | same command in `/tmp/lt-baseline-main` | **1 failed, 297 passed, 11 skipped** — documented timing flake only |
+| Syntax | `compileall -q src tests` + import every package module | OK |
+| CLI help smoke | `queue init --help`, `queue add --help`, `cookies refresh --help`, `worker run --help` | required/defaults intact |
+| Build | `uv build --out-dir /tmp/opencode/task040/dist` | 0.7.0 sdist + wheel; metadata `Version: 0.7.0` |
+| Secret scan | high-confidence pattern scan of `git diff` | **CLEAN** |
+| Diff hygiene | `git diff --check` | clean |
+
+Branch diff versus `origin/main`: **51 files, +502/−403**.
+
+The six `test_cli_batch_queue` failures are pre-existing on `origin/main` under
+the operator's config (stale `expected_uuid`); they pass with isolated XDG. The
+only baseline full-suite failure was
+`test_queue_concurrency.py::test_concurrent_force_single_current_generation`,
+the documented timing flake; the branch run passed it.
+
+### Blockers
+
+None. No merge, tag, release, branch deletion, ROCm change, worker restart,
+production queue change, or system configuration change was performed.
+
+## Final integration — v0.8.0 + zero-finding Ruff (task 041, 2026-11-06, OpenCode)
+
+Branch `chore/0.8-final-integration`, based on `origin/main` @ `25b89f1`.
+Task 041 was opened in `.crules/tasks/wip/` and moved to `review/` only after the
+combined gate passed. Both reviewed lines were merged without squashing or
+rewriting history:
+
+| Merge | Parents | Subject |
+|-------|---------|---------|
+| `bb09499` | `c7e97a1` + `94b40db` | Merge `chore/cli-reporting-integration` |
+| `542ad31` | `bb09499` + `7de3789` | Merge `chore/ruff-gate-cleanup` |
+| `94a92b0` | — | Markdown hard-break hygiene |
+
+### Conflict resolutions (combined, not preferred)
+
+- `__init__.py`: `__version__ = "0.8.0"` **and** `contextlib.suppress` ROCm
+  preload.
+- `cli.py`: Deno-free queue paths **and** `app_callback` rename (entry point
+  remains `main`).
+- `cli_queue.py`: positional `STATUS|UUID` filtering, defaults
+  `limit=60/offset=0/sort=oldest` **and** `Annotated` Typer options.
+- `queue_store.py`: 039 `query_executions` filtering/sorting/pagination under
+  040 typing (auto-merged).
+- `HANDOFF.md`: both histories retained.
+- `docs/QUEUE_DESIGN_DECISIONS.md`: 039 §12–§15 preserved; 040 Ruff section
+  renumbered to §16; task 041 decisions appended as §17.
+- `README.md` / `project_spec.md`: two integrated Markdown two-space hard breaks
+  converted to backslash hard breaks so `git diff --check` is clean with
+  unchanged rendering.
+
+### Verification evidence
+
+Environment: system `pytest` 9.0.2; `TERM=dumb`;
+`PYTHONPATH=src:/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+Isolated `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` under
+`/tmp/opencode/task041/`. This host has no Deno, so missing-Deno behavior was
+exercised throughout.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Targeted queue/Deno | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_queue_store.py tests/test_queue_paths.py tests/test_cli_batch_queue.py tests/test_cli_transcribe_queue.py tests/test_cli_worker.py` | **99 passed** |
+| Full suite, one run | `pytest -q` | **342 passed, 11 skipped** |
+| Ruff gate | `uvx ruff check --config pyproject.toml src tests` | **0 findings — All checks passed** |
+| Ruff config | diff vs `origin/main` | unchanged |
+| Syntax | `compileall` + import every module | OK; version `0.8.0` |
+| Build | `uv build --out-dir /tmp/opencode/task041/dist` | 0.8.0 sdist + wheel |
+| Wheel audit | `METADATA`, `entry_points.txt`, contents | `Version: 0.8.0`; `lt = local_transcribe.cli:main`; `queue_listing.py` included |
+| Isolated pipx | disposable `PIPX_HOME`/`PIPX_BIN_DIR` | local-transcribe **0.8.0** |
+| CLI version | `lt version` | `local-transcribe version 0.8.0` |
+| CLI help | `lt --help`, `lt queue list --help` | no Deno warning; positional `[STATUS|UUID]`, `--status`, `--limit` 60, `--offset`, `--sort` |
+| Queue init/add | disposable queue | initialized; 3 executions enqueued |
+| `queue list pending` | `lt queue list pending` | 3 rows; `limit=60, offset=0, sort=oldest` |
+| `queue list failed` | `lt queue list failed` | 0 rows, no error |
+| `queue list completed --sort newest` | same | 0 rows; `sort=newest` |
+| UUID selection | `lt queue list <UUID>` | exactly 1 row |
+| Pagination | `lt queue list pending --offset 1 --limit 1` | 2nd row; `Showing 2-2 of 3` |
+| Deno quiet on queue ops | `queue list` + `queue stats` grep | **NO DENO WARNING** |
+| Missing Deno, doctor | `lt doctor` without Deno | reports `deno not found ...`; no crash |
+| Direct YouTube check | `lt transcribe <URL> --direct --output-dir …` | `⚠️ Warning: Deno runtime not detected` before download |
+| Dedicated Deno suite | `pytest -q tests/test_deno_startup_warnings.py` | **14 passed** |
+| Test weakening | removed `assert`/`def test_` in diff | none removed; 353 tests collected |
+| Secret scan | high-confidence pattern scan of branch diff | **CLEAN** |
+| Diff hygiene | `git diff --check origin/main..HEAD` | clean |
+| WIP marker | `git ls-files` | never tracked |
+
+Branch diff versus `origin/main`: **68 files, +3009/−462**.
+
+### Blockers
+
+None. No merge to `main`, tag, release, branch deletion, production service
+change, worker restart, or system configuration change was performed.
+
+## Approval — task 041 merge (task 042, 2026-11-06)
+
+ChatGPT reviewed and approved task 041 for merging into `main`. Drae
+authorized completing the project work and cleaning up the repository so that
+only `main` remains. No production deployment, system change, worker restart, or
+installed-environment upgrade is authorized.
+
+At approval time the integration head was
+`9a3c2c1d39c06687c89473b59776c5cbdf63ac2c` and `origin/main` was
+`25b89f1326751a3b0781051331822c50ffde3b19`. Tasks 037–041 are moved from
+`review/` to `done/` with their `Status` fields set to `done`; this approval
+section is committed on the approved integration branch before the merge.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

@@ -7,14 +7,20 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal, Optional
+from typing import Literal
 
 from local_transcribe.services.atomic_files import (
     AtomicFileError,
     atomic_state_transition,
     link_publish_json,
+)
+from local_transcribe.services.queue_listing import (
+    SortOrder,
+    paginate_executions,
+    sort_executions,
 )
 from local_transcribe.services.queue_models import (
     ACTIVE_STATUSES,
@@ -47,9 +53,9 @@ EnqueueOutcomeKind = Literal[
 class EnqueueResult:
     kind: EnqueueOutcomeKind
     source_key: str
-    execution: Optional[Execution] = None
-    reservation_generation: Optional[int] = None
-    transcript_path: Optional[Path] = None
+    execution: Execution | None = None
+    reservation_generation: int | None = None
+    transcript_path: Path | None = None
     message: str = ""
 
 
@@ -71,7 +77,7 @@ class QueueStore:
 
     def find_execution(
         self, execution_id: str
-    ) -> tuple[Optional[Execution], Optional[str]]:
+    ) -> tuple[Execution | None, str | None]:
         for status in STATE_DIRS:
             path = self._execution_path(status, execution_id)
             if path.is_file():
@@ -128,6 +134,25 @@ class QueueStore:
                 if limit is not None and len(results) >= limit:
                     return results
         return results
+
+    def query_executions(
+        self,
+        *,
+        status: str | None = None,
+        origin: str | None = None,
+        sort: SortOrder = "oldest",
+        offset: int = 0,
+        limit: int = 60,
+    ) -> tuple[list[Execution], int]:
+        """Return a filtered/sorted page and the total matching record count.
+
+        Status filtering reads only the requested state directory.  Ordering
+        and pagination happen after the full matching set is known so the
+        total and offset semantics stay correct and stable.
+        """
+        matches = self.list_executions(status=status, origin=origin)
+        ordered = sort_executions(matches, sort=sort)
+        return paginate_executions(ordered, offset=offset, limit=limit)
 
     def _publish_execution(self, execution: Execution) -> bool:
         dest = self._execution_path("pending", execution.execution_id)

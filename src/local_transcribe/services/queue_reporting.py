@@ -6,11 +6,11 @@ execution authority.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from local_transcribe.services.queue_models import STATE_DIRS, Execution
 from local_transcribe.services.queue_store import QueueStore
@@ -29,8 +29,8 @@ class QueueStatusSummary:
     completed_missing_transcript: int = 0
     worker_lock: str = "unknown"
     worker_state_active: bool = False
-    worker_current_execution_id: Optional[str] = None
-    queue_dir: Optional[Path] = None
+    worker_current_execution_id: str | None = None
+    queue_dir: Path | None = None
 
 
 def _video_id_from_execution(execution: Execution) -> str:
@@ -83,13 +83,11 @@ def summarize_queue(queue_dir: Path) -> QueueStatusSummary:
 
     worker_state_active = False
     current_id: str | None = None
-    try:
+    with contextlib.suppress(Exception):
         state = read_worker_state(queue_dir)
         if state is not None:
             worker_state_active = bool(state.active)
             current_id = state.current_execution_id
-    except Exception:  # noqa: BLE001 — status must not crash
-        pass
 
     return QueueStatusSummary(
         counts=counts,

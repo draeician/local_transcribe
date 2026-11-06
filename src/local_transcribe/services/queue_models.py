@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping, Optional
+from typing import Any, Literal
 
 from local_transcribe.utils.youtube import extract_video_id, is_valid_youtube_url
 
@@ -115,17 +116,17 @@ class ExecutionOptions:
     # producers on GPU-less hosts and workers on GPU hosts interoperate.
     device: str = "auto"
     compute_type: str = "auto"
-    language: Optional[str] = None
+    language: str | None = None
     keep_audio: bool = False
-    auth_profile: Optional[str] = None
-    limit_rate: Optional[str] = None
-    sleep_interval_requests: Optional[float] = None
+    auth_profile: str | None = None
+    limit_rate: str | None = None
+    sleep_interval_requests: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any] | None) -> "ExecutionOptions":
+    def from_dict(cls, data: Mapping[str, Any] | None) -> ExecutionOptions:
         if not data:
             return cls()
         known = {f.name for f in fields(cls)}
@@ -137,14 +138,14 @@ class ExecutionError:
     category: str
     message: str
     retryable: bool = False
-    occurred_at: Optional[str] = None
-    next_retry_at: Optional[str] = None
+    occurred_at: str | None = None
+    next_retry_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any] | None) -> Optional["ExecutionError"]:
+    def from_dict(cls, data: Mapping[str, Any] | None) -> ExecutionError | None:
         if not data:
             return None
         return cls(
@@ -178,7 +179,7 @@ class SourceReservation:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "SourceReservation":
+    def from_dict(cls, data: Mapping[str, Any]) -> SourceReservation:
         return cls(
             schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
             source_key=str(data["source_key"]),
@@ -203,14 +204,14 @@ class Execution:
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     available_at: str = field(default_factory=utc_now_iso)
-    started_at: Optional[str] = None
-    completed_at: Optional[str] = None
+    started_at: str | None = None
+    completed_at: str | None = None
     attempts: int = 0
     max_attempts: int = 3
-    worker: Optional[str] = None
-    required_host: Optional[str] = None
-    output_path: Optional[str] = None
-    error: Optional[ExecutionError] = None
+    worker: str | None = None
+    required_host: str | None = None
+    output_path: str | None = None
+    error: ExecutionError | None = None
     options: ExecutionOptions = field(default_factory=ExecutionOptions)
     schema_version: int = SCHEMA_VERSION
 
@@ -240,7 +241,7 @@ class Execution:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "Execution":
+    def from_dict(cls, data: Mapping[str, Any]) -> Execution:
         return cls(
             schema_version=int(data.get("schema_version", SCHEMA_VERSION)),
             execution_id=str(data["execution_id"]),
@@ -267,4 +268,4 @@ class Execution:
 
 
 # Optional hook type for transcript existence checks
-TranscriptChecker = Callable[[str], Optional[Path]]
+TranscriptChecker = Callable[[str], Path | None]

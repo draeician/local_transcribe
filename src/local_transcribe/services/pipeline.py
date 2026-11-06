@@ -6,15 +6,31 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set
 
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
+from local_transcribe.services.downloader import (
+    ForbiddenError,
+    RateLimitError,
+    VideoUnavailableError,
+)
 from local_transcribe.services.rate_limiter import RateLimiter
 from local_transcribe.services.status_store import JsonStatusStore, StatusStore, TranscriptStatus
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
-from local_transcribe.services.downloader import RateLimitError, VideoUnavailableError, ForbiddenError
-from local_transcribe.utils.files import safe_append_line, safe_read_lines, safe_write_lines, validate_transcript_file
+from local_transcribe.utils.files import (
+    safe_append_line,
+    safe_read_lines,
+    safe_write_lines,
+    validate_transcript_file,
+)
 from local_transcribe.utils.youtube import extract_video_id, is_valid_youtube_url
 
 
@@ -27,14 +43,14 @@ class BatchConfig:
     device: str = "auto"
     compute_type: str = "auto"
     max_retries: int = 2
-    status_store: Optional[StatusStore] = None
-    cookies_from_browser: Optional[str] = None
-    cookies_file: Optional[str] = None
+    status_store: StatusStore | None = None
+    cookies_from_browser: str | None = None
+    cookies_file: str | None = None
     timeout_seconds: int = 1800  # 30 minutes
-    finished_file: Optional[Path] = None  # Defaults to output_dir / "finished.dat"
+    finished_file: Path | None = None  # Defaults to output_dir / "finished.dat"
     sleep_interval_between_videos: float = 1.0
-    limit_rate: Optional[str] = None
-    sleep_interval_requests: Optional[float] = None
+    limit_rate: str | None = None
+    sleep_interval_requests: float | None = None
 
 
 @dataclass
@@ -80,7 +96,7 @@ class BatchPipeline:
         
         # Interrupt handling
         self.interrupted = False
-        self.current_audio_file: Optional[Path] = None
+        self.current_audio_file: Path | None = None
         
         # Register signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -88,7 +104,7 @@ class BatchPipeline:
         
         # Statistics
         self.stats = BatchSummary()
-        self.videos: Dict[str, TranscriptStatus] = {}
+        self.videos: dict[str, TranscriptStatus] = {}
     
     def _signal_handler(self, signum, frame):
         """Handle interrupt signals (SIGINT/SIGTERM) gracefully."""
@@ -105,7 +121,7 @@ class BatchPipeline:
             try:
                 self.current_audio_file.unlink()
                 self.logger.info(f"Cleaned up audio file: {self.current_audio_file}")
-            except Exception as e:
+            except OSError as e:
                 self.logger.warning(f"Failed to clean up audio file {self.current_audio_file}: {e}")
         
         # Save current status
@@ -116,7 +132,7 @@ class BatchPipeline:
                     self.status_store.set(vid_id, status)
             self.logger.info("Progress saved. Current video marked as pending for retry.")
     
-    def load_input_urls(self) -> List[str]:
+    def load_input_urls(self) -> list[str]:
         """
         Load URLs from input file, removing duplicates and invalid entries.
         
@@ -127,7 +143,7 @@ class BatchPipeline:
             raise FileNotFoundError(f"Input file not found: {self.config.input_file}")
         
         urls = []
-        seen_ids: Set[str] = set()
+        seen_ids: set[str] = set()
         
         for line in safe_read_lines(self.config.input_file):
             # Skip comments
@@ -162,7 +178,7 @@ class BatchPipeline:
         json_path = self.config.output_dir / f"{video_id}.json"
         return validate_transcript_file(json_path)
     
-    def initialize_videos(self, urls: List[str], resume: bool = False) -> None:
+    def initialize_videos(self, urls: list[str], resume: bool = False) -> None:
         """
         Initialize video tracking, checking existing files and status.
         
@@ -253,7 +269,7 @@ class BatchPipeline:
                     safe_write_lines(pending_file, lines)
                     self.logger.info(f"Removed unavailable video from {pending_file.name}: {url}")
                     removed = True
-            except Exception as e:
+            except (OSError, TypeError, ValueError) as e:
                 self.logger.warning(f"Failed to remove URL from {pending_file}: {e}")
         
         return removed
@@ -337,7 +353,7 @@ class BatchPipeline:
             # Log with suggestion
             self.logger.warning(f"✗ HTTP 403 Forbidden {vid_id}: {status.error_message}")
             if not self.config.cookies_from_browser and not self.config.cookies_file:
-                self.logger.warning(f"  Consider using --cookies-from-browser or --cookies-file to authenticate")
+                self.logger.warning("  Consider using --cookies-from-browser or --cookies-file to authenticate")
             
             # Mark for retry if under max attempts (403 might be temporary)
             if status.attempts < self.config.max_retries:
@@ -349,10 +365,10 @@ class BatchPipeline:
             
             self.status_store.set(vid_id, status)
             return False
-        except RateLimitError as e:
+        except RateLimitError:
             # Re-raise rate limit errors to be handled in run()
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — per-video boundary records any failure
             duration = time.time() - start_time
             status.duration_seconds = duration
             status.error_message = str(e)[:500]  # Truncate long errors

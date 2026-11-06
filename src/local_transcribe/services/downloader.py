@@ -9,30 +9,24 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
-from local_transcribe.utils.youtube import pick_channel
 from local_transcribe.utils.ytdlp_update import yt_dlp_invocation
 
 
 class RateLimitError(Exception):
     """Raised when HTTP 429 (Too Many Requests) is detected."""
-    pass
 
 
 class VideoUnavailableError(Exception):
     """Raised when a video is unavailable."""
-    pass
 
 
 class ForbiddenError(Exception):
     """Raised when HTTP 403 looks like a temporary throttle."""
-    pass
 
 
 class PrivateVideoError(Exception):
     """Raised when the video is private (terminal)."""
-    pass
 
 
 class AuthenticationRequiredError(Exception):
@@ -98,16 +92,16 @@ def classify_yt_dlp_failure(stdout: str, stderr: str, returncode: int) -> Downlo
 def download_audio_and_metadata(
     url: str,
     outdir: Path,
-    cookies_from_browser: Optional[str] = None,
-    cookies_file: Optional[str] = None,
+    cookies_from_browser: str | None = None,
+    cookies_file: str | None = None,
     retries: int = 10,
     fragment_retries: int = 10,
     concurrent_frags: int = 4,
-    limit_rate: Optional[str] = None,
-    sleep_interval_requests: Optional[float] = None,
-    timeout_seconds: Optional[float] = None,
+    limit_rate: str | None = None,
+    sleep_interval_requests: float | None = None,
+    timeout_seconds: float | None = None,
     ignore_errors: bool = False,
-) -> Tuple[Path, dict]:
+) -> tuple[Path, dict]:
     """
     Download audio and metadata by delegating to the runtime yt-dlp CLI.
 
@@ -173,11 +167,11 @@ def download_audio_and_metadata(
     try:
         proc = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=timeout_seconds,
             start_new_session=True,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         # Kill process group if still running.
@@ -212,7 +206,7 @@ def download_audio_and_metadata(
         raise RuntimeError(msg)
 
     # Find the last JSON line in stdout.
-    info: Dict = {}
+    info: dict = {}
     for line in stdout.splitlines()[::-1]:
         line = line.strip()
         if not line:

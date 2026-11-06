@@ -10,9 +10,9 @@ import json
 import os
 import socket
 import uuid
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
 
 from local_transcribe.services.config import AppConfig, QueueConfig, load_config
 
