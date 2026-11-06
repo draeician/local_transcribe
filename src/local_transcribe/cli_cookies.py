@@ -102,7 +102,7 @@ def cookies_refresh(
             probe_url=probe_url,
             update_config=not no_config_update,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("Cookie refresh failed: %s", exc, exc_info=verbose)
         console.print(f"[red]✗[/red] {exc}")
         raise typer.Exit(1) from exc

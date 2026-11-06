@@ -25,9 +25,9 @@ app = typer.Typer(help="Local transcription with Whisper (YouTube URLs or audio 
 console = Console(force_terminal=True)
 
 # Queue / worker / cookies sub-apps (SPEC-queue v3)
-from local_transcribe.cli_cookies import cookies_app  # noqa: E402
-from local_transcribe.cli_queue import queue_app  # noqa: E402
-from local_transcribe.cli_worker import worker_app  # noqa: E402
+from local_transcribe.cli_cookies import cookies_app
+from local_transcribe.cli_queue import queue_app
+from local_transcribe.cli_worker import worker_app
 
 app.add_typer(queue_app, name="queue")
 app.add_typer(worker_app, name="worker")
@@ -562,7 +562,7 @@ def reconcile_cmd(
             )
             
             # Print Verification Report
-            console.print(f"\n[bold]Quick Verification Report[/bold]")
+            console.print("\n[bold]Quick Verification Report[/bold]")
             table = Table(show_header=True, header_style="bold")
             table.add_column("Metric")
             table.add_column("Count")
@@ -579,7 +579,7 @@ def reconcile_cmd(
                 console.print(f"\n[yellow]⚠[/yellow] Use [bold]lt batch --input {pending_file_path.name}[/bold] to process missing videos.")
             
             if result.missing_transcripts == 0:
-                console.print(f"\n[green]✓[/green] All transcripts verified successfully!")
+                console.print("\n[green]✓[/green] All transcripts verified successfully!")
             
             return
         
@@ -699,7 +699,7 @@ def verify(
         
         # Run verification
         if mode == "quick":
-            logger.info(f"Running quick verification (finished.dat only)")
+            logger.info("Running quick verification (finished.dat only)")
             result = verify_finished_dat(
                 finished_path,
                 output_path,
@@ -708,7 +708,7 @@ def verify(
                 clean_finished=clean_finished,
             )
         else:  # full
-            logger.info(f"Running full verification (batch_status.json + finished.dat)")
+            logger.info("Running full verification (batch_status.json + finished.dat)")
             result = verify_full(
                 finished_path,
                 output_path,
@@ -732,13 +732,13 @@ def verify(
             console.print(f"\n[green]✓[/green] Updated pending file: {pending_path}")
         
         if result.finished_cleaned:
-            console.print(f"[green]✓[/green] Cleaned finished.dat: removed invalid entries")
+            console.print("[green]✓[/green] Cleaned finished.dat: removed invalid entries")
         
         if result.missing_transcripts > 0:
             console.print(f"\n[yellow]⚠[/yellow] Found {result.missing_transcripts} missing transcript(s)")
-            console.print(f"URLs have been added to pending file and marked as pending in status store")
+            console.print("URLs have been added to pending file and marked as pending in status store")
         else:
-            console.print(f"\n[green]✓[/green] All transcripts verified successfully!")
+            console.print("\n[green]✓[/green] All transcripts verified successfully!")
         
     except Exception as e:
         logger.error(f"Verification failed: {e}", exc_info=verbose)
@@ -822,7 +822,7 @@ def status(
             console.print(f"Worker NLM lock: {summary.worker_lock}")
             if summary.worker_state_active:
                 console.print(
-                    f"Worker state: active"
+                    "Worker state: active"
                     + (
                         f" (execution={summary.worker_current_execution_id})"
                         if summary.worker_current_execution_id

@@ -149,7 +149,7 @@ def download_file(url: str, destination: Path, *, timeout: int = 1800) -> Path:
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "local-transcribe-installer"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         with open(destination, "wb") as handle:
             while True:
                 chunk = response.read(1024 * 1024)

@@ -79,8 +79,7 @@ def safe_write_lines(path: Path, lines: list[str]) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
-            for line in lines:
-                f.write(line + '\n')
+            f.writelines(line + '\n' for line in lines)
         return True
     except OSError:
         return False

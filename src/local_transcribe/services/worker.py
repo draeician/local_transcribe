@@ -435,7 +435,7 @@ def run_worker(
             return
         try:
             idle_maintenance()
-        except Exception:  # noqa: BLE001 — idle maintenance is best-effort
+        except Exception:
             logger.exception("Idle model maintenance failed; continuing worker loop")
 
     try:
@@ -515,7 +515,7 @@ def run_worker(
                 else:
                     interactive_streak = 0
                 processed += 1
-            except Exception as exc:  # noqa: BLE001 — job boundary
+            except Exception as exc:
                 logger.exception("Job %s failed", claimed.execution_id)
                 error = classify_job_exception(exc)
                 avail: str | None = None

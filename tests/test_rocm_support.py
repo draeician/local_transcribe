@@ -31,7 +31,7 @@ def _load_installer():
 
 installer = _load_installer()
 
-from local_transcribe.utils import hardware, rocm  # noqa: E402
+from local_transcribe.utils import hardware, rocm
 
 
 class FakeCompleted:

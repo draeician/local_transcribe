@@ -353,7 +353,7 @@ class BatchPipeline:
             # Log with suggestion
             self.logger.warning(f"✗ HTTP 403 Forbidden {vid_id}: {status.error_message}")
             if not self.config.cookies_from_browser and not self.config.cookies_file:
-                self.logger.warning(f"  Consider using --cookies-from-browser or --cookies-file to authenticate")
+                self.logger.warning("  Consider using --cookies-from-browser or --cookies-file to authenticate")
             
             # Mark for retry if under max attempts (403 might be temporary)
             if status.attempts < self.config.max_retries:
@@ -365,7 +365,7 @@ class BatchPipeline:
             
             self.status_store.set(vid_id, status)
             return False
-        except RateLimitError as e:
+        except RateLimitError:
             # Re-raise rate limit errors to be handled in run()
             raise
         except Exception as e:

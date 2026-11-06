@@ -188,7 +188,7 @@ def test_explicit_cuda_with_old_driver_is_a_clear_error() -> None:
 
 
 def test_main_cuda_on_cpu_host_exits_nonzero(capsys) -> None:
-    def fake_detect(runner=None):  # noqa: ANN001
+    def fake_detect(runner=None):
         return [], "nvidia-smi not found"
 
     original = installer.detect_nvidia_gpus

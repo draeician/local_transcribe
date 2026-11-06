@@ -15,22 +15,18 @@ from local_transcribe.utils.ytdlp_update import yt_dlp_invocation
 
 class RateLimitError(Exception):
     """Raised when HTTP 429 (Too Many Requests) is detected."""
-    pass
 
 
 class VideoUnavailableError(Exception):
     """Raised when a video is unavailable."""
-    pass
 
 
 class ForbiddenError(Exception):
     """Raised when HTTP 403 looks like a temporary throttle."""
-    pass
 
 
 class PrivateVideoError(Exception):
     """Raised when the video is private (terminal)."""
-    pass
 
 
 class AuthenticationRequiredError(Exception):

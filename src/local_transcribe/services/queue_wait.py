@@ -166,7 +166,7 @@ def _start_foreground_worker(
             logger.info(
                 "Foreground fallback: worker lock already held; relying on active worker"
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Foreground queue worker failed")
 
     thread = threading.Thread(

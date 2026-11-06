@@ -39,10 +39,10 @@ from local_transcribe.utils.youtube import pick_channel
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "BackendUnavailableError",
     "BACKEND_CPU",
     "BACKEND_CUDA",
     "BACKEND_ROCM",
+    "BackendUnavailableError",
 ]
 
 
