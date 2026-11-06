@@ -1609,6 +1609,92 @@ At approval time the integration head was
 `review/` to `done/` with their `Status` fields set to `done`; this approval
 section is committed on the approved integration branch before the merge.
 
+## Final merge and repository cleanup (task 042, 2026-11-06, OpenCode)
+
+### Merge
+
+| Item | Value |
+|------|-------|
+| Target | `main` |
+| Previous `origin/main` | `25b89f1326751a3b0781051331822c50ffde3b19` |
+| Approved integration head | `9a3c2c1` (subsequently `0495376` after task closure) |
+| Merge source | `0495376080551805d260f784ffb49f5ba74f04bb` |
+| **Final merge commit** | **`e3244ffa37bd470f1e71cc4c9f3f9ae565a41351`** |
+| Merge parents | `25b89f1` (main) + `0495376` (integration) |
+| Strategy | `git merge --no-ff`; no squash, rebase, or history rewrite |
+
+The merged tree is byte-identical to the approved integration tree
+(`git diff --stat chore/0.8-final-integration` was empty at merge time). Both
+integration histories (`94b40db`, `7de3789`) are ancestors of the final merge.
+
+### Post-merge verification (on `main`)
+
+Environment: system `pytest` 9.0.2; `TERM=dumb`;
+`PYTHONPATH=src:/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`;
+isolated XDG under `/tmp/opencode/task042/`. The host has no Deno.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Ruff gate | `uvx ruff check --config pyproject.toml src tests` | **0 findings — All checks passed** |
+| Full suite | `pytest -q` | **342 passed, 11 skipped** |
+| Targeted queue/Deno (pre-merge) | queue/Deno/worker test files | **99 passed** |
+| Version | `pyproject.toml`, `__init__.py` | **0.8.0** |
+| Build | `uv build --out-dir /tmp/opencode/task042/dist` | 0.8.0 sdist + wheel |
+| Wheel audit | `METADATA`, `entry_points.txt` | `Version: 0.8.0`; `lt = local_transcribe.cli:main`; `queue_listing.py` present |
+| CLI version | `python -m local_transcribe.cli version` | `local-transcribe version 0.8.0` |
+| Queue list interface | `queue list --help` | `[STATUS|UUID]`, `--status`, `--limit` 60, `--offset`, `--sort` |
+| `queue list pending` | disposable queue | worked; defaults `limit=60, offset=0, sort=oldest` |
+| `queue list failed` | disposable queue | worked (0 rows) |
+| `queue list completed --sort newest` | disposable queue | worked (0 rows, `sort=newest`) |
+| Missing Deno | queue list/stats scan | **no Deno warning** |
+
+The documented pre-existing timing flake
+`test_queue_concurrency.py::test_concurrent_force_single_current_generation`
+was observed intermittently: 1 failure in 5 isolated reruns on `main` and 1 in 5
+on the untouched `origin/main` baseline (`25b89f1`). It is unrelated to this
+integration; the required full-suite runs passed.
+
+### Task closure
+
+Tasks 037, 038, 039, 040, and 041 were moved from `.crules/tasks/review/` to
+`.crules/tasks/done/` and their `Status` fields set to `done` in
+`0495376`, before the merge. Histories and verification records are preserved.
+
+### Branch cleanup
+
+All seven obsolete branches were audited before deletion. Six were direct
+ancestors of `main`; `fix/deno-startup-warning` was not an ancestor because it
+was cherry-picked, so it was verified separately:
+
+- `git cherry` marks its code commit `3b78d5c` as patch-equivalent (`-`).
+- Its task 038 record is present under `done/` (only path/status changed).
+- Its AGENTS/README/CHANGELOG/HANDOFF/Decision-Journal documentation and Deno
+  tests are present in `main` (some lines expanded or renamed by task 039).
+
+Deleted remote branches (normal `git push origin --delete`, no force):
+
+`chore/0.8-final-integration`, `chore/cli-reporting-integration`,
+`chore/ruff-gate-cleanup`, `feat/queue-list-reporting`,
+`fix/deno-startup-warning`, `feat/queue-creation`, `fix/model-idle-unload`.
+
+Deleted the corresponding local branches (`-d` for ancestors, `-D` only for the
+verified patch-equivalent branch). Final state: local and remote contain only
+`main`.
+
+### PR and release state
+
+- Open pull requests: **none** (`gh pr list --state open` returned `[]`).
+- Version: **0.8.0**.
+- Release tags: existing tags are `v0.4.0`, `v0.5.0`, `v0.5.1`. **No `v0.8.0`
+  tag was created** and no package was published; 0.8.0 is versioned but not
+  released. Production installation remains a separate task.
+
+### Operational safety
+
+No production queue records, NFS configuration, AMD ROCm libraries, worker
+services, or installed pipx environments were modified. No deployment, worker
+restart, or system configuration change was performed.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
