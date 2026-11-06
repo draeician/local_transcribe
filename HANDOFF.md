@@ -1596,6 +1596,19 @@ Branch diff versus `origin/main`: **68 files, +3009/−462**.
 None. No merge to `main`, tag, release, branch deletion, production service
 change, worker restart, or system configuration change was performed.
 
+## Approval — task 041 merge (task 042, 2026-11-06)
+
+ChatGPT reviewed and approved task 041 for merging into `main`. Drae
+authorized completing the project work and cleaning up the repository so that
+only `main` remains. No production deployment, system change, worker restart, or
+installed-environment upgrade is authorized.
+
+At approval time the integration head was
+`9a3c2c1d39c06687c89473b59776c5cbdf63ac2c` and `origin/main` was
+`25b89f1326751a3b0781051331822c50ffde3b19`. Tasks 037–041 are moved from
+`review/` to `done/` with their `Status` fields set to `done`; this approval
+section is committed on the approved integration branch before the merge.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

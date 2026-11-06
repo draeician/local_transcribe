@@ -4,7 +4,7 @@ Mode: Integration agent
 Branch: `chore/cli-reporting-integration` (based on `origin/main` @ `25b89f1`)
 Task created: 2026-11-04 (UTC) — created in `.crules/tasks/wip/`, moved to `review/` after verification.
 Owner: OpenCode (reassigned 2026-11-05 from the cancelled Pi agent)
-Status: `review` — review corrections complete, pushed for review; independently re-verified 2026-11-05 at `615497b` and re-confirmed 2026-11-06 (see HANDOFF "Recovery verification" and "Delivery confirmation")
+Status: `done` — merged to `main` via task 042 on 2026-11-06; review corrections complete, independently re-verified 2026-11-05 at `615497b` and re-confirmed 2026-11-06 (see HANDOFF "Recovery verification", "Delivery confirmation", and task 042 audit)
 
 ## Objective
 

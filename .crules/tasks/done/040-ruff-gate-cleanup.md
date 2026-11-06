@@ -4,7 +4,7 @@ Mode: Cleanup agent
 Branch: `chore/ruff-gate-cleanup` (based on `origin/main` @ `25b89f1`)
 Task created: 2026-11-06 (UTC) — created in `.crules/tasks/wip/`, moved to `review/` after verification.
 Owner: OpenCode
-Status: `review` — zero-finding Ruff gate, verification complete
+Status: `done` — zero-finding Ruff gate, verification complete; merged to `main` via task 042 on 2026-11-06
 
 ## Objective
 

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `review` |
+| **Status** | `done` |
 | **Branch** | `fix/deno-startup-warning` |
 | **Base** | `origin/main` @ `25b89f1` |
 | **Type** | `fix` (patch) |

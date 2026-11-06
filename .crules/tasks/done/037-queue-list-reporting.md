@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `review` |
+| **Status** | `done` |
 | **Branch** | `feat/queue-list-reporting` |
 | **Type** | `feat` |
 | **Owner** | OpenCode |
