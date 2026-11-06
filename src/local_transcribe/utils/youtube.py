@@ -1,6 +1,6 @@
 """YouTube URL parsing and validation utilities."""
 
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 
 def extract_video_id(url: str) -> str:
@@ -55,10 +55,7 @@ def is_valid_youtube_url(url: str) -> bool:
         return False
     
     # Reject search results pages
-    if "results?search" in url:
-        return False
-    
-    return True
+    return "results?search" not in url
 
 
 def pick_channel(meta: dict) -> str:

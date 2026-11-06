@@ -7,7 +7,7 @@ import os
 import socket
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from local_transcribe.services.atomic_files import atomic_write_json
 from local_transcribe.services.queue_models import utc_now_iso
@@ -21,14 +21,14 @@ class WorkerState:
     queue_uuid: str
     started_at: str
     heartbeat_at: str
-    current_execution_id: Optional[str] = None
+    current_execution_id: str | None = None
     active: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def create(cls, queue_uuid: str, execution_id: str | None = None) -> "WorkerState":
+    def create(cls, queue_uuid: str, execution_id: str | None = None) -> WorkerState:
         host = socket.gethostname()
         pid = os.getpid()
         now = utc_now_iso()

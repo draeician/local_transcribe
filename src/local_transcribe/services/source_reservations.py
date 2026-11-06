@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from local_transcribe.services.atomic_files import (
     atomic_write_json,
@@ -31,7 +30,7 @@ def reservation_path(queue_dir: Path, source_key: str) -> Path:
     return keys_dir(queue_dir) / source_key_filename(source_key)
 
 
-def read_reservation(queue_dir: Path, source_key: str) -> Optional[SourceReservation]:
+def read_reservation(queue_dir: Path, source_key: str) -> SourceReservation | None:
     path = reservation_path(queue_dir, source_key)
     if not path.is_file():
         return None

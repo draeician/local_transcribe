@@ -7,7 +7,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from local_transcribe.services.atomic_files import atomic_write_json
 from local_transcribe.services.queue_models import utc_now_iso
@@ -25,15 +25,15 @@ class RateLimitConfig:
 @dataclass
 class RateLimitState:
     schema_version: int = 1
-    last_download_started_at: Optional[str] = None
+    last_download_started_at: str | None = None
     download_attempts_this_hour: int = 0
     download_attempts_today: int = 0
-    hour_window_started_at: Optional[str] = None
-    day_window_started_at: Optional[str] = None
-    blocked_until: Optional[str] = None
+    hour_window_started_at: str | None = None
+    day_window_started_at: str | None = None
+    blocked_until: str | None = None
     consecutive_throttle_failures: int = 0
-    last_429_at: Optional[str] = None
-    last_403_at: Optional[str] = None
+    last_429_at: str | None = None
+    last_403_at: str | None = None
     total_429_errors: int = 0
     total_403_errors: int = 0
 
@@ -41,7 +41,7 @@ class RateLimitState:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RateLimitState":
+    def from_dict(cls, data: dict[str, Any]) -> RateLimitState:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 

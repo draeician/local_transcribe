@@ -26,14 +26,15 @@ resolves it through :func:`resolve_device_and_compute` when it claims the job.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import glob
 import logging
 import os
 import subprocess
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,17 +42,17 @@ logger = logging.getLogger(__name__)
 AUTO = "auto"
 
 #: Minimum NVIDIA driver for the CUDA 12 runtime shipped with CUDA-12 wheels.
-MINIMUM_CUDA12_DRIVER: Tuple[int, int] = (525, 60)
+MINIMUM_CUDA12_DRIVER: tuple[int, int] = (525, 60)
 
 #: Preferred compute types per device, most preferred first. CTranslate2
 #: reports the authoritative set at runtime via ``get_supported_compute_types``.
-CUDA_COMPUTE_PREFERENCE: Tuple[str, ...] = (
+CUDA_COMPUTE_PREFERENCE: tuple[str, ...] = (
     "float16",
     "int8_float16",
     "int8",
     "float32",
 )
-CPU_COMPUTE_PREFERENCE: Tuple[str, ...] = (
+CPU_COMPUTE_PREFERENCE: tuple[str, ...] = (
     "int8",
     "int8_float32",
     "float32",
@@ -69,13 +70,13 @@ BACKEND_ROCM = "amd-rocm"
 _GPU_DEVICE_ALIASES = frozenset({AUTO, "gpu", "cuda", "rocm", "hip", "amd"})
 
 #: Names of the TheRock ROCm SDK Python packages (venv-installable, no root).
-ROCM_SDK_PACKAGE_DIR_GLOBS: Tuple[str, ...] = (
+ROCM_SDK_PACKAGE_DIR_GLOBS: tuple[str, ...] = (
     "_rocm_sdk_core",
     "_rocm_sdk_libraries*",
 )
 
 #: Extra system directories that may hold a ROCm runtime.
-_SYSTEM_ROCM_LIB_DIRS: Tuple[str, ...] = (
+_SYSTEM_ROCM_LIB_DIRS: tuple[str, ...] = (
     "/opt/rocm/lib",
     "/opt/rocm/lib/llvm/lib",
 )
@@ -89,7 +90,7 @@ _CUDA_MARKERS = ("libcudart.so", "libcublas.so", "libcudnn.so")
 #: Library-name prefixes that may be preloaded. Only ROCm/GPU-related libraries
 #: are ever ``dlopen``ed — never arbitrary files from a shared system directory
 #: (that could load a sanitizer runtime or otherwise corrupt the process).
-_PRELOAD_ALLOWED_PREFIXES: Tuple[str, ...] = (
+_PRELOAD_ALLOWED_PREFIXES: tuple[str, ...] = (
     "libamd",
     "libhip",
     "libroc",
@@ -141,7 +142,7 @@ def normalize(value: str | None) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def parse_driver_version(version: str) -> Optional[Tuple[int, int]]:
+def parse_driver_version(version: str) -> tuple[int, int] | None:
     """Parse ``"535.274.02"`` into ``(535, 274)``; ``None`` when unparseable."""
     parts = (version or "").strip().split(".")
     try:
@@ -158,7 +159,7 @@ def driver_supports_cuda12(version: str) -> bool:
     return parsed >= MINIMUM_CUDA12_DRIVER
 
 
-def detect_nvidia_gpu(run: Runner | None = None) -> Tuple[bool, str]:
+def detect_nvidia_gpu(run: Runner | None = None) -> tuple[bool, str]:
     """Functional NVIDIA GPU/driver probe via ``nvidia-smi``.
 
     Returns ``(available, detail)``. A non-zero exit, empty GPU list, missing
@@ -199,7 +200,7 @@ def detect_nvidia_gpu(run: Runner | None = None) -> Tuple[bool, str]:
 # --------------------------------------------------------------------------- #
 
 
-def rocm_sdk_library_dirs() -> List[Path]:
+def rocm_sdk_library_dirs() -> list[Path]:
     """Return ROCm library directories discoverable without root.
 
     TheRock's ROCm SDK ships as ordinary Python wheels (``rocm-sdk-core`` and
@@ -207,14 +208,14 @@ def rocm_sdk_library_dirs() -> List[Path]:
     ``_rocm_sdk_core/lib`` and ``_rocm_sdk_libraries_*/lib`` inside
     site-packages. Any system ROCm under ``/opt/rocm`` is included too.
     """
-    dirs: List[Path] = []
+    dirs: list[Path] = []
     seen: set[str] = set()
 
-    search_roots: List[Path] = []
+    search_roots: list[Path] = []
     for entry in sys.path:
         if entry:
             search_roots.append(Path(entry))
-    try:  # pragma: no cover - defensive
+    with contextlib.suppress(Exception):  # pragma: no cover - defensive
         import site
 
         for attr in ("getsitepackages", "getusersitepackages"):
@@ -223,8 +224,6 @@ def rocm_sdk_library_dirs() -> List[Path]:
                 value = getter()
                 for item in value if isinstance(value, (list, tuple)) else [value]:
                     search_roots.append(Path(item))
-    except Exception:  # noqa: BLE001
-        pass
 
     for root in search_roots:
         for pattern in ROCM_SDK_PACKAGE_DIR_GLOBS:
@@ -238,7 +237,7 @@ def rocm_sdk_library_dirs() -> List[Path]:
         if candidate.is_dir():
             dirs.append(candidate)
 
-    unique: List[Path] = []
+    unique: list[Path] = []
     for d in dirs:
         key = str(d)
         if key not in seen:
@@ -252,7 +251,7 @@ def rocm_library_present() -> bool:
     return bool(rocm_sdk_library_dirs())
 
 
-def preload_rocm_libraries(dirs: Optional[Iterable[Path]] = None) -> Tuple[int, List[str]]:
+def preload_rocm_libraries(dirs: Iterable[Path] | None = None) -> tuple[int, list[str]]:
     """``dlopen`` ROCm libraries with ``RTLD_GLOBAL`` (idempotent).
 
     CTranslate2's ROCm wheel links against ROCm sonames (e.g.
@@ -267,7 +266,7 @@ def preload_rocm_libraries(dirs: Optional[Iterable[Path]] = None) -> Tuple[int, 
     """
     search = list(dirs) if dirs is not None else rocm_sdk_library_dirs()
     loaded = 0
-    errors: List[str] = []
+    errors: list[str] = []
     for directory in search:
         pattern = str(Path(directory) / "*.so*")
         for so in sorted(glob.glob(pattern)):
@@ -286,7 +285,7 @@ def preload_rocm_libraries(dirs: Optional[Iterable[Path]] = None) -> Tuple[int, 
     return loaded, errors
 
 
-def detect_amd_gpu(run: Runner | None = None) -> Tuple[bool, str]:
+def detect_amd_gpu(run: Runner | None = None) -> tuple[bool, str]:
     """Functional AMD GPU/ROCm probe via ``/dev/kfd`` + ``rocminfo``.
 
     Returns ``(available, detail)`` where ``detail`` includes the GPU
@@ -305,7 +304,7 @@ def detect_amd_gpu(run: Runner | None = None) -> Tuple[bool, str]:
             continue
         except subprocess.TimeoutExpired:
             continue
-        except Exception:  # noqa: BLE001
+        except (OSError, subprocess.SubprocessError):
             continue
         output = (result.stdout or "") + (result.stderr or "")
         if "gfx" in output:
@@ -376,7 +375,7 @@ def gpu_backend() -> str:
     return BACKEND_CPU
 
 
-def supported_compute_types(device: str) -> Tuple[str, ...]:
+def supported_compute_types(device: str) -> tuple[str, ...]:
     """Compute types CTranslate2 reports for ``device`` (empty when unknown)."""
     try:
         ct2 = _import_ctranslate2()
@@ -388,14 +387,14 @@ def supported_compute_types(device: str) -> Tuple[str, ...]:
         return ()
 
 
-def prepare_gpu_runtime() -> List[str]:
+def prepare_gpu_runtime() -> list[str]:
     """Best-effort, side-effect-local preparation for GPU inference.
 
     Preloads ROCm SDK libraries when they are present so the CTranslate2 ROCm
     wheel can resolve its sonames. Returns human-readable notes (empty when
     nothing was needed).
     """
-    notes: List[str] = []
+    notes: list[str] = []
     if rocm_library_present():
         loaded, errors = preload_rocm_libraries()
         if loaded:
@@ -405,7 +404,7 @@ def prepare_gpu_runtime() -> List[str]:
     return notes
 
 
-def gpu_runtime_status() -> Tuple[bool, str]:
+def gpu_runtime_status() -> tuple[bool, str]:
     """Whether CTranslate2 can actually execute on a GPU right now.
 
     This is the authoritative runtime check: it prepares the ROCm runtime,
@@ -440,7 +439,7 @@ def gpu_runtime_status() -> Tuple[bool, str]:
     return True, ""
 
 
-def cuda_runtime_status() -> Tuple[bool, str]:
+def cuda_runtime_status() -> tuple[bool, str]:
     """Backward-compatible alias for :func:`gpu_runtime_status`."""
     return gpu_runtime_status()
 
@@ -474,7 +473,7 @@ def select_compute_type(device: str, requested: str | None) -> str:
 
 def resolve_device_and_compute(
     device: str | None, compute_type: str | None
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Resolve requested options into an ``(effective_device, compute_type)``.
 
     * ``auto``/``gpu`` with a usable GPU → the GPU backend and the best

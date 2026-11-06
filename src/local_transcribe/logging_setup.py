@@ -7,7 +7,6 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
 
 # Long-running commands announce the log path; short CLI ops stay quiet.
 _ANNOUNCE_PREFIXES = frozenset(
@@ -37,7 +36,7 @@ def default_log_dir() -> Path:
 
 def configure_logging(
     verbose: bool = False,
-    log_dir: Optional[Path] = None,
+    log_dir: Path | None = None,
     log_file_prefix: str = "batch_transcribe",
     *,
     file_logging: bool = True,

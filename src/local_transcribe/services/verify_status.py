@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
 
 from local_transcribe.services.status_store import JsonStatusStore, TranscriptStatus
 from local_transcribe.utils.files import safe_read_lines, safe_write_lines, validate_transcript_file
@@ -14,8 +13,8 @@ class VerificationResult:
     """Results from verification process."""
     total_checked: int = 0
     missing_transcripts: int = 0
-    urls_to_retry: List[str] = None
-    video_ids_to_retry: Set[str] = None
+    urls_to_retry: list[str] = None
+    video_ids_to_retry: set[str] = None
     status_updates: int = 0
     finished_cleaned: bool = False
     pending_file_updated: bool = False
@@ -31,7 +30,7 @@ class VerificationResult:
 def verify_transcripts_in_finished_dat(
     finished_file: Path,
     output_dir: Path,
-) -> Tuple[List[str], Set[str]]:
+) -> tuple[list[str], set[str]]:
     """
     Verify transcripts exist for URLs in finished.dat.
     
@@ -70,7 +69,7 @@ def verify_transcripts_in_finished_dat(
 def verify_transcripts_in_status_store(
     status_store: JsonStatusStore,
     output_dir: Path,
-) -> Tuple[List[TranscriptStatus], Set[str]]:
+) -> tuple[list[TranscriptStatus], set[str]]:
     """
     Verify transcripts exist for entries marked as completed in status store.
     
@@ -97,9 +96,9 @@ def verify_transcripts_in_status_store(
 
 def update_pending_file(
     pending_file: Path,
-    new_urls: List[str],
-    existing_video_ids: Set[str] = None,
-) -> Tuple[int, Set[str]]:
+    new_urls: list[str],
+    existing_video_ids: set[str] | None = None,
+) -> tuple[int, set[str]]:
     """
     Update pending file with new URLs, avoiding duplicates.
     
@@ -162,7 +161,7 @@ def update_pending_file(
 
 def mark_as_pending_in_status_store(
     status_store: JsonStatusStore,
-    video_ids: Set[str],
+    video_ids: set[str],
 ) -> int:
     """
     Mark video IDs as pending in status store.

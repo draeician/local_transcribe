@@ -12,17 +12,17 @@ The preload is best-effort and never raises: on CPU-only and NVIDIA CUDA hosts
 there is nothing to preload, and a missing ROCm runtime must not prevent import.
 """
 
+import contextlib
+
 __version__ = "0.8.0"
 
 
 def _preload_rocm_runtime() -> None:
     """Best-effort ROCm library preload; never raises."""
-    try:
+    with contextlib.suppress(Exception):
         from local_transcribe.utils import hardware
 
         hardware.prepare_gpu_runtime()
-    except Exception:  # noqa: BLE001 — importing the package must always succeed
-        pass
 
 
 _preload_rocm_runtime()

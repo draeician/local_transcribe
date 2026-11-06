@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from local_transcribe.services.atomic_files import fsync_directory, unique_tmp_path
 
@@ -72,7 +73,7 @@ def _write_generation_marker(path: Path, generation: int) -> None:
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:
-            os.write(fd, f"{generation}\n".encode("utf-8"))
+            os.write(fd, f"{generation}\n".encode())
             os.fsync(fd)
         finally:
             os.close(fd)

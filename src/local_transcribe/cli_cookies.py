@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -30,31 +30,35 @@ def cookies_refresh(
         "-b",
         help="Browser to export from: brave (default), chrome, or firefox",
     ),
-    output: Optional[Path] = typer.Option(
-        None,
-        "--output",
-        "-o",
-        help="Destination Netscape cookies file "
-        "(defaults to auth profile cookies_file or "
-        "~/.config/local-transcribe/youtube-cookies.txt)",
-    ),
-    profile: Optional[str] = typer.Option(
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Destination Netscape cookies file "
+            "(defaults to auth profile cookies_file or "
+            "~/.config/local-transcribe/youtube-cookies.txt)",
+        ),
+    ] = None,
+    profile: str | None = typer.Option(
         None,
         "--profile",
         help="Auth profile name to update (defaults to queue.default_auth_profile)",
     ),
-    profile_path: Optional[Path] = typer.Option(
-        None,
-        "--profile-path",
-        help="Browser profile directory (auto-detect Flatpak/native Brave/Chrome)",
-    ),
+    profile_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--profile-path",
+            help="Browser profile directory (auto-detect Flatpak/native Brave/Chrome)",
+        ),
+    ] = None,
     keyring: str = typer.Option(
         "gnomekeyring",
         "--keyring",
         help="Chromium keyring backend (gnomekeyring, kwallet, basic, none). "
         "Ignored for firefox.",
     ),
-    cookies_from_browser: Optional[str] = typer.Option(
+    cookies_from_browser: str | None = typer.Option(
         None,
         "--cookies-from-browser",
         help="Raw yt-dlp --cookies-from-browser value (bypasses auto-detect)",
@@ -88,7 +92,7 @@ def cookies_refresh(
 
     keyring_norm = keyring.strip().lower()
     if keyring_norm in {"none", "off", "-"}:
-        keyring_val: Optional[str] = None
+        keyring_val: str | None = None
     else:
         keyring_val = keyring_norm
 
@@ -103,7 +107,7 @@ def cookies_refresh(
             probe_url=probe_url,
             update_config=not no_config_update,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.error("Cookie refresh failed: %s", exc, exc_info=verbose)
         console.print(f"[red]✗[/red] {exc}")
         raise typer.Exit(1) from exc

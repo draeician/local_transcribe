@@ -310,3 +310,39 @@ Coverage: `test_transcribe_url_wait_does_not_probe_deno`,
 `test_transcribe_url_wait_surfaces_worker_failure`,
 `test_batch_queue_wait_does_not_probe_deno`, plus the existing direct-path
 warning tests and the queue-list suite under the autouse XDG fixture.
+---
+
+## 16. Ruff verification gate restored (task 040, 2026-11-06)
+
+**Decision.** Correct all 413 pre-existing Ruff findings on `main` without
+changing the enabled rule set, adding blanket suppressions, or weakening
+`pyproject.toml`.
+
+**Why.** Ruff 0.17's default rule set reports the repository's existing style and
+typing debt (413 findings at `25b89f1`), so a zero-finding gate cannot be
+restored by configuration changes without hiding real findings. The cleanup
+therefore fixes the code and keeps the gate meaningful.
+
+**Typer options.** Path-typed options now use `typing.Annotated`, with the
+`typer.Option`/`typer.Argument` call inside the annotation and the actual default
+on the parameter. This removes the `B008` false positive without suppressing it
+and preserves every option name, default, and required flag.
+
+**Exception handling.** Blind handlers were narrowed to the exceptions each call
+can actually raise, and two best-effort probes use `contextlib.suppress`. Two
+intentional boundaries — the `lt doctor` command and the per-video batch loop —
+keep a targeted, justified `# noqa: BLE001` so a single failure still cannot
+abort diagnostics or the batch. No blanket `noqa` was introduced; four
+pre-existing broad-catch suppressions were removed.
+
+**Small semantic corrections.** Invalid config root/`queue` values now raise
+`TypeError` (the producer fallback in `queue_api` catches it as well); missing
+auth profiles still raise `ValueError`. `WorkerLock.__enter__` annotates `Self`
+imported under `TYPE_CHECKING`, which keeps Python 3.10 imports working without a
+new runtime dependency. The duplicate CLI callback was renamed `app_callback`;
+the console-script entry point remains `main`.
+
+**Verification.** `uvx ruff check --config pyproject.toml src tests` → **0
+findings** (baseline 413). Full suite: 298 passed, 11 skipped; the only baseline
+difference was the documented concurrency timing flake. Version remains `0.7.0`;
+no dependency or rule-config change.

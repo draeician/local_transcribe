@@ -455,7 +455,7 @@ def test_back_to_back_jobs_reuse_one_model_and_reset_the_window(
         clock.advance(next(durations))
         return "text"
 
-    runner, cache, audio = _idle_test_runner(
+    runner, _cache, audio = _idle_test_runner(
         tmp_path, monkeypatch, transcribe=transcribe, loader=loader
     )
 
