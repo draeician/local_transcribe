@@ -943,6 +943,87 @@ contention, not a code path. The steady-state numbers above are reproducible.
   `src/local_transcribe/__init__.py`, `project_spec.md`, and `CHANGELOG.md`.
   No tag pushed (not declared an official release here).
 
+## Ruff verification gate cleanup (task 040, 2026-11-06, OpenCode)
+
+Branch `chore/ruff-gate-cleanup`, based on `origin/main` @ `25b89f1`. Task 040
+was opened in `.crules/tasks/wip/` and moved to `review/` only after the gate and
+verification checks passed. Task 039 and `chore/cli-reporting-integration` were
+left untouched (that branch remains at `94b40db`).
+
+### Baseline
+
+`uvx ruff check --config pyproject.toml src tests` reported **413 findings**
+across 49 files. The largest groups were `UP045` (125), `UP006` (109), `UP035`
+(40), `B008` (21), `F401` (21), and `BLE001` (15); the remainder were autofixable
+style/import findings plus `F841`, `PLW1510`, `S110`, `S112`, `FURB192`, `TRY004`,
+`TRY203`, and one-off `SIM`/`RUF`/`PYI` items.
+
+### Changes
+
+| Commit | Scope |
+|--------|-------|
+| `41c8dce` | Import sorting (`I001`) |
+| `832104b` | PEP 604/585 annotations and `collections.abc` imports (`UP006`, `UP045`, `UP035`, `UP037`, `UP012`) |
+| `d5a1a36` | Remaining safe autofixes: `F541`, `PIE790`, `FURB122`, `RUF022`, genuinely unused `RUF100` |
+| `628c4c5` | Manual findings: `B008`, `BLE001`, `S110`, `S112`, `PLW1510`, `F841`, `FURB192`, `TRY004`, `TRY203`, `F811`, `PYI034`, `UP022`, `RUF013`, `RUF059`, `RUF007`, `SIM103`, `SIM117` |
+
+Notable decisions:
+
+- **B008** was fixed properly with `typing.Annotated`, not suppressed. Only
+  Path-typed options triggered it; option names, defaults, and required flags
+  were preserved. `lt queue init --help` still marks `--queue-dir` required, and
+  CLI tests pass.
+- **BLE001/S110/S112** handlers were narrowed to the exceptions each call can
+  raise; best-effort probes use `contextlib.suppress`. Two intentional
+  boundaries (CLI `doctor`, per-video batch loop) retain targeted, justified
+  `# noqa: BLE001`. Four earlier broad-catch suppressions were removed, so the
+  branch has a net reduction in suppressions.
+- **TRY004** invalid config root/`queue` values now raise `TypeError`; the
+  producer fallback in `queue_api` catches `TypeError` too, preserving fallback.
+  Missing auth profiles still raise `ValueError`; malformed profile entries raise
+  `TypeError`.
+- **PYI034** uses `Self` imported under `TYPE_CHECKING`, so no runtime
+  dependency is added and Python 3.10 imports still work.
+- **F811** renamed the Typer callback to `app_callback`; the console-script
+  entry point `main` is unchanged.
+- `pyproject.toml` was not modified: no rule selection, ignore list, or
+  dependency changed. Version remains **0.7.0** (this branch is based on
+  `main`, which has not taken the 0.8.0 release line).
+
+### Verification evidence
+
+Environment: system `pytest` 9.0.2; `TERM=dumb`;
+`PYTHONPATH=src:/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+Queue-related tests used isolated XDG paths under `/tmp/opencode/task040/`.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Baseline gate | `uvx ruff check --config pyproject.toml src tests` | **413 findings** |
+| Final gate | same command | **0 findings — All checks passed** |
+| Targeted regression (CLI/worker/queue, default env) | `pytest -q tests/test_cli_queue.py tests/test_cli_worker.py tests/test_cli_batch_queue.py tests/test_cli_transcribe_queue.py tests/test_cookie_refresh.py tests/test_config_write.py tests/test_worker_lock.py tests/test_worker_model_idle.py tests/test_worker_atomic_transitions.py tests/test_downloader_errors.py tests/test_rocm_support.py tests/test_update.py` | **117 passed, 6 failed** |
+| Batch tests, isolated XDG | `XDG_CONFIG_HOME=… pytest -q tests/test_cli_batch_queue.py` | **10 passed** |
+| Baseline batch tests (`origin/main` @ `25b89f1`) | same command in `/tmp/lt-baseline-main` | **same 6 failures, 4 passed** |
+| Full suite, one run | `XDG_CONFIG_HOME=… XDG_STATE_HOME=… pytest -q` | **298 passed, 11 skipped** |
+| Baseline full suite (`origin/main`) | same command in `/tmp/lt-baseline-main` | **1 failed, 297 passed, 11 skipped** — documented timing flake only |
+| Syntax | `compileall -q src tests` + import every package module | OK |
+| CLI help smoke | `queue init --help`, `queue add --help`, `cookies refresh --help`, `worker run --help` | required/defaults intact |
+| Build | `uv build --out-dir /tmp/opencode/task040/dist` | 0.7.0 sdist + wheel; metadata `Version: 0.7.0` |
+| Secret scan | high-confidence pattern scan of `git diff` | **CLEAN** |
+| Diff hygiene | `git diff --check` | clean |
+
+Branch diff versus `origin/main`: **51 files, +502/−403**.
+
+The six `test_cli_batch_queue` failures are pre-existing on `origin/main` under
+the operator's config (stale `expected_uuid`); they pass with isolated XDG. The
+only baseline full-suite failure was
+`test_queue_concurrency.py::test_concurrent_force_single_current_generation`,
+the documented timing flake; the branch run passed it.
+
+### Blockers
+
+None. No merge, tag, release, branch deletion, ROCm change, worker restart,
+production queue change, or system configuration change was performed.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
