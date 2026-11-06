@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, Tuple, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
-CacheKey = Tuple[str, str, str]
+CacheKey = tuple[str, str, str]
 
 #: Authoritative idle-unload threshold (SPEC §20 ``model_idle_unload_seconds``).
 #: Measured from the *end* of the cached entry's last actual model use (see

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -30,7 +29,7 @@ def cookies_refresh(
         "-b",
         help="Browser to export from: brave (default), chrome, or firefox",
     ),
-    output: Optional[Path] = typer.Option(
+    output: Path | None = typer.Option(
         None,
         "--output",
         "-o",
@@ -38,12 +37,12 @@ def cookies_refresh(
         "(defaults to auth profile cookies_file or "
         "~/.config/local-transcribe/youtube-cookies.txt)",
     ),
-    profile: Optional[str] = typer.Option(
+    profile: str | None = typer.Option(
         None,
         "--profile",
         help="Auth profile name to update (defaults to queue.default_auth_profile)",
     ),
-    profile_path: Optional[Path] = typer.Option(
+    profile_path: Path | None = typer.Option(
         None,
         "--profile-path",
         help="Browser profile directory (auto-detect Flatpak/native Brave/Chrome)",
@@ -54,7 +53,7 @@ def cookies_refresh(
         help="Chromium keyring backend (gnomekeyring, kwallet, basic, none). "
         "Ignored for firefox.",
     ),
-    cookies_from_browser: Optional[str] = typer.Option(
+    cookies_from_browser: str | None = typer.Option(
         None,
         "--cookies-from-browser",
         help="Raw yt-dlp --cookies-from-browser value (bypasses auto-detect)",
@@ -88,7 +87,7 @@ def cookies_refresh(
 
     keyring_norm = keyring.strip().lower()
     if keyring_norm in {"none", "off", "-"}:
-        keyring_val: Optional[str] = None
+        keyring_val: str | None = None
     else:
         keyring_val = keyring_norm
 

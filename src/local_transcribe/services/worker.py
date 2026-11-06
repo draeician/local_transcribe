@@ -6,9 +6,10 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from local_transcribe.services.atomic_files import (
     AtomicFileError,
@@ -187,7 +188,7 @@ def select_next_execution(
     hostname: str | None = None,
     max_interactive_streak: int = 5,
     interactive_streak: int = 0,
-) -> Optional[Execution]:
+) -> Execution | None:
     """Select next pending job by priority then created_at; fairness streak."""
     pending = queue_dir / "pending"
     if not pending.is_dir():
@@ -216,7 +217,7 @@ def select_next_execution(
     return sorted(pool, key=sort_key)[0]
 
 
-def claim_execution(queue_dir: Path, execution: Execution) -> Optional[Execution]:
+def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
     """Rename pending -> processing. Returns updated execution or None if lost race."""
     src = queue_dir / "pending" / f"{execution.execution_id}.json"
     dest = queue_dir / "processing" / f"{execution.execution_id}.json"

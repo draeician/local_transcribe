@@ -19,7 +19,6 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from faster_whisper import WhisperModel
 
@@ -56,16 +55,16 @@ class TranscribeConfig:
     compute_type: str = "auto"
     output_dir: Path = Path("./out")
     keep_audio: bool = False
-    cookies_from_browser: Optional[str] = None
-    cookies_file: Optional[str] = None
-    language: Optional[str] = None
+    cookies_from_browser: str | None = None
+    cookies_file: str | None = None
+    language: str | None = None
     beam_size: int = 5
     vad_filter: bool = True
-    limit_rate: Optional[str] = None
-    sleep_interval_requests: Optional[float] = None
+    limit_rate: str | None = None
+    sleep_interval_requests: float | None = None
 
 
-def iso8601_from_ts(ts: Optional[float]) -> str:
+def iso8601_from_ts(ts: float | None) -> str:
     """Convert Unix timestamp to ISO8601 string."""
     if ts is None:
         return ""
@@ -183,7 +182,7 @@ def transcribe_with_model(
     model: WhisperModel,
     audio_path: Path,
     *,
-    language: Optional[str] = None,
+    language: str | None = None,
     beam_size: int = 5,
     vad_filter: bool = True,
 ) -> str:
@@ -206,7 +205,7 @@ def transcribe_with_model(
 def transcribe_audio(
     audio_path: Path,
     model_name: str = "medium",
-    language: Optional[str] = None,
+    language: str | None = None,
     beam_size: int = 5,
     vad_filter: bool = True,
     device: str = "cpu",

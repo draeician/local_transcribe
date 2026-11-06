@@ -1,8 +1,6 @@
 """Command-line interface for local transcription."""
 
-import os
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -20,7 +18,7 @@ from local_transcribe.services.transcriber import (
     transcribe_url,
 )
 from local_transcribe.services.verify_status import verify_finished_dat, verify_full
-from local_transcribe.utils.files import find_cookies_file, safe_read_lines, safe_write_lines
+from local_transcribe.utils.files import safe_read_lines, safe_write_lines
 from local_transcribe.utils.youtube import is_valid_youtube_url
 
 app = typer.Typer(help="Local transcription with Whisper (YouTube URLs or audio files)")
@@ -96,13 +94,13 @@ def transcribe(
         "--no-wait",
         help="Enqueue and return without waiting for the worker (queue mode)",
     ),
-    timeout: Optional[float] = typer.Option(
+    timeout: float | None = typer.Option(
         None,
         "--timeout",
         help="Seconds to wait for queue completion (default: wait indefinitely)",
     ),
     force: bool = typer.Option(False, "--force", help="Force a new queue generation"),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """Transcribe one YouTube video or one local audio file.
@@ -261,9 +259,9 @@ def batch(
     model: str = typer.Option(DEFAULT_MODEL, help="Whisper model"),
     device: str = typer.Option(DEFAULT_DEVICE, help="Device (auto/cpu/cuda/rocm)"),
     compute_type: str = typer.Option(DEFAULT_COMPUTE_TYPE, help="Compute type"),
-    language: Optional[str] = typer.Option(None, "--language", help="Whisper language hint (queue mode)"),
+    language: str | None = typer.Option(None, "--language", help="Whisper language hint (queue mode)"),
     keep_audio: bool = typer.Option(False, "--keep-audio", help="Keep downloaded audio (queue mode)"),
-    auth_profile: Optional[str] = typer.Option(
+    auth_profile: str | None = typer.Option(
         None, "--auth-profile", help="Auth/cookies profile name stored on the execution"
     ),
     output_dir: str = typer.Option(None, "--output-dir", "-o", help=f"Output directory (defaults to {DEFAULT_OUTPUT_DIR})"),
@@ -277,7 +275,7 @@ def batch(
         "--wait",
         help="Wait for enqueued/active executions to finish (queue mode)",
     ),
-    timeout: Optional[float] = typer.Option(
+    timeout: float | None = typer.Option(
         None,
         "--timeout",
         help="Seconds to wait per execution when using --wait (default: indefinite)",
@@ -287,7 +285,7 @@ def batch(
         "--direct",
         help="Legacy in-process batch pipeline (bypass queue)",
     ),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose logging"),
 ):
     """
@@ -760,7 +758,7 @@ def status(
         "-o",
         help=f"Transcript / compat output directory (defaults to {DEFAULT_OUTPUT_DIR})",
     ),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     write_compat: bool = typer.Option(
         True,
         "--write-compat/--no-write-compat",
@@ -895,7 +893,7 @@ def report(
         str(Path.home() / ".local" / "state" / "local-transcribe" / "failed_videos.txt"),
         help="Output report file",
     ),
-    queue_dir: Optional[str] = typer.Option(None, "--queue-dir", help="Queue directory override"),
+    queue_dir: str | None = typer.Option(None, "--queue-dir", help="Queue directory override"),
     write_compat: bool = typer.Option(
         True,
         "--write-compat/--no-write-compat",

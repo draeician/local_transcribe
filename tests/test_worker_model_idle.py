@@ -16,8 +16,9 @@ still runs its real polling loop with a tiny ``poll_interval_seconds``.
 from __future__ import annotations
 
 import time as real_time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 

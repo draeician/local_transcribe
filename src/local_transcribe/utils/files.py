@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from typing import List, Optional, Set, Tuple
 
 
 def safe_read_json(path: Path) -> dict:
@@ -46,7 +45,7 @@ def safe_write_json(path: Path, data: dict, indent: int = 2) -> bool:
         return False
 
 
-def safe_read_lines(path: Path) -> List[str]:
+def safe_read_lines(path: Path) -> list[str]:
     """
     Safely read lines from a text file.
     
@@ -66,7 +65,7 @@ def safe_read_lines(path: Path) -> List[str]:
         return []
 
 
-def safe_write_lines(path: Path, lines: List[str]) -> bool:
+def safe_write_lines(path: Path, lines: list[str]) -> bool:
     """
     Safely write lines to a text file.
     
@@ -107,7 +106,7 @@ def safe_append_line(path: Path, line: str) -> bool:
         return False
 
 
-def find_json_files(directory: Path, pattern: str = "*.json") -> List[Path]:
+def find_json_files(directory: Path, pattern: str = "*.json") -> list[Path]:
     """
     Find all JSON files in a directory.
     
@@ -124,7 +123,7 @@ def find_json_files(directory: Path, pattern: str = "*.json") -> List[Path]:
     return list(directory.glob(pattern))
 
 
-def extract_video_ids_from_files(directory: Path) -> Set[str]:
+def extract_video_ids_from_files(directory: Path) -> set[str]:
     """
     Extract video IDs from JSON transcript filenames.
     
@@ -159,7 +158,7 @@ def validate_transcript_file(json_path: Path) -> bool:
         return False
 
 
-def find_cookies_file() -> Optional[Path]:
+def find_cookies_file() -> Path | None:
     """
     Find cookies file in common locations.
     

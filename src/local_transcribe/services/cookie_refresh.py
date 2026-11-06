@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Mapping, MutableMapping, Optional
+from typing import Literal
 
 import yaml
 
@@ -25,7 +26,7 @@ class BrowserCookieSource:
 
     browser: BrowserName
     cookies_from_browser: str
-    profile_path: Optional[Path] = None
+    profile_path: Path | None = None
     label: str = ""
 
 
@@ -79,14 +80,14 @@ def _chrome_profile_candidates() -> list[Path]:
     ]
 
 
-def _first_existing(paths: list[Path]) -> Optional[Path]:
+def _first_existing(paths: list[Path]) -> Path | None:
     for path in paths:
         if path.is_dir():
             return path
     return None
 
 
-def _with_keyring(browser: str, keyring: Optional[str]) -> str:
+def _with_keyring(browser: str, keyring: str | None) -> str:
     if not keyring or keyring in {"none", "off", "-"}:
         return browser
     return f"{browser}+{keyring}"

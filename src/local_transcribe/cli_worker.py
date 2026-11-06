@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -68,7 +67,7 @@ WantedBy=default.target
 def worker_run(
     once: bool = typer.Option(False, "--once", help="Process at most one job and exit"),
     standby: bool = typer.Option(False, "--standby", help="Retry NLM lock while waiting"),
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Run the worker loop with fail-closed NFS validation (production default)."""
@@ -94,7 +93,7 @@ def worker_run(
 
 @worker_app.command("status")
 def worker_status(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
 ) -> None:
     """Show worker lock and diagnostic state."""
     qdir = resolve_queue_dir(queue_dir=queue_dir) if queue_dir else resolve_queue_dir()
@@ -121,7 +120,7 @@ def worker_status(
 
 @worker_app.command("doctor")
 def worker_doctor(
-    queue_dir: Optional[Path] = typer.Option(None, "--queue-dir"),
+    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
 ) -> None:
     """Alias-style health check for worker environment."""
     worker_status(queue_dir=queue_dir)

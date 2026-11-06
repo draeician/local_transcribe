@@ -10,7 +10,6 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from local_transcribe.services.queue_models import STATE_DIRS, Execution
 from local_transcribe.services.queue_store import QueueStore
@@ -29,8 +28,8 @@ class QueueStatusSummary:
     completed_missing_transcript: int = 0
     worker_lock: str = "unknown"
     worker_state_active: bool = False
-    worker_current_execution_id: Optional[str] = None
-    queue_dir: Optional[Path] = None
+    worker_current_execution_id: str | None = None
+    queue_dir: Path | None = None
 
 
 def _video_id_from_execution(execution: Execution) -> str:

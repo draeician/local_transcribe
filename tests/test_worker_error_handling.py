@@ -229,7 +229,6 @@ def test_local_file_skips_download_admission(tmp_path: Path) -> None:
         out.write_text("{}\n", encoding="utf-8")
         return {"_output_path": str(out)}
 
-    import local_transcribe.services.worker as worker_mod
 
     monkey = pytest.MonkeyPatch()
     monkey.setattr(DownloadAdmission, "admit_and_record", tracking)

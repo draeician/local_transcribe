@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set
 
 from rich.progress import (
     BarColumn,
@@ -44,14 +43,14 @@ class BatchConfig:
     device: str = "auto"
     compute_type: str = "auto"
     max_retries: int = 2
-    status_store: Optional[StatusStore] = None
-    cookies_from_browser: Optional[str] = None
-    cookies_file: Optional[str] = None
+    status_store: StatusStore | None = None
+    cookies_from_browser: str | None = None
+    cookies_file: str | None = None
     timeout_seconds: int = 1800  # 30 minutes
-    finished_file: Optional[Path] = None  # Defaults to output_dir / "finished.dat"
+    finished_file: Path | None = None  # Defaults to output_dir / "finished.dat"
     sleep_interval_between_videos: float = 1.0
-    limit_rate: Optional[str] = None
-    sleep_interval_requests: Optional[float] = None
+    limit_rate: str | None = None
+    sleep_interval_requests: float | None = None
 
 
 @dataclass
@@ -97,7 +96,7 @@ class BatchPipeline:
         
         # Interrupt handling
         self.interrupted = False
-        self.current_audio_file: Optional[Path] = None
+        self.current_audio_file: Path | None = None
         
         # Register signal handler for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -105,7 +104,7 @@ class BatchPipeline:
         
         # Statistics
         self.stats = BatchSummary()
-        self.videos: Dict[str, TranscriptStatus] = {}
+        self.videos: dict[str, TranscriptStatus] = {}
     
     def _signal_handler(self, signum, frame):
         """Handle interrupt signals (SIGINT/SIGTERM) gracefully."""
@@ -133,7 +132,7 @@ class BatchPipeline:
                     self.status_store.set(vid_id, status)
             self.logger.info("Progress saved. Current video marked as pending for retry.")
     
-    def load_input_urls(self) -> List[str]:
+    def load_input_urls(self) -> list[str]:
         """
         Load URLs from input file, removing duplicates and invalid entries.
         
@@ -144,7 +143,7 @@ class BatchPipeline:
             raise FileNotFoundError(f"Input file not found: {self.config.input_file}")
         
         urls = []
-        seen_ids: Set[str] = set()
+        seen_ids: set[str] = set()
         
         for line in safe_read_lines(self.config.input_file):
             # Skip comments
@@ -179,7 +178,7 @@ class BatchPipeline:
         json_path = self.config.output_dir / f"{video_id}.json"
         return validate_transcript_file(json_path)
     
-    def initialize_videos(self, urls: List[str], resume: bool = False) -> None:
+    def initialize_videos(self, urls: list[str], resume: bool = False) -> None:
         """
         Initialize video tracking, checking existing files and status.
         

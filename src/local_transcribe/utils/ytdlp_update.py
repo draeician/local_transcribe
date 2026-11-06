@@ -6,9 +6,9 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
 
 RunFunc = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -26,12 +26,12 @@ def _abspath_no_symlink(path: str | Path) -> Path:
     return Path(os.path.abspath(os.path.expanduser(str(path))))
 
 
-def runtime_bin_dir(python_executable: Optional[str] = None) -> Path:
+def runtime_bin_dir(python_executable: str | None = None) -> Path:
     """Return the ``bin`` directory for the current (or given) Python runtime."""
     return _abspath_no_symlink(python_executable or sys.executable).parent
 
 
-def find_yt_dlp_binary(python_executable: Optional[str] = None) -> str:
+def find_yt_dlp_binary(python_executable: str | None = None) -> str:
     """
     Locate the yt-dlp executable the worker / downloader should use.
 
@@ -54,8 +54,8 @@ def find_yt_dlp_binary(python_executable: Optional[str] = None) -> str:
 
 
 def yt_dlp_invocation(
-    python_executable: Optional[str] = None,
-) -> List[str]:
+    python_executable: str | None = None,
+) -> list[str]:
     """Return argv prefix to run yt-dlp (binary or ``python -m yt_dlp``)."""
     binary = find_yt_dlp_binary(python_executable)
     py = _abspath_no_symlink(python_executable or sys.executable)
@@ -68,7 +68,7 @@ def build_yt_dlp_pip_command(
     python_executable: str,
     *,
     stable: bool = False,
-) -> List[str]:
+) -> list[str]:
     """Build the pip command used to upgrade yt-dlp in the current runtime."""
     cmd = [python_executable, "-m", "pip", "install", "-U"]
     if not stable:
@@ -77,7 +77,7 @@ def build_yt_dlp_pip_command(
     return cmd
 
 
-def _parse_version_output(output: str) -> Optional[str]:
+def _parse_version_output(output: str) -> str | None:
     for line in output.splitlines():
         stripped = line.strip()
         if stripped:
@@ -85,7 +85,7 @@ def _parse_version_output(output: str) -> Optional[str]:
     return None
 
 
-def _version_from_binary(binary: str, run: RunFunc) -> Optional[str]:
+def _version_from_binary(binary: str, run: RunFunc) -> str | None:
     try:
         result = run(
             [binary, "--version"],
@@ -101,10 +101,10 @@ def _version_from_binary(binary: str, run: RunFunc) -> Optional[str]:
 
 
 def get_yt_dlp_version(
-    python_executable: Optional[str] = None,
+    python_executable: str | None = None,
     *,
     run: RunFunc = subprocess.run,
-) -> Optional[str]:
+) -> str | None:
     """
     Return the installed yt-dlp version.
 
@@ -135,7 +135,7 @@ def get_yt_dlp_version(
     return _version_via_module(py, run)
 
 
-def _version_via_module(python_executable: str, run: RunFunc) -> Optional[str]:
+def _version_via_module(python_executable: str, run: RunFunc) -> str | None:
     try:
         result = run(
             [python_executable, "-m", "yt_dlp", "--version"],
@@ -150,7 +150,7 @@ def _version_via_module(python_executable: str, run: RunFunc) -> Optional[str]:
     return _parse_version_output(result.stdout or result.stderr or "")
 
 
-def resolve_deno_on_path() -> tuple[bool, Optional[str]]:
+def resolve_deno_on_path() -> tuple[bool, str | None]:
     """
     Verify Deno is on PATH and return its version first line.
 
@@ -190,11 +190,11 @@ class YtDlpUpdateOutcome:
     """Result of an yt-dlp update attempt."""
 
     success: bool
-    pip_command: List[str]
-    before_version: Optional[str]
-    after_version: Optional[str]
+    pip_command: list[str]
+    before_version: str | None
+    after_version: str | None
     dry_run: bool
-    pip_returncode: Optional[int] = None
+    pip_returncode: int | None = None
     pip_stderr_tail: str = ""
 
 
@@ -202,7 +202,7 @@ def perform_yt_dlp_update(
     *,
     stable: bool = False,
     dry_run: bool = False,
-    python_executable: Optional[str] = None,
+    python_executable: str | None = None,
     run: RunFunc = subprocess.run,
 ) -> YtDlpUpdateOutcome:
     """

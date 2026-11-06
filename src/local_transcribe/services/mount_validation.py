@@ -14,13 +14,12 @@ Unit tests inject a :class:`MountInfo` or mock the probe functions.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping, Sequence
 
 from local_transcribe.services.config import QueueConfig
 from local_transcribe.services.queue_paths import QueueMountError

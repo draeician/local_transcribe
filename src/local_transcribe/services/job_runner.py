@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any
 
 from local_transcribe.services.config import AppConfig, load_config
 from local_transcribe.services.downloader import download_audio_and_metadata

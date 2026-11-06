@@ -13,9 +13,9 @@ import logging
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from local_transcribe.services.queue_models import (
     STATE_DIRS,

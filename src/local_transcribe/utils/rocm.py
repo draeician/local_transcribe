@@ -33,7 +33,6 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 #: Pinned official CTranslate2 ROCm release (GitHub).
 CTRANSLATE2_ROCM_VERSION = "4.8.3"
@@ -52,7 +51,7 @@ ROCM_SDK_VERSION = "7.13.0a20260515"
 ROCM_SDK_INDEX_URL = "https://rocm.nightlies.amd.com/v2/gfx1151/"
 
 #: A GPUs whose ROCm SDK library wheels are known to ship gfx115x device code.
-SUPPORTED_ROCM_SDK_TARGETS: Tuple[str, ...] = ("gfx1151", "gfx1150")
+SUPPORTED_ROCM_SDK_TARGETS: tuple[str, ...] = ("gfx1151", "gfx1150")
 
 _ARCHIVE_MEMBER_TEMPLATE = (
     "temp-linux/ctranslate2-{version}-{python_tag}-{python_tag}-"
@@ -72,11 +71,11 @@ class RocmWheelPlan:
     ctranslate2_archive_sha256: str
     ctranslate2_wheel_member: str
     rocm_sdk_index_url: str
-    rocm_sdk_requirements: Tuple[str, ...]
+    rocm_sdk_requirements: tuple[str, ...]
     python_tag: str
 
 
-def python_tag_for(version: Optional[Tuple[int, int]] = None) -> str:
+def python_tag_for(version: tuple[int, int] | None = None) -> str:
     """Return the wheel ABI tag (``cp313``) for a Python version.
 
     Only the interpreter ABI matters, not the OS, so this is stable across
@@ -94,7 +93,7 @@ def supported_python_tag(python_tag: str) -> bool:
 
 def rocm_wheel_plan(
     *,
-    python_tag: Optional[str] = None,
+    python_tag: str | None = None,
     target: str = "gfx1151",
 ) -> RocmWheelPlan:
     """Describe the pinned ROCm installation for this interpreter."""
@@ -181,10 +180,10 @@ def extract_wheel_member(archive: Path, member: str, destination_dir: Path) -> P
 def prepare_rocm_wheels(
     work_dir: Path,
     *,
-    python_tag: Optional[str] = None,
+    python_tag: str | None = None,
     target: str = "gfx1151",
     download: bool = True,
-) -> Tuple[Path, RocmWheelPlan]:
+) -> tuple[Path, RocmWheelPlan]:
     """Obtain and verify the CTranslate2 ROCm wheel, returning its path.
 
     The archive is cached in ``work_dir`` so repeated installer runs do not
@@ -208,7 +207,7 @@ def prepare_rocm_wheels(
     return wheel, plan
 
 
-def build_rocm_install_steps(plan: RocmWheelPlan, wheel_path: Path) -> List[List[str]]:
+def build_rocm_install_steps(plan: RocmWheelPlan, wheel_path: Path) -> list[list[str]]:
     """pipx commands to install the ROCm stack into the pipx venv.
 
     ``--pip-args=--no-deps`` (single ``=``-joined argument) is used for both

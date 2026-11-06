@@ -5,7 +5,6 @@ import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -125,7 +124,7 @@ class RateLimiter:
         )
         self._save()
     
-    def check_limits(self) -> tuple[bool, Optional[str]]:
+    def check_limits(self) -> tuple[bool, str | None]:
         """
         Check if we're approaching or exceeding rate limits.
         

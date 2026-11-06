@@ -2,15 +2,13 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
 
 from local_transcribe.utils.files import (
     extract_video_ids_from_files,
     safe_read_lines,
     safe_write_lines,
-    validate_transcript_file,
 )
-from local_transcribe.utils.youtube import extract_video_id, is_valid_youtube_url
+from local_transcribe.utils.youtube import extract_video_id
 
 
 @dataclass
@@ -19,28 +17,28 @@ class ReconcileReport:
     # Input file stats
     input_total: int = 0
     input_unique: int = 0
-    input_duplicates: Dict[str, List[Tuple[int, str]]] = None
+    input_duplicates: dict[str, list[tuple[int, str]]] = None
     
     # Finished file stats
     finished_total: int = 0
     finished_unique: int = 0
-    finished_duplicates: Dict[str, List[Tuple[int, str]]] = None
+    finished_duplicates: dict[str, list[tuple[int, str]]] = None
     
     # Transcript files
     transcript_count: int = 0
-    transcript_ids: Set[str] = None
+    transcript_ids: set[str] = None
     
     # Discrepancies
-    extra_in_finished: Set[str] = None  # In finished but not in input
-    pending: Set[str] = None  # In input but not in finished
-    completed: Set[str] = None  # In both input and finished
-    finished_but_no_file: Set[str] = None  # In finished but no transcript file
-    orphaned_transcripts: Set[str] = None  # Transcript file but not in finished
-    actually_completed: Set[str] = None  # In input and has transcript file
-    actually_pending: Set[str] = None  # In input but no transcript file
+    extra_in_finished: set[str] = None  # In finished but not in input
+    pending: set[str] = None  # In input but not in finished
+    completed: set[str] = None  # In both input and finished
+    finished_but_no_file: set[str] = None  # In finished but no transcript file
+    orphaned_transcripts: set[str] = None  # Transcript file but not in finished
+    actually_completed: set[str] = None  # In input and has transcript file
+    actually_pending: set[str] = None  # In input but no transcript file
     
     # Invalid URLs
-    input_invalid: List[Tuple[int, str, str]] = None  # (line_no, url, reason)
+    input_invalid: list[tuple[int, str, str]] = None  # (line_no, url, reason)
     
     def __post_init__(self):
         """Initialize default values for mutable fields."""
@@ -68,7 +66,7 @@ class ReconcileReport:
             self.input_invalid = []
 
 
-def find_duplicates(urls: List[str], video_ids: List[str]) -> Dict[str, List[Tuple[int, str]]]:
+def find_duplicates(urls: list[str], video_ids: list[str]) -> dict[str, list[tuple[int, str]]]:
     """
     Find duplicate video IDs in a list.
     
@@ -79,8 +77,8 @@ def find_duplicates(urls: List[str], video_ids: List[str]) -> Dict[str, List[Tup
     Returns:
         Dictionary mapping video_id -> list of (line_number, url) tuples
     """
-    seen: Dict[str, Tuple[int, str]] = {}
-    duplicates: Dict[str, List[Tuple[int, str]]] = {}
+    seen: dict[str, tuple[int, str]] = {}
+    duplicates: dict[str, list[tuple[int, str]]] = {}
     
     for idx, (url, vid_id) in enumerate(zip(urls, video_ids), 1):
         if vid_id in seen:
@@ -93,7 +91,7 @@ def find_duplicates(urls: List[str], video_ids: List[str]) -> Dict[str, List[Tup
     return duplicates
 
 
-def find_invalid_urls(urls: List[str]) -> List[Tuple[int, str, str]]:
+def find_invalid_urls(urls: list[str]) -> list[tuple[int, str, str]]:
     """
     Find URLs that don't look like valid YouTube URLs.
     
@@ -169,9 +167,9 @@ def reconcile(
     return report
 
 
-def write_reconcile_outputs(report: ReconcileReport, input_urls: List[str], input_ids: List[str],
-                           finished_urls: List[str], finished_ids: List[str],
-                           output_dir: Path) -> Dict[str, Path]:
+def write_reconcile_outputs(report: ReconcileReport, input_urls: list[str], input_ids: list[str],
+                           finished_urls: list[str], finished_ids: list[str],
+                           output_dir: Path) -> dict[str, Path]:
     """
     Write reconciliation output files.
     
@@ -200,7 +198,7 @@ def write_reconcile_outputs(report: ReconcileReport, input_urls: List[str], inpu
     
     # Generate cleaned inputfile (deduplicated, no invalid)
     cleaned_path = Path("inputfile_clean.txt")
-    seen_ids: Set[str] = set()
+    seen_ids: set[str] = set()
     clean_lines = []
     invalid_vid_ids = {extract_video_id(inv_url) for _, inv_url, _ in report.input_invalid}
     
@@ -214,7 +212,7 @@ def write_reconcile_outputs(report: ReconcileReport, input_urls: List[str], inpu
     
     # Generate corrected finished.dat (based on actual transcript files)
     finished_corrected_path = Path("finished_corrected.dat")
-    written: Set[str] = set()
+    written: set[str] = set()
     corrected_lines = []
     
     for url, vid_id in zip(input_urls, input_ids):

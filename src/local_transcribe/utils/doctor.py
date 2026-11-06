@@ -15,7 +15,6 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
 
 
 @dataclass(frozen=True)
@@ -28,7 +27,7 @@ class DiagnosticCheck:
     required: bool = True
 
 
-def check_required_modules() -> Tuple[bool, str]:
+def check_required_modules() -> tuple[bool, str]:
     """Verify the required inference/download dependency set (no torch/nvidia)."""
     required = {
         "ctranslate2": "ctranslate2",
@@ -36,7 +35,7 @@ def check_required_modules() -> Tuple[bool, str]:
         "yt-dlp": "yt_dlp",
         "soundfile": "soundfile",
     }
-    missing: List[str] = []
+    missing: list[str] = []
     for label, module in required.items():
         try:
             importlib.import_module(module)
@@ -47,7 +46,7 @@ def check_required_modules() -> Tuple[bool, str]:
     return True, "ctranslate2, faster-whisper, yt-dlp, soundfile present"
 
 
-def check_cpu_backend() -> Tuple[bool, str]:
+def check_cpu_backend() -> tuple[bool, str]:
     """Confirm CTranslate2 can actually run CPU inference."""
     from local_transcribe.utils.hardware import supported_compute_types
 
@@ -58,21 +57,21 @@ def check_cpu_backend() -> Tuple[bool, str]:
     return True, f"CPU inference healthy (compute_type={preferred}; supported={', '.join(sorted(types))})"
 
 
-def check_nvidia_smi() -> Tuple[bool, str]:
+def check_nvidia_smi() -> tuple[bool, str]:
     """Check whether a working NVIDIA GPU/driver is visible."""
     from local_transcribe.utils.hardware import detect_nvidia_gpu
 
     return detect_nvidia_gpu()
 
 
-def check_amd_gpu() -> Tuple[bool, str]:
+def check_amd_gpu() -> tuple[bool, str]:
     """Check whether an AMD GPU/ROCm compute device is visible."""
     from local_transcribe.utils.hardware import detect_amd_gpu
 
     return detect_amd_gpu()
 
 
-def check_gpu_runtime() -> Tuple[bool, str]:
+def check_gpu_runtime() -> tuple[bool, str]:
     """Check whether CTranslate2 can actually execute on a GPU (CUDA or ROCm)."""
     from local_transcribe.utils import hardware
 
@@ -92,12 +91,12 @@ def check_gpu_runtime() -> Tuple[bool, str]:
     )
 
 
-def check_cuda_runtime() -> Tuple[bool, str]:
+def check_cuda_runtime() -> tuple[bool, str]:
     """Backward-compatible alias for :func:`check_gpu_runtime`."""
     return check_gpu_runtime()
 
 
-def check_rocm_sdk() -> Tuple[bool, str]:
+def check_rocm_sdk() -> tuple[bool, str]:
     """Report whether ROCm SDK libraries are discoverable (no root needed)."""
     from local_transcribe.utils.hardware import rocm_sdk_library_dirs
 
@@ -109,7 +108,7 @@ def check_rocm_sdk() -> Tuple[bool, str]:
     return True, f"ROCm libraries under: {listing}{suffix}"
 
 
-def check_ffmpeg() -> Tuple[bool, str]:
+def check_ffmpeg() -> tuple[bool, str]:
     """Check if ffmpeg is available."""
     try:
         result = subprocess.run(
@@ -130,7 +129,7 @@ def check_ffmpeg() -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
-def check_yt_dlp() -> Tuple[bool, str]:
+def check_yt_dlp() -> tuple[bool, str]:
     """Check if yt-dlp is available (module + downloader binary)."""
     try:
         import yt_dlp
@@ -150,7 +149,7 @@ def check_yt_dlp() -> Tuple[bool, str]:
         return False, f"Error: {e}"
 
 
-def check_deno() -> Tuple[bool, str]:
+def check_deno() -> tuple[bool, str]:
     """Check if Deno is installed and accessible (YouTube downloads only)."""
     try:
         result = subprocess.run(
@@ -201,7 +200,7 @@ Install with:
 For more information, visit: https://deno.com/"""
 
 
-def check_deno_with_guidance() -> Tuple[bool, str]:
+def check_deno_with_guidance() -> tuple[bool, str]:
     """Check if Deno is installed, returning guidance if missing."""
     is_available, result = check_deno()
     if is_available:
@@ -230,7 +229,7 @@ def is_pipx_environment() -> bool:
     return False
 
 
-def run_diagnostics() -> List[DiagnosticCheck]:
+def run_diagnostics() -> list[DiagnosticCheck]:
     """Run all diagnostic checks, required checks first.
 
     Returns an ordered list; the CLI fails only if a ``required`` check is not ok.

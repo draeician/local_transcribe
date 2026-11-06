@@ -1,9 +1,8 @@
 """Status store for tracking batch transcription progress."""
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Protocol
+from typing import Protocol
 
 from local_transcribe.utils.files import safe_read_json, safe_write_json
 
@@ -15,24 +14,24 @@ class TranscriptStatus:
     video_id: str
     status: str  # pending, processing, completed, failed
     attempts: int = 0
-    last_attempt: Optional[str] = None
-    error_message: Optional[str] = None
-    output_file: Optional[str] = None
-    duration_seconds: Optional[float] = None
+    last_attempt: str | None = None
+    error_message: str | None = None
+    output_file: str | None = None
+    duration_seconds: float | None = None
 
 
 class StatusStore(Protocol):
     """Protocol for status store implementations."""
     
-    def load(self) -> Dict[str, TranscriptStatus]:
+    def load(self) -> dict[str, TranscriptStatus]:
         """Load all statuses."""
         ...
     
-    def save(self, statuses: Dict[str, TranscriptStatus]) -> bool:
+    def save(self, statuses: dict[str, TranscriptStatus]) -> bool:
         """Save all statuses."""
         ...
     
-    def get(self, video_id: str) -> Optional[TranscriptStatus]:
+    def get(self, video_id: str) -> TranscriptStatus | None:
         """Get status for a video ID."""
         ...
     
@@ -52,9 +51,9 @@ class JsonStatusStore:
             status_file: Path to JSON status file
         """
         self.status_file = status_file
-        self._cache: Optional[Dict[str, TranscriptStatus]] = None
+        self._cache: dict[str, TranscriptStatus] | None = None
     
-    def load(self) -> Dict[str, TranscriptStatus]:
+    def load(self) -> dict[str, TranscriptStatus]:
         """Load all statuses from JSON file."""
         if self._cache is not None:
             return self._cache
@@ -75,7 +74,7 @@ class JsonStatusStore:
         
         return self._cache
     
-    def save(self, statuses: Dict[str, TranscriptStatus]) -> bool:
+    def save(self, statuses: dict[str, TranscriptStatus]) -> bool:
         """
         Save all statuses to JSON file.
         
@@ -89,7 +88,7 @@ class JsonStatusStore:
         data = {vid_id: asdict(status) for vid_id, status in statuses.items()}
         return safe_write_json(self.status_file, data)
     
-    def get(self, video_id: str) -> Optional[TranscriptStatus]:
+    def get(self, video_id: str) -> TranscriptStatus | None:
         """Get status for a video ID."""
         statuses = self.load()
         return statuses.get(video_id)

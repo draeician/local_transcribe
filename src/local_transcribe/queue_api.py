@@ -23,7 +23,6 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from local_transcribe.services.atomic_files import fsync_directory, unique_tmp_path
 from local_transcribe.services.queue_models import ExecutionOptions

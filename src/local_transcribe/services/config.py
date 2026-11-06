@@ -7,9 +7,10 @@ Queue path resolution is explicit only — no multi-candidate discovery.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any
 
 import yaml
 
@@ -26,14 +27,14 @@ def default_config_path() -> Path:
 class QueueConfig:
     """Queue-related settings from config."""
 
-    path: Optional[Path] = None
-    expected_uuid: Optional[str] = None
-    expected_nfs_version: Optional[int] = 3
-    expected_server: Optional[str] = None
-    expected_export: Optional[str] = None
-    default_auth_profile: Optional[str] = None
+    path: Path | None = None
+    expected_uuid: str | None = None
+    expected_nfs_version: int | None = 3
+    expected_server: str | None = None
+    expected_export: str | None = None
+    default_auth_profile: str | None = None
     # Auto-import ref-cli's transcript-pending.md into the durable queue.
-    legacy_pending_file: Optional[Path] = None
+    legacy_pending_file: Path | None = None
     watch_legacy_pending: bool = True
 
 
