@@ -145,9 +145,12 @@ lt batch --input inputfile.txt
 
 # Watch the queue
 lt queue stats
-lt queue list
-lt queue list --status completed
-lt queue list --status processing
+lt queue list                              # all states, oldest first (limit 60)
+lt queue list pending                      # one status
+lt queue list --status completed           # option form remains supported
+lt queue list --sort newest --offset 60    # next page, newest first
+lt queue list <execution_id>               # one execution (offset must be 0)
+lt queue list <execution_id> --origin cli  # UUID + origin filter
 ```
 
 ### Emergency / legacy in-process (bypass queue)
@@ -412,7 +415,7 @@ A: In queue mode nothing is lost; the worker continues from `pending` / `retry`.
 A: Prefer `lt queue stats` and `lt queue list --status completed`. Legacy `lt reconcile` still compares input / `finished.dat` / transcript files.
 
 **Q: Why does `lt queue list` still show many pending rows while transcripts appear?**  
-A: `lt queue list` defaults to pending (first 50). Completed jobs leave that list — use `lt queue stats` to see counts drop.
+A: `lt queue list` shows all states by default (oldest first, limit 60). Completed jobs move to `completed/`; filter with `lt queue list pending` or use `lt queue stats` to see counts drop.
 
 ---
 
@@ -506,6 +509,9 @@ The system should now:
 
 **Q: Why do I need Deno?**  
 A: YouTube's 2026 SABR protocol requires JavaScript execution to solve dynamic "n-challenge" signatures. Deno provides a high-performance JavaScript runtime that yt-dlp can use to solve these challenges.
+
+**Q: Why does `lt queue list` not warn about Deno?**  
+A: It should not. Deno is only a YouTube download prerequisite, and in queue mode the worker performs the download. The probe therefore runs only where this process downloads audio itself (`lt transcribe <URL> --direct`, `lt batch --direct`) and is reported as an optional check by `lt doctor`. Queue inspection, version, help output, and all queue-mode producers/waiters (`--no-wait`, waiting, `lt batch --wait`) stay quiet on hosts without Deno. If a queued job fails on the worker, the wait output still reports the failure category and detail.
 
 **Q: Can I use Node.js instead of Deno?**  
 A: While Node.js was tried, the pipx isolated virtual environment had difficulty reliably calling the local Node binary across the environment boundary. Deno with a system-wide symlink in `/usr/local/bin` ensures reliable access.

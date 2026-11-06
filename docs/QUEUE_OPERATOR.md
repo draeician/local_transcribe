@@ -84,7 +84,9 @@ Logs live under ``~/.local/state/local-transcribe/logs/`` (override with
 ## Retry failed jobs
 
 ```bash
-lt queue list --status failed      # full execution_id column
+lt queue list failed               # status positional; --status failed also works
+lt queue list --sort newest        # newest enqueue first
+lt queue list <execution_id>       # one execution, full record via show
 lt queue retry                     # re-queue all failed (one job per unique source)
 lt queue retry <execution_id>      # re-queue one source
 lt queue retry --include-cancelled

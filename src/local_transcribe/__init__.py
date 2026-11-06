@@ -12,7 +12,7 @@ The preload is best-effort and never raises: on CPU-only and NVIDIA CUDA hosts
 there is nothing to preload, and a missing ROCm runtime must not prevent import.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 
 def _preload_rocm_runtime() -> None:

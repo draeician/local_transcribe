@@ -81,7 +81,7 @@ Local paths are detected when `Path.expanduser` resolves to an existing regular 
 1. **Producer** enqueues via `lt transcribe` / `lt batch` / `lt queue add` / `enqueue_youtube_safe`.
 2. **Reservation** records the source key so duplicates do not spawn parallel active work.
 3. **Worker** (sole NLM lock holder) claims pending → processing, downloads under `~/.cache/local-transcribe/jobs/<id>/`, transcribes, publishes transcript JSON, moves job to completed/failed/retry.
-4. **Observers** use `lt queue stats` / `list` (list defaults to pending — prefer stats for backlog).
+4. **Observers** use `lt queue stats` / `lt queue list` (list shows all states by default, oldest first, limit 60; filter with a status positional or `--status`).
 
 ## Extending the Tool
 * New commands: Typer in `cli.py` / `cli_queue.py` / `cli_worker.py`.
@@ -89,7 +89,7 @@ Local paths are detected when `Path.expanduser` resolves to an existing regular 
 * Auth: local `auth_profiles` only — never store cookie contents in job JSON.
 
 ## Troubleshooting
-* **Missing Deno** — required for YouTube SABR; symlink to `/usr/local/bin/deno` for pipx.
+* **Missing Deno** — required for YouTube SABR; symlink to `/usr/local/bin/deno` for pipx. The warning appears only where this process downloads YouTube audio (`lt transcribe <URL> --direct`, `lt batch --direct`); queue mode (including waiting and `lt batch --wait`), queue inspection, `lt version`, and help stay quiet without Deno.
 * **HTTP 403** — configure worker cookies via `default_auth_profile`; API keys do not authorize yt-dlp.
 * **NFS / lock** — `lt queue doctor`; reject `nolock` / soft mounts; see `docs/QUEUE_OPERATOR.md`.
 * **Corrupt transcripts** — `lt verify --mode quick`.

@@ -16,6 +16,11 @@ from local_transcribe.services.atomic_files import (
     atomic_state_transition,
     link_publish_json,
 )
+from local_transcribe.services.queue_listing import (
+    SortOrder,
+    paginate_executions,
+    sort_executions,
+)
 from local_transcribe.services.queue_models import (
     ACTIVE_STATUSES,
     STATE_DIRS,
@@ -128,6 +133,25 @@ class QueueStore:
                 if limit is not None and len(results) >= limit:
                     return results
         return results
+
+    def query_executions(
+        self,
+        *,
+        status: str | None = None,
+        origin: str | None = None,
+        sort: SortOrder = "oldest",
+        offset: int = 0,
+        limit: int = 60,
+    ) -> tuple[list[Execution], int]:
+        """Return a filtered/sorted page and the total matching record count.
+
+        Status filtering reads only the requested state directory.  Ordering
+        and pagination happen after the full matching set is known so the
+        total and offset semantics stay correct and stable.
+        """
+        matches = self.list_executions(status=status, origin=origin)
+        ordered = sort_executions(matches, sort=sort)
+        return paginate_executions(ordered, offset=offset, limit=limit)
 
     def _publish_execution(self, execution: Execution) -> bool:
         dest = self._execution_path("pending", execution.execution_id)
