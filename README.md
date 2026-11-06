@@ -510,7 +510,7 @@ The system should now:
 **Q: Why do I need Deno?**  
 A: YouTube's 2026 SABR protocol requires JavaScript execution to solve dynamic "n-challenge" signatures. Deno provides a high-performance JavaScript runtime that yt-dlp can use to solve these challenges.
 
-**Q: Why does `lt queue list` not warn about Deno?**  
+**Q: Why does `lt queue list` not warn about Deno?**\
 A: It should not. Deno is only a YouTube download prerequisite, and in queue mode the worker performs the download. The probe therefore runs only where this process downloads audio itself (`lt transcribe <URL> --direct`, `lt batch --direct`) and is reported as an optional check by `lt doctor`. Queue inspection, version, help output, and all queue-mode producers/waiters (`--no-wait`, waiting, `lt batch --wait`) stay quiet on hosts without Deno. If a queued job fails on the worker, the wait output still reports the failure category and detail.
 
 **Q: Can I use Node.js instead of Deno?**  
