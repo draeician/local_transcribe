@@ -134,6 +134,7 @@ def check_yt_dlp() -> Tuple[bool, str]:
     """Check if yt-dlp is available (module + downloader binary)."""
     try:
         import yt_dlp
+
         from local_transcribe.utils.ytdlp_update import (
             find_yt_dlp_binary,
             get_yt_dlp_version,

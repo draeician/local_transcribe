@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from local_transcribe.services.transcriber import TranscribeConfig, transcribe_local_file
 from local_transcribe.services.transcript_publish import (
     TranscriptPublishError,
     publish_transcript,
 )
-from local_transcribe.services.transcriber import TranscribeConfig, transcribe_local_file
 
 
 def _payload(text: str = "hello world", vid: str = "dQw4w9WgXcQ") -> dict:

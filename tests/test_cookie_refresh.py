@@ -10,13 +10,13 @@ import yaml
 from typer.testing import CliRunner
 
 from local_transcribe.cli import app
+from local_transcribe.services.config import AppConfig, QueueConfig, load_config
 from local_transcribe.services.cookie_refresh import (
     ensure_auth_profile_cookies,
     refresh_cookies_from_browser,
     resolve_browser_cookie_source,
     resolve_cookies_output_path,
 )
-from local_transcribe.services.config import AppConfig, QueueConfig, load_config
 
 
 def test_resolve_brave_flatpak_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

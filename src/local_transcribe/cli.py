@@ -11,11 +11,16 @@ from rich.table import Table
 from local_transcribe import __version__
 from local_transcribe.logging_setup import configure_logging
 from local_transcribe.services.pipeline import BatchConfig, BatchPipeline
-from local_transcribe.services.reconcile import reconcile as reconcile_service, write_reconcile_outputs
+from local_transcribe.services.reconcile import reconcile as reconcile_service
+from local_transcribe.services.reconcile import write_reconcile_outputs
 from local_transcribe.services.status_store import JsonStatusStore
+from local_transcribe.services.transcriber import (
+    TranscribeConfig,
+    transcribe_local_file,
+    transcribe_url,
+)
 from local_transcribe.services.verify_status import verify_finished_dat, verify_full
-from local_transcribe.services.transcriber import TranscribeConfig, transcribe_local_file, transcribe_url
-from local_transcribe.utils.files import safe_read_lines, safe_write_lines, find_cookies_file
+from local_transcribe.utils.files import find_cookies_file, safe_read_lines, safe_write_lines
 from local_transcribe.utils.youtube import is_valid_youtube_url
 
 app = typer.Typer(help="Local transcription with Whisper (YouTube URLs or audio files)")
@@ -1071,6 +1076,7 @@ def doctor(
     a CPU-only system.
     """
     import sys
+
     from local_transcribe.utils.doctor import run_diagnostics
     
     output_console = Console(file=sys.stdout, force_terminal=True)

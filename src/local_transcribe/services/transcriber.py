@@ -31,6 +31,8 @@ from local_transcribe.utils.hardware import (
     BACKEND_ROCM,
     BackendUnavailableError,
     prepare_gpu_runtime,
+)
+from local_transcribe.utils.hardware import (
     resolve_device_and_compute as _resolve_device_and_compute,
 )
 from local_transcribe.utils.youtube import pick_channel

@@ -21,7 +21,6 @@ from local_transcribe.services.queue_store import QueueStore
 from local_transcribe.services.queue_wait import WaitOutcome
 from local_transcribe.services.worker import claim_execution, complete_execution, fail_or_retry
 
-
 runner = CliRunner()
 
 

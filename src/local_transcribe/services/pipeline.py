@@ -8,13 +8,30 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
+from local_transcribe.services.downloader import (
+    ForbiddenError,
+    RateLimitError,
+    VideoUnavailableError,
+)
 from local_transcribe.services.rate_limiter import RateLimiter
 from local_transcribe.services.status_store import JsonStatusStore, StatusStore, TranscriptStatus
 from local_transcribe.services.transcriber import TranscribeConfig, transcribe_url
-from local_transcribe.services.downloader import RateLimitError, VideoUnavailableError, ForbiddenError
-from local_transcribe.utils.files import safe_append_line, safe_read_lines, safe_write_lines, validate_transcript_file
+from local_transcribe.utils.files import (
+    safe_append_line,
+    safe_read_lines,
+    safe_write_lines,
+    validate_transcript_file,
+)
 from local_transcribe.utils.youtube import extract_video_id, is_valid_youtube_url
 
 

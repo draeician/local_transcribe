@@ -1,6 +1,6 @@
 """YouTube URL parsing and validation utilities."""
 
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 
 def extract_video_id(url: str) -> str:

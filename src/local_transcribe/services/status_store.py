@@ -1,6 +1,6 @@
 """Status store for tracking batch transcription progress."""
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Protocol

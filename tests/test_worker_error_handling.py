@@ -25,6 +25,8 @@ from local_transcribe.services.worker_errors import (
     classify_job_exception,
     retry_delay_seconds,
 )
+
+
 def _queue(tmp_path: Path) -> Path:
     q = tmp_path / "q"
     initialize_queue_layout(q)
