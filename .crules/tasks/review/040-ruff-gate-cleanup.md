@@ -56,8 +56,62 @@ configuration changes.
 | RUF059 unused-unpacked-variable | 1 | Renamed to `_cache` |
 | RUF007 zip-instead-of-pairwise | 1 | `itertools.pairwise` |
 
-Files affected: 49. Largest: `services/reconcile.py`, `cli_queue.py`,
-`utils/hardware.py`, `utils/doctor.py`, `cli.py`, `services/pipeline.py`.
+Files affected: 49.
+
+### Baseline findings by file
+
+| File | Findings |
+|------|---------:|
+| `services/reconcile.py` | 42 |
+| `cli_queue.py` | 39 |
+| `utils/hardware.py` | 29 |
+| `utils/doctor.py` | 27 |
+| `cli.py` | 26 |
+| `services/pipeline.py` | 20 |
+| `services/queue_models.py` | 19 |
+| `services/verify_status.py` | 19 |
+| `utils/ytdlp_update.py` | 19 |
+| `services/downloader.py` | 16 |
+| `services/status_store.py` | 15 |
+| `utils/rocm.py` | 13 |
+| `services/transcriber.py` | 11 |
+| `utils/files.py` | 11 |
+| `services/config.py` | 9 |
+| `cli_cookies.py` | 8 |
+| `services/worker.py` | 8 |
+| `services/download_admission.py` | 7 |
+| `cli_worker.py` | 6 |
+| `services/queue_store.py` | 6 |
+| `services/rate_limiter.py` | 6 |
+| `services/cookie_refresh.py` | 5 |
+| `services/job_runner.py` | 4 |
+| `services/mount_validation.py` | 4 |
+| `services/worker_lock.py` | 4 |
+| `services/model_cache.py` | 3 |
+| `services/queue_reporting.py` | 3 |
+| `services/queue_wait.py` | 3 |
+| `tests/test_portable_install.py` | 3 |
+| `services/queue_paths.py` | 2 |
+| `services/transcript_publish.py` | 2 |
+| `services/worker_state.py` | 2 |
+| `tests/test_worker_atomic_transitions.py` | 2 |
+| `tests/test_worker_error_handling.py` | 2 |
+| `tests/test_worker_model_idle.py` | 2 |
+| `utils/youtube.py` | 2 |
+| `__init__.py` | 1 |
+| `logging_setup.py` | 1 |
+| `queue_api.py` | 1 |
+| `services/atomic_files.py` | 1 |
+| `services/source_reservations.py` | 1 |
+| `services/worker_errors.py` | 1 |
+| `tests/test_atomic_files.py` | 1 |
+| `tests/test_cli_batch_queue.py` | 1 |
+| `tests/test_cli_transcribe_queue.py` | 1 |
+| `tests/test_cookie_refresh.py` | 1 |
+| `tests/test_model_cache.py` | 1 |
+| `tests/test_rocm_support.py` | 1 |
+| `tests/test_transcript_publish.py` | 1 |
+| `tests/test_worker_job_runner.py` | 1 |
 
 ## Constraints
 
