@@ -1524,6 +1524,78 @@ the documented timing flake; the branch run passed it.
 None. No merge, tag, release, branch deletion, ROCm change, worker restart,
 production queue change, or system configuration change was performed.
 
+## Final integration — v0.8.0 + zero-finding Ruff (task 041, 2026-11-06, OpenCode)
+
+Branch `chore/0.8-final-integration`, based on `origin/main` @ `25b89f1`.
+Task 041 was opened in `.crules/tasks/wip/` and moved to `review/` only after the
+combined gate passed. Both reviewed lines were merged without squashing or
+rewriting history:
+
+| Merge | Parents | Subject |
+|-------|---------|---------|
+| `bb09499` | `c7e97a1` + `94b40db` | Merge `chore/cli-reporting-integration` |
+| `542ad31` | `bb09499` + `7de3789` | Merge `chore/ruff-gate-cleanup` |
+| `94a92b0` | — | Markdown hard-break hygiene |
+
+### Conflict resolutions (combined, not preferred)
+
+- `__init__.py`: `__version__ = "0.8.0"` **and** `contextlib.suppress` ROCm
+  preload.
+- `cli.py`: Deno-free queue paths **and** `app_callback` rename (entry point
+  remains `main`).
+- `cli_queue.py`: positional `STATUS|UUID` filtering, defaults
+  `limit=60/offset=0/sort=oldest` **and** `Annotated` Typer options.
+- `queue_store.py`: 039 `query_executions` filtering/sorting/pagination under
+  040 typing (auto-merged).
+- `HANDOFF.md`: both histories retained.
+- `docs/QUEUE_DESIGN_DECISIONS.md`: 039 §12–§15 preserved; 040 Ruff section
+  renumbered to §16; task 041 decisions appended as §17.
+- `README.md` / `project_spec.md`: two integrated Markdown two-space hard breaks
+  converted to backslash hard breaks so `git diff --check` is clean with
+  unchanged rendering.
+
+### Verification evidence
+
+Environment: system `pytest` 9.0.2; `TERM=dumb`;
+`PYTHONPATH=src:/home/draeician/.local/share/pipx/venvs/local-transcribe/lib/python3.14/site-packages`.
+Isolated `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_CACHE_HOME` under
+`/tmp/opencode/task041/`. This host has no Deno, so missing-Deno behavior was
+exercised throughout.
+
+| Check | Command | Result |
+|-------|---------|--------|
+| Targeted queue/Deno | `pytest -q tests/test_cli_queue.py tests/test_deno_startup_warnings.py tests/test_queue_store.py tests/test_queue_paths.py tests/test_cli_batch_queue.py tests/test_cli_transcribe_queue.py tests/test_cli_worker.py` | **99 passed** |
+| Full suite, one run | `pytest -q` | **342 passed, 11 skipped** |
+| Ruff gate | `uvx ruff check --config pyproject.toml src tests` | **0 findings — All checks passed** |
+| Ruff config | diff vs `origin/main` | unchanged |
+| Syntax | `compileall` + import every module | OK; version `0.8.0` |
+| Build | `uv build --out-dir /tmp/opencode/task041/dist` | 0.8.0 sdist + wheel |
+| Wheel audit | `METADATA`, `entry_points.txt`, contents | `Version: 0.8.0`; `lt = local_transcribe.cli:main`; `queue_listing.py` included |
+| Isolated pipx | disposable `PIPX_HOME`/`PIPX_BIN_DIR` | local-transcribe **0.8.0** |
+| CLI version | `lt version` | `local-transcribe version 0.8.0` |
+| CLI help | `lt --help`, `lt queue list --help` | no Deno warning; positional `[STATUS|UUID]`, `--status`, `--limit` 60, `--offset`, `--sort` |
+| Queue init/add | disposable queue | initialized; 3 executions enqueued |
+| `queue list pending` | `lt queue list pending` | 3 rows; `limit=60, offset=0, sort=oldest` |
+| `queue list failed` | `lt queue list failed` | 0 rows, no error |
+| `queue list completed --sort newest` | same | 0 rows; `sort=newest` |
+| UUID selection | `lt queue list <UUID>` | exactly 1 row |
+| Pagination | `lt queue list pending --offset 1 --limit 1` | 2nd row; `Showing 2-2 of 3` |
+| Deno quiet on queue ops | `queue list` + `queue stats` grep | **NO DENO WARNING** |
+| Missing Deno, doctor | `lt doctor` without Deno | reports `deno not found ...`; no crash |
+| Direct YouTube check | `lt transcribe <URL> --direct --output-dir …` | `⚠️ Warning: Deno runtime not detected` before download |
+| Dedicated Deno suite | `pytest -q tests/test_deno_startup_warnings.py` | **14 passed** |
+| Test weakening | removed `assert`/`def test_` in diff | none removed; 353 tests collected |
+| Secret scan | high-confidence pattern scan of branch diff | **CLEAN** |
+| Diff hygiene | `git diff --check origin/main..HEAD` | clean |
+| WIP marker | `git ls-files` | never tracked |
+
+Branch diff versus `origin/main`: **68 files, +3009/−462**.
+
+### Blockers
+
+None. No merge to `main`, tag, release, branch deletion, production service
+change, worker restart, or system configuration change was performed.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

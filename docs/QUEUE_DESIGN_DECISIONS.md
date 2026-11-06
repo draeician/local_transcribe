@@ -346,3 +346,42 @@ the console-script entry point remains `main`.
 findings** (baseline 413). Full suite: 298 passed, 11 skipped; the only baseline
 difference was the documented concurrency timing flake. Version remains `0.7.0`;
 no dependency or rule-config change.
+
+---
+
+## 17. Final v0.8.0 integration (task 041, 2026-11-06)
+
+**Decision.** Combine tasks 039 and 040 on
+`chore/0.8-final-integration` from `origin/main` @ `25b89f1` using two
+`--no-ff` merge commits. No squash, rebase, or history rewrite is used, so both
+reviewed lines remain individually auditable.
+
+**Conflict resolution principle.** Conflicts are resolved by combining both
+sides rather than preferring either branch:
+
+- `__init__.py` keeps `__version__ = "0.8.0"` **and** the
+  `contextlib.suppress` ROCm preload from task 040.
+- `cli.py` keeps the Deno-free queue/producer paths from task 039 **and** the
+  `app_callback` rename from task 040; the console-script entry point stays
+  `main`.
+- `cli_queue.py` keeps 039 positional `STATUS|UUID` filtering with default
+  `limit=60`, `offset=0`, `sort=oldest` **and** 040 `Annotated` Typer options.
+- `queue_store.py` keeps 039 `query_executions` filtering/sorting/pagination
+  under 040's PEP 604 typing.
+- `HANDOFF.md` retains both task histories.
+- The Decision Journal is append-only: 039 §12–§15 are unchanged and the task
+  040 Ruff section is renumbered from §12 to §16 so section numbers stay unique.
+
+**Markdown hygiene.** Two lines introduced by task 039 used Markdown two-space
+hard breaks, which `git diff --check` flags as trailing whitespace. They were
+converted to CommonMark backslash hard breaks on the integration branch so the
+diff gate is clean without changing rendering.
+
+**Verification.** On the combined branch: targeted queue/Deno suite **99
+passed**; full suite **342 passed, 11 skipped** under isolated XDG; Ruff **0
+findings**; `uv build` produced **0.8.0** wheel and sdist; an isolated pipx
+install reported **0.8.0**; disposable-queue operations verified positional
+status filtering, UUID selection, stable pagination, and defaults
+`limit=60/offset=0/oldest-first`. The host has no Deno, yet queue
+inspection/enqueue stayed quiet while `lt transcribe <URL> --direct` still
+emitted the Deno warning. No tests or Ruff configuration were weakened.
