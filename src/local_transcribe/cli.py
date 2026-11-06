@@ -601,7 +601,6 @@ def reconcile_cmd(
         )
         
         # Update transcript-pending.md if it was used as input
-        pending_file_updated = False
         if input_file.name == "transcript-pending.md":
             actually_pending_urls = [
                 url for url, vid_id in zip(input_urls, input_ids)
@@ -609,12 +608,10 @@ def reconcile_cmd(
             ]
             if actually_pending_urls:
                 safe_write_lines(input_file, actually_pending_urls)
-                pending_file_updated = True
                 console.print(f"\n[green]✓[/green] Updated {input_file.name} with {len(actually_pending_urls)} videos that need processing")
             else:
                 # Remove all URLs if nothing is pending
                 safe_write_lines(input_file, [])
-                pending_file_updated = True
                 console.print(f"\n[green]✓[/green] Cleared {input_file.name} - all videos have transcripts")
         
         # Print summary
@@ -1110,7 +1107,7 @@ def doctor(
         
     except typer.Exit:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — doctor CLI boundary reports any failure
         output_console.print(f"[red]✗[/red] Error: {e}")
         if verbose:
             import traceback
@@ -1119,7 +1116,7 @@ def doctor(
 
 
 @app.callback(invoke_without_command=True)
-def main(
+def app_callback(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show version and exit"),
 ):

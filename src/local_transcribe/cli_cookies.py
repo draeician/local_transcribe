@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -29,24 +30,28 @@ def cookies_refresh(
         "-b",
         help="Browser to export from: brave (default), chrome, or firefox",
     ),
-    output: Path | None = typer.Option(
-        None,
-        "--output",
-        "-o",
-        help="Destination Netscape cookies file "
-        "(defaults to auth profile cookies_file or "
-        "~/.config/local-transcribe/youtube-cookies.txt)",
-    ),
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Destination Netscape cookies file "
+            "(defaults to auth profile cookies_file or "
+            "~/.config/local-transcribe/youtube-cookies.txt)",
+        ),
+    ] = None,
     profile: str | None = typer.Option(
         None,
         "--profile",
         help="Auth profile name to update (defaults to queue.default_auth_profile)",
     ),
-    profile_path: Path | None = typer.Option(
-        None,
-        "--profile-path",
-        help="Browser profile directory (auto-detect Flatpak/native Brave/Chrome)",
-    ),
+    profile_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--profile-path",
+            help="Browser profile directory (auto-detect Flatpak/native Brave/Chrome)",
+        ),
+    ] = None,
     keyring: str = typer.Option(
         "gnomekeyring",
         "--keyring",

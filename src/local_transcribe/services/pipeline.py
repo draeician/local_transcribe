@@ -121,7 +121,7 @@ class BatchPipeline:
             try:
                 self.current_audio_file.unlink()
                 self.logger.info(f"Cleaned up audio file: {self.current_audio_file}")
-            except Exception as e:
+            except OSError as e:
                 self.logger.warning(f"Failed to clean up audio file {self.current_audio_file}: {e}")
         
         # Save current status
@@ -269,7 +269,7 @@ class BatchPipeline:
                     safe_write_lines(pending_file, lines)
                     self.logger.info(f"Removed unavailable video from {pending_file.name}: {url}")
                     removed = True
-            except Exception as e:
+            except (OSError, TypeError, ValueError) as e:
                 self.logger.warning(f"Failed to remove URL from {pending_file}: {e}")
         
         return removed
@@ -368,7 +368,7 @@ class BatchPipeline:
         except RateLimitError:
             # Re-raise rate limit errors to be handled in run()
             raise
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — per-video boundary records any failure
             duration = time.time() - start_time
             status.duration_seconds = duration
             status.error_message = str(e)[:500]  # Truncate long errors

@@ -6,6 +6,7 @@ execution authority.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -82,13 +83,11 @@ def summarize_queue(queue_dir: Path) -> QueueStatusSummary:
 
     worker_state_active = False
     current_id: str | None = None
-    try:
+    with contextlib.suppress(Exception):
         state = read_worker_state(queue_dir)
         if state is not None:
             worker_state_active = bool(state.active)
             current_id = state.current_execution_id
-    except Exception:  # noqa: BLE001 — status must not crash
-        pass
 
     return QueueStatusSummary(
         counts=counts,

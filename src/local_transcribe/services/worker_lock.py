@@ -10,7 +10,10 @@ import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO
+from typing import IO, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing_extensions import Self
 
 
 class WorkerLockError(RuntimeError):
@@ -60,7 +63,7 @@ class WorkerLock:
         finally:
             self.file.close()
 
-    def __enter__(self) -> WorkerLock:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

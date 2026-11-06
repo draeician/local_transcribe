@@ -90,8 +90,10 @@ def resolve_auth_profile(
         logger.warning("auth_profile %r set but no auth_profiles in config", profile_name)
         return None, None
     entry = profiles.get(profile_name)
-    if not isinstance(entry, Mapping):
+    if entry is None:
         raise ValueError(f"Unknown auth_profile: {profile_name!r}")
+    if not isinstance(entry, Mapping):
+        raise TypeError(f"auth_profile {profile_name!r} must be a mapping")
     browser = entry.get("cookies_from_browser")
     cookies_file = entry.get("cookies_file")
     path = Path(str(cookies_file)).expanduser() if cookies_file else None

@@ -132,12 +132,12 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     if loaded is None:
         return AppConfig()
     if not isinstance(loaded, MutableMapping):
-        raise ValueError(f"Config root must be a mapping, got {type(loaded).__name__}")
+        raise TypeError(f"Config root must be a mapping, got {type(loaded).__name__}")
 
     raw = dict(loaded)
     queue_data = raw.get("queue")
     if queue_data is not None and not isinstance(queue_data, Mapping):
-        raise ValueError("config key 'queue' must be a mapping")
+        raise TypeError("config key 'queue' must be a mapping")
 
     return AppConfig(queue=_queue_from_mapping(queue_data), raw=raw)
 

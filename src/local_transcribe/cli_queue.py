@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -40,16 +41,18 @@ def _queue_dir_opt(
 
 @queue_app.command("init")
 def queue_init(
-    queue_dir: Path = typer.Option(
-        ...,
-        "--queue-dir",
-        help="Explicit path for the queue directory",
-        exists=False,
-        file_okay=False,
-        dir_okay=True,
-        writable=True,
-        resolve_path=False,
-    ),
+    queue_dir: Annotated[
+        Path,
+        typer.Option(
+            "--queue-dir",
+            help="Explicit path for the queue directory",
+            exists=False,
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            resolve_path=False,
+        ),
+    ],
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Create queue layout, write queue.id, and update user config.yaml."""
@@ -84,20 +87,17 @@ def queue_init(
 
 @queue_app.command("path")
 def queue_path_cmd(
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Show configured and resolved queue path details."""
     configure_logging(verbose=verbose, log_file_prefix="queue")
     cfg = load_config()
     console.print(f"Configured path: {cfg.queue.path}")
-    try:
-        resolved = _queue_dir_opt(queue_dir, verify=True)
-        qid = verify_queue_identity(resolved, expected_uuid=cfg.queue.expected_uuid)
-        console.print(f"Resolved path: {resolved}")
-        console.print(f"Queue UUID: {qid}")
-    except typer.Exit:
-        raise
+    resolved = _queue_dir_opt(queue_dir, verify=True)
+    qid = verify_queue_identity(resolved, expected_uuid=cfg.queue.expected_uuid)
+    console.print(f"Resolved path: {resolved}")
+    console.print(f"Queue UUID: {qid}")
     mount = validate_queue_mount(resolved if queue_dir or cfg.queue.path else Path("."), validate_nfs=True)
     if mount.mount:
         console.print(f"Mount: {mount.mount.fstype} {mount.mount.source} -> {mount.mount.target}")
@@ -110,18 +110,15 @@ def queue_path_cmd(
 
 @queue_app.command("doctor")
 def queue_doctor(
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Diagnose queue path, identity, and NFS mount safety."""
     configure_logging(verbose=verbose, log_file_prefix="queue")
     cfg = load_config()
     ok = True
-    try:
-        resolved = _queue_dir_opt(queue_dir, verify=True)
-        console.print(f"[green]✓[/green] Queue resolves: {resolved}")
-    except typer.Exit:
-        raise
+    resolved = _queue_dir_opt(queue_dir, verify=True)
+    console.print(f"[green]✓[/green] Queue resolves: {resolved}")
     result = validate_queue_mount(resolved, queue_config=cfg.queue, validate_nfs=True)
     for k, v in result.checks.items():
         console.print(f"  {k}: {v}")
@@ -147,7 +144,7 @@ def queue_doctor(
 @queue_app.command("add")
 def queue_add(
     source: str = typer.Argument(..., help="YouTube URL or local audio path"),
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     priority: int = typer.Option(50, "--priority"),
     force: bool = typer.Option(False, "--force"),
     origin: str = typer.Option("manual", "--origin"),
@@ -166,7 +163,7 @@ def queue_add(
 
 @queue_app.command("list")
 def queue_list(
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     status: str | None = typer.Option(
         None,
         "--status",
@@ -192,7 +189,7 @@ def queue_list(
 @queue_app.command("show")
 def queue_show(
     execution_id: str = typer.Argument(...),
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Show one execution record."""
     store = QueueStore(_queue_dir_opt(queue_dir))
@@ -207,7 +204,7 @@ def queue_show(
 @queue_app.command("show-source")
 def queue_show_source(
     source_key: str = typer.Argument(...),
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Show reservation and executions for a source key."""
     from local_transcribe.services.source_reservations import read_reservation
@@ -226,7 +223,7 @@ def queue_show_source(
 @queue_app.command("cancel")
 def queue_cancel(
     execution_id: str = typer.Argument(...),
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Cancel a pending execution (pending only)."""
     store = QueueStore(_queue_dir_opt(queue_dir))
@@ -240,7 +237,7 @@ def queue_cancel(
 
 @queue_app.command("stats")
 def queue_stats(
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Show counts by state directory."""
     qdir = _queue_dir_opt(queue_dir)
@@ -252,7 +249,7 @@ def queue_stats(
 
 @queue_app.command("purge")
 def queue_purge(
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     completed: bool = typer.Option(False, "--completed"),
     failed: bool = typer.Option(False, "--failed"),
     cancelled: bool = typer.Option(False, "--cancelled"),
@@ -290,8 +287,8 @@ def queue_purge(
 
 @queue_app.command("import")
 def queue_import(
-    pending_file: Path = typer.Argument(..., exists=True, dir_okay=False),
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    pending_file: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Import URLs from a legacy transcript-pending.md style file."""
@@ -305,8 +302,8 @@ def queue_import(
 
 @queue_app.command("export-pending")
 def queue_export_pending(
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
-    output: Path | None = typer.Option(None, "--output", "-o"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
 ) -> None:
     """Export a human-readable report of pending/retry/processing jobs."""
     store = QueueStore(_queue_dir_opt(queue_dir))
@@ -324,7 +321,7 @@ def queue_export_pending(
 
 @queue_app.command("repair")
 def queue_repair(
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
     """Repair queue state (requires NLM worker lock)."""
     from local_transcribe.services.worker import promote_retries, recover_processing
@@ -349,7 +346,7 @@ def queue_retry(
         None,
         help="Optional execution id. If omitted, retries all failed jobs.",
     ),
-    queue_dir: Path | None = typer.Option(None, "--queue-dir"),
+    queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
     include_cancelled: bool = typer.Option(
         False,
         "--include-cancelled",

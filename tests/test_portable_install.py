@@ -626,6 +626,7 @@ def test_real_clean_pipx_install_resolves_no_nvidia() -> None:
         text=True,
         timeout=1800,
         env=env,
+        check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
     listing = subprocess.run(
@@ -634,6 +635,7 @@ def test_real_clean_pipx_install_resolves_no_nvidia() -> None:
         text=True,
         timeout=120,
         env=env,
+        check=False,
     )
     lowered = listing.stdout.lower()
     assert "nvidia" not in lowered

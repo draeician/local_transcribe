@@ -53,7 +53,7 @@ def check_cpu_backend() -> tuple[bool, str]:
     types = supported_compute_types("cpu")
     if not types:
         return False, "ctranslate2 reports no CPU compute types"
-    preferred = "int8" if "int8" in types else sorted(types)[0]
+    preferred = "int8" if "int8" in types else min(types)
     return True, f"CPU inference healthy (compute_type={preferred}; supported={', '.join(sorted(types))})"
 
 
@@ -116,6 +116,7 @@ def check_ffmpeg() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             version_line = result.stdout.split("\n")[0]
@@ -125,7 +126,7 @@ def check_ffmpeg() -> tuple[bool, str]:
         return False, "ffmpeg not found"
     except subprocess.TimeoutExpired:
         return False, "ffmpeg timeout"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         return False, f"Error: {e}"
 
 
@@ -145,7 +146,7 @@ def check_yt_dlp() -> tuple[bool, str]:
         return True, f"module={mod_ver}; binary={binary} ({bin_ver})"
     except ImportError:
         return False, "yt-dlp not installed"
-    except Exception as e:
+    except (OSError, AttributeError, RuntimeError, ValueError, TypeError) as e:
         return False, f"Error: {e}"
 
 
@@ -157,6 +158,7 @@ def check_deno() -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             version_line = result.stdout.split("\n")[0]
@@ -175,16 +177,17 @@ def check_deno() -> tuple[bool, str]:
                         capture_output=True,
                         text=True,
                         timeout=5,
+                        check=False,
                     )
                     if result.returncode == 0:
                         version_line = result.stdout.split("\n")[0]
                         return True, f"{version_line.strip()} (found at {path})"
-                except Exception:
+                except (OSError, subprocess.SubprocessError):
                     continue
         return False, "deno not found (only needed for YouTube downloads)"
     except subprocess.TimeoutExpired:
         return False, "deno timeout"
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         return False, f"Error: {e}"
 
 
@@ -219,14 +222,8 @@ def is_pipx_environment() -> bool:
     if "pipx" in str(python_path).lower() or ".local/pipx" in str(python_path):
         return True
 
-    try:
-        venv_parent = python_path.parent.parent
-        if venv_parent.name == "venvs" and "pipx" in str(venv_parent):
-            return True
-    except Exception:
-        pass
-
-    return False
+    venv_parent = python_path.parent.parent
+    return venv_parent.name == "venvs" and "pipx" in str(venv_parent)
 
 
 def run_diagnostics() -> list[DiagnosticCheck]:

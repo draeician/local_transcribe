@@ -320,6 +320,7 @@ def refresh_cookies_from_browser(
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,
+                check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(

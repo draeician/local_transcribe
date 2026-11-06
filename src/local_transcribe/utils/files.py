@@ -153,7 +153,7 @@ def validate_transcript_file(json_path: Path) -> bool:
         data = safe_read_json(json_path)
         # Check for required fields
         return "transcript" in data and "metadata" in data
-    except Exception:
+    except (OSError, TypeError, ValueError):
         return False
 
 

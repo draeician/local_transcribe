@@ -97,7 +97,7 @@ def verify_transcripts_in_status_store(
 def update_pending_file(
     pending_file: Path,
     new_urls: list[str],
-    existing_video_ids: set[str] = None,
+    existing_video_ids: set[str] | None = None,
 ) -> tuple[int, set[str]]:
     """
     Update pending file with new URLs, avoiding duplicates.

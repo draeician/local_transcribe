@@ -166,6 +166,7 @@ def resolve_deno_on_path() -> tuple[bool, str | None]:
             capture_output=True,
             text=True,
             timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False, None

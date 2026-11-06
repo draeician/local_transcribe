@@ -26,6 +26,7 @@ resolves it through :func:`resolve_device_and_compute` when it claims the job.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import glob
 import logging
@@ -214,7 +215,7 @@ def rocm_sdk_library_dirs() -> list[Path]:
     for entry in sys.path:
         if entry:
             search_roots.append(Path(entry))
-    try:  # pragma: no cover - defensive
+    with contextlib.suppress(Exception):  # pragma: no cover - defensive
         import site
 
         for attr in ("getsitepackages", "getusersitepackages"):
@@ -223,8 +224,6 @@ def rocm_sdk_library_dirs() -> list[Path]:
                 value = getter()
                 for item in value if isinstance(value, (list, tuple)) else [value]:
                     search_roots.append(Path(item))
-    except Exception:  # noqa: BLE001
-        pass
 
     for root in search_roots:
         for pattern in ROCM_SDK_PACKAGE_DIR_GLOBS:
@@ -305,7 +304,7 @@ def detect_amd_gpu(run: Runner | None = None) -> tuple[bool, str]:
             continue
         except subprocess.TimeoutExpired:
             continue
-        except Exception:  # noqa: BLE001
+        except (OSError, subprocess.SubprocessError):
             continue
         output = (result.stdout or "") + (result.stderr or "")
         if "gfx" in output:

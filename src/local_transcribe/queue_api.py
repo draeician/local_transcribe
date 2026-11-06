@@ -129,7 +129,7 @@ def enqueue_youtube_safe(
             options=options,
         )
         return SafeEnqueueOutcome(result=result, fell_back_to_pending=False)
-    except (QueuePathError, OSError, RuntimeError, ValueError) as exc:
+    except (QueuePathError, OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.warning("Queue enqueue failed for %s: %s", url, exc)
         if pending_fallback is None:
             raise

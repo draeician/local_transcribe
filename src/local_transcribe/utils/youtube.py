@@ -55,10 +55,7 @@ def is_valid_youtube_url(url: str) -> bool:
         return False
     
     # Reject search results pages
-    if "results?search" in url:
-        return False
-    
-    return True
+    return "results?search" not in url
 
 
 def pick_channel(meta: dict) -> str:

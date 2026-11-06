@@ -139,8 +139,6 @@ def test_fault_after_rename_before_write_leaves_file_in_dest(
     src.parent.mkdir(parents=True)
     src.write_text('{"status": "processing", "attempts": 1}\n', encoding="utf-8")
 
-    real_write = atomic_files.atomic_write_json
-
     def boom(path: Path, data: Any) -> None:
         raise RuntimeError("injected: after rename before write")
 
@@ -170,8 +168,6 @@ def test_fault_during_atomic_write_does_not_truncate_authority(
     src.write_text(json.dumps(original) + "\n", encoding="utf-8")
 
     # Succeed rename, fail mid atomic_write after tmp created but before replace.
-    real_replace = os.replace
-
     def flaky_replace(tmp: str | os.PathLike[str], path: str | os.PathLike[str]) -> None:
         raise OSError("injected: before os.replace")
 

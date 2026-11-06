@@ -70,7 +70,7 @@ def iso8601_from_ts(ts: float | None) -> str:
         return ""
     try:
         return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
+    except (OSError, OverflowError, ValueError):
         return ""
 
 

@@ -205,16 +205,15 @@ def select_next_execution(
     if not jobs:
         return None
 
-    interactive = [j for j in jobs if j.priority >= 100]
     noninteractive = [j for j in jobs if j.priority < 100]
 
     def sort_key(j: Execution) -> tuple:
         return (-j.priority, j.created_at, j.execution_id)
 
     if interactive_streak >= max_interactive_streak and noninteractive:
-        return sorted(noninteractive, key=sort_key)[0]
+        return min(noninteractive, key=sort_key)
     pool = jobs
-    return sorted(pool, key=sort_key)[0]
+    return min(pool, key=sort_key)
 
 
 def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:

@@ -15,6 +15,7 @@ still runs its real polling loop with a tiny ``poll_interval_seconds``.
 
 from __future__ import annotations
 
+import itertools
 import time as real_time
 from collections.abc import Callable
 from pathlib import Path
@@ -406,9 +407,7 @@ def test_worker_unloads_exactly_300s_after_long_transcription_completes(
     ]
     steps = [ages_after_completion[0]] + [
         later - earlier
-        for earlier, later in zip(
-            ages_after_completion, ages_after_completion[1:]
-        )
+        for earlier, later in itertools.pairwise(ages_after_completion)
     ]
     runner = build_runner(
         tmp_path,

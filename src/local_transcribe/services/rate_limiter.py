@@ -42,7 +42,7 @@ class RateLimiter:
                 with open(config_path, 'r') as f:
                     data = json.load(f)
                     self.config = RateLimitConfig(**data)
-            except Exception as e:
+            except (OSError, ValueError, TypeError) as e:
                 self.logger.warning(f"Failed to load rate limit config: {e}. Using defaults.")
                 self.config = RateLimitConfig(
                     max_requests_per_hour=max_per_hour,
@@ -75,7 +75,7 @@ class RateLimiter:
                 last_reset = datetime.fromisoformat(self.config.last_hour_reset)
                 if now - last_reset >= timedelta(hours=1):
                     reset_hour = True
-            except Exception:
+            except (TypeError, ValueError):
                 reset_hour = True
         else:
             reset_hour = True
@@ -86,7 +86,7 @@ class RateLimiter:
                 last_reset = datetime.fromisoformat(self.config.last_day_reset)
                 if now - last_reset >= timedelta(days=1):
                     reset_day = True
-            except Exception:
+            except (TypeError, ValueError):
                 reset_day = True
         else:
             reset_day = True
@@ -208,6 +208,6 @@ class RateLimiter:
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.config_path, 'w') as f:
                 json.dump(asdict(self.config), f, indent=2)
-        except Exception as e:
+        except OSError as e:
             self.logger.warning(f"Failed to save rate limit config: {e}")
 

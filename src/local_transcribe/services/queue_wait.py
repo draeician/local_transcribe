@@ -209,7 +209,6 @@ def wait_for_execution(
     )
     starter = systemd_start if systemd_start is not None else try_start_systemd_worker
     foreground_started = False
-    fg_thread: threading.Thread | None = None
     ever_seen = False
 
     if ensure_worker:
@@ -284,7 +283,7 @@ def wait_for_execution(
                 foreground_grace_seconds,
                 execution_id,
             )
-            fg_thread = _start_foreground_worker(
+            _start_foreground_worker(
                 queue_dir,
                 execution_id,
                 validate_nfs=validate_nfs,

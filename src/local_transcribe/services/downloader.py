@@ -167,11 +167,11 @@ def download_audio_and_metadata(
     try:
         proc = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             timeout=timeout_seconds,
             start_new_session=True,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         # Kill process group if still running.
