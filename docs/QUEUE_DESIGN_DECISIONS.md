@@ -430,3 +430,57 @@ needed). `ref` needs no upgrade: both `ref-api` and the pipx CLI already run
 **Explicit non-goals.** No worker is created on `nomnom` or `minion-26`. No
 queue counters are reset. No archive files are edited. No `lt update`. No
 release, tag, merge, or branch cleanup.
+
+---
+
+## 19. Review correction: task 043 gate failed; rollback is artifact-first (2026-11-07)
+
+**Correction.** Section 18's conclusion that the required gate passed, and the
+move of task 043 to `review/`, were wrong. The full suite fails on the branch
+**and** on untouched `origin/main`. Task 043 is back in `wip/` as blocked, with
+a local-only WIP marker, until the required checks pass honestly.
+
+**Gate is failed, not passed.** In an isolated venv (Python 3.12.3, pytest
+9.0.3) with isolated `XDG_*`/`HOME`, `python -m pytest -q` gives **7 failed,
+335 passed, 11 skipped** in the default environment on ext4, on both branch and
+baseline; with `NO_COLOR=1` on ext4 it gives **1 failed, 341 passed, 11
+skipped**, again on both. A tmpfs run (1 failure on branch, 0 on baseline) is
+diagnostic only and must not be cited as a pass. Three distinct classes:
+six ANSI-output failures from `Console(force_terminal=True)`; one ext4
+foreground-wait race in `test_wait_completed_via_foreground` caused by
+`atomic_state_transition()` renaming before writing metadata; and one
+nondeterministic concurrency flake. Baseline reproduction explains the failures
+but does not make the gate pass. Fixing them is a separately authorized code
+task; this documentation task changes no source or tests.
+
+**Artifacts before upgrade.** Aether's rollback baseline is the captured
+installed bytes (82 files / 876,760 bytes, source hashes, dist-info, shims,
+interpreter, pipx metadata, injected ROCm packages, ROCm cache), not a rebuilt
+0.7.0 wheel. A rebuilt wheel is not equivalent because its version matches;
+equivalence must be proven by comparing source hashes and dist-info separately
+from generated caches and metadata. Restoration uses a clean fresh venv rather
+than extraction over upgraded site-packages, and must re-inject the pinned ROCm
+packages. Restoration rehearsal is required future staging work and was not
+performed.
+
+**One version-aware upgrade method.** Clean replace with the exact pinned wheel:
+`pipx uninstall local-transcribe` → `pipx install <0.8.0 wheel> --python
+<pinned>` → re-inject pinned ROCm on Aether. All preservation checks precede
+any production restart; explicit abort conditions apply; versions alone are not
+a gate. The worker is stopped first, then the lock and `processing/` are
+checked, to avoid the race between observing an idle worker and stopping it.
+`worker.lock` contents and heartbeat are advisory only; `lslocks` proves lock
+ownership. Historical ABRT/OOM events are separated from current failures and
+are bounded evidence, not a new troubleshooting task.
+
+**Host roles.** Minion's `ref-api`/`ref-cli` already match the candidate and stay
+unchanged; `--queue-dir` does not override `expected_uuid`, so the `lt` fallback
+cannot reach the production queue until the config is explicitly corrected, and
+NFSv4.2 producer compatibility remains unresolved (no worker, no remount).
+Nomnom's reported config disappearance is unsubstantiated (the listing belonged
+to `~/.config/ref/`), the directory was not recreated, and a fresh CLI install
+is a separate decision. Aether's queue progress is proven by full execution IDs
+plus transcript files and hashes, not by lock-file contents.
+
+**Status.** Blocked. A pushed blocked checkpoint is not approval; the task moves
+to `review/` only when all required checks and correction criteria pass.

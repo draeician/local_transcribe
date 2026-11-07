@@ -1697,6 +1697,15 @@ restart, or system configuration change was performed.
 
 ## Three-host upgrade/rollback preflight (task 043, 2026-11-07, OpenCode)
 
+> **SUPERSEDED — review correction 2026-11-07T17:25:35Z.**
+> The "gate passed" conclusion and the move to `review/` in this section were
+> **false**. The required full suite failed then and still fails, on the branch
+> **and** on untouched `origin/main`. Task 043 is back in `wip/` as **blocked**
+> with a local-only WIP marker. Read the *Review correction* subsection at the
+> end of this section before relying on anything below. The host inventory and
+> candidate revalidation remain accurate; the verification table and the
+> "rollback ready" framing do not.
+
 Read-only preflight for `nomnom`, `minion-26`, and `aether`. No deployment,
 install, service action, queue mutation, configuration change, release, tag, or
 merge was performed. Evidence snapshot window **2026-11-07T16:57:46Z –
@@ -1774,11 +1783,113 @@ attributable to this docs-only change.
 - `.crules/tasks/review/043-deploy-preflight-3host.md` — full evidence table and
   proposed staging/backup/cutover/validation/rollback commands, labelled by
   host, user, directory, and privilege. **Not executed.**
+  *(Superseded: the record now lives at `.crules/tasks/wip/043-deploy-preflight-3host.md`.)*
 - `docs/QUEUE_DESIGN_DECISIONS.md` §18 — preflight decisions.
+  *(Superseded by §19; see Review correction above.)*
 - This section.
 
 No secrets were copied; only configuration key names and redacted presence were
 recorded. No worker was created where none existed.
+
+### Review correction (2026-11-07T17:25:35Z, OpenCode)
+
+Supersedes the *Verification*, *Host findings*, and *Deliverables* claims above.
+
+**Execution location.** The harness ran on `nomnom`, not Minion. Repository
+work and the gate ran on `nomnom` in
+`/tmp/opencode/local_transcribe-preflight`; `minion-26` and `aether` were
+inspected read-only over existing SSH (`ssh -o HostKeyAlias=aether` for Aether).
+No `sudo`, no SSH config change.
+
+**Required gate — failed, not passed.** Isolated venv
+`/tmp/opencode/preflight-gate/venv` (Python 3.12.3, pytest 9.0.3, ruff 0.17.4,
+typer 0.25.1, rich 15.0.0, click 8.4.1), isolated `XDG_*`/`HOME`, no production
+queue or archive touched. `python -m pytest -q`, one run per configuration, no
+success-hunting reruns:
+
+| Worktree | `NO_COLOR` | `TMPDIR` | Result | Exit |
+|----------|-----------|----------|--------|------|
+| branch `b9f686d` | unset | `/tmp` (ext4) | **7 failed, 335 passed, 11 skipped** | 1 |
+| baseline `abdedbe` | unset | `/tmp` (ext4) | **7 failed, 335 passed, 11 skipped** | 1 |
+| branch | `1` | `/tmp` (ext4) | **1 failed, 341 passed, 11 skipped** | 1 |
+| baseline | `1` | `/tmp` (ext4) | **1 failed, 341 passed, 11 skipped** | 1 |
+| branch | `1` | `/dev/shm` (tmpfs, diagnostic) | **1 failed, 341 passed, 11 skipped** | 1 |
+| baseline | `1` | `/dev/shm` (tmpfs, diagnostic) | 342 passed, 11 skipped | 0 |
+
+The tmpfs row is diagnostic only and is **not** used to claim completion. The
+previous table cited it as a pass. Baseline reproduction explains the failures;
+it does not make the required gate pass.
+
+Failure classes:
+
+1. **ANSI-output (6, default env).** `Console(force_terminal=True)` emits
+   escapes, so substring assertions fail: `test_cli_queue.py::test_queue_retry_all_failed`,
+   `test_deno_startup_warnings.py::test_transcribe_url_no_wait_does_not_probe_deno`,
+   `::test_transcribe_url_wait_surfaces_worker_failure`,
+   `test_update.py::test_cli_update_default_includes_pre`,
+   `::test_cli_update_dry_run_does_not_modify_environment`,
+   `::test_cli_update_pip_failure_shows_command_and_stderr`.
+2. **ext4 foreground-wait race (1).**
+   `test_cli_transcribe_queue.py::test_wait_completed_via_foreground` —
+   `atomic_state_transition()` renames `processing → completed` before writing
+   metadata, so a concurrent read sees `output_path=None`. Passes on tmpfs,
+   fails on ext4, identically on baseline.
+3. **Concurrency flake (nondeterministic).**
+   `test_queue_concurrency.py::test_concurrent_force_single_current_generation`
+   failed on branch tmpfs and passed on baseline tmpfs.
+
+Ruff canonical (`ruff check --config pyproject.toml src tests`) passes on branch
+and baseline. Whole-tree `ruff check .` finds 52 pre-existing findings outside
+the canonical gate. Fixing the ANSI fragility and the rename-then-write race is
+a **separately authorized code task**; nothing was changed here.
+
+**Host corrections.**
+
+- **Minion** — `ref-api`/`ref-cli` already match the candidate; leave them
+  unchanged. Read-only proof (`2026-11-07T17:26:32Z`, exit `1`) shows
+  `lt queue path --queue-dir /opt/md2/.../transcription-queue` fails with
+  found `8c6fc098…` expected `6a058908…`: `--queue-dir` does **not** override
+  `queue.expected_uuid` from `~/.config/local-transcribe/config.yaml`. `ref-api`
+  is healthy (PID `3521265`, `NRestarts=0`, `/health` OK) but its `lt queue add`
+  fallback cannot reach the production queue until the config is explicitly
+  corrected. NFSv4.2 producer compatibility stays **unresolved**; no worker and
+  no remount authorized.
+- **Aether** — progress proven by full IDs: `e8d987f0-7bc9-4bcf-8628-1055e7d3e950`
+  (`JUQvlLPKyv8`, completed `2026-11-07T16:56:12Z`, sha256 `1fb54625…`) and
+  `ba0ed373-bfce-4fe4-acc4-6b067f479262` (`wYSehRUnpJg`, completed
+  `2026-11-07T16:58:50Z`, sha256 `04be320e…`). `lslocks` — not `worker.lock`
+  contents or heartbeat — shows PID `910154` holding both locks. Installed-bytes
+  baseline: Python 3.13.7, dist-info `local_transcribe-0.7.0.dist-info`, 82
+  files / 876,760 bytes, source hashes, injected `ctranslate2 4.8.3`,
+  `rocm-sdk-core 7.13.0a20260515`, `rocm-sdk-libraries-gfx1151 7.13.0a20260515`,
+  ROCm cache sha256s. 13 ABRT/OOM events are **historical**
+  (`2026-10-28`..`2026-11-07 00:00`); 0 since the current run started
+  `2026-11-06T09:16:37Z`. Bounded evidence only; no new troubleshooting task.
+- **Nomnom** — the earlier "config present then absent" claim is **not
+  substantiated**; that listing belonged to `~/.config/ref/`. No
+  `local-transcribe` config, state, cache, or CLI exists. The directory was not
+  recreated. A fresh CLI install is a separate decision; no worker.
+
+**Rollback is not ready.** Aether's authoritative baseline is the captured
+installed bytes, not a rebuilt 0.7.0 wheel; equivalence is unproven until source
+hashes and dist-info are compared separately from generated caches/metadata.
+Restoration uses a clean fresh venv, never extraction over upgraded
+site-packages, and must account for package files, dist-info, shims,
+interpreter, pipx metadata, injected packages, and ROCm libraries/cache.
+Restoration rehearsal was **not performed** and is required future staging work.
+
+**Upgrade method** is a single version-aware clean replace
+(`pipx uninstall` → `pipx install <exact 0.8.0 wheel> --python <pinned>` →
+re-inject pinned ROCm on Aether), with all preservation checks before any
+production restart, explicit abort conditions, and a stop-first idle-window
+procedure to avoid the observe-idle/stop race. Printing versions is not a gate.
+
+**Deliverables (corrected paths).** Task record now at
+`.crules/tasks/wip/043-deploy-preflight-3host.md`; WIP marker
+`.wip-DEPLOY-PREFLIGHT-3HOST` (local-only, never committed); raw gate transcripts
+in `/tmp/opencode/preflight-3host/review2/` (ephemeral, not committed);
+`docs/QUEUE_DESIGN_DECISIONS.md` §19. A pushed blocked checkpoint is not
+approval.
 
 ## Standing constraint
 
