@@ -1695,6 +1695,91 @@ No production queue records, NFS configuration, AMD ROCm libraries, worker
 services, or installed pipx environments were modified. No deployment, worker
 restart, or system configuration change was performed.
 
+## Three-host upgrade/rollback preflight (task 043, 2026-11-07, OpenCode)
+
+Read-only preflight for `nomnom`, `minion-26`, and `aether`. No deployment,
+install, service action, queue mutation, configuration change, release, tag, or
+merge was performed. Evidence snapshot window **2026-11-07T16:57:46Z –
+17:01:46Z**; the queue is live and counts drift between reads.
+
+### Candidate revalidation
+
+| Repo | Candidate | `origin/main` at snapshot | Result |
+|------|-----------|---------------------------|--------|
+| `local_transcribe` | `abdedbe88b8b44d24582520264f463bebcc83109` | same | no advancement |
+| `ref` | `80c6e379106a73c047cd517e56207bc62d558d7f` | same | no advancement |
+
+Ref branch `docs/record-url-dump-deploy` @
+`515987802ba3b53cde8f3cfdb55ed6993631d7c2` reviewed. It records the authorized
+2026-11-02 `--url-dump` deployment on `minion-26`; both `ref-api` and the pipx
+CLI run `1.6.12b1.dev129+g80c6e3791` from the audited wheel, with rollback
+artifacts preserved.
+
+### Host findings
+
+| Host | Role | Installed | Target | Upgrade | Blockers | Rollback |
+|------|------|-----------|--------|---------|----------|----------|
+| `nomnom` | none (no CLI, no worker, no ref-api) | no `local-transcribe`; pipx `ref-cli` at candidate | fresh 0.8.0 only if needed | conditional | `~/.config/local-transcribe` present then absent mid-inventory; no CLI installed | n/a; `pipx uninstall` |
+| `minion-26` | producer candidate + `ref-api` | `local-transcribe 0.7.0` (`25b89f1`), `ref-cli`/`ref-api` at candidate | 0.7.0 → 0.8.0 + config fix; ref unchanged | yes (lt only) | config points to missing `/tmp/lt-smoke-queue-59553`; queue mount **NFSv4.2**; no 0.7.0 wheel preserved | partial: ref ready; build lt 0.7.0 wheel from `25b89f1` |
+| `aether` | sole NLM worker | `local-transcribe 0.7.0` from deleted `file:///tmp/lt-branch`; injected ROCm packages | 0.7.0 → 0.8.0 preserving ROCm | yes | provenance gone; no rollback artifact; `NRestarts=13` with prior `ABRT`/`OOM`; live queue | **not ready**: create installed-tree tarball + reproducible 0.7.0 wheel first |
+
+Key environment facts: `nomnom` = Linux Mint 22.3, Python 3.12.3, pipx 1.4.3,
+queue **NFSv3**. `minion-26` = Ubuntu 26.04.1, Python 3.14.4, pipx 1.8.0, queue
+**NFSv4.2**, `ref-api` PID `3521265`, `NRestarts=0`, `/health` OK. `aether` =
+Ubuntu 25.10, Python 3.13.7, pipx 1.7.1, gfx1151, `/opt/rocm-7.2.0`, queue
+**NFSv3**, worker PID `910154`, lock since `2026-11-06T09:16:37Z`, active jobs
+completing.
+
+Shared queue: `/opt/md2/music/youtube/transcripts/transcription-queue`, UUID
+`8c6fc098-8cbe-41ae-9689-dd759797a582`, counts at ~16:58Z pending 43 /
+processing 1 / retry 0 / completed 5565 / failed 202 / cancelled 670 / keys
+8290. Admission: 10/hour, 351 today, total 429 = 54, total 403 = 28,
+consecutive throttle failures 0.
+
+### Recommended ordering
+
+1. Build rollback artifacts on `aether` and `minion-26` (read-only; no
+   production change).
+2. Upgrade `minion-26` `local-transcribe` 0.7.0 → 0.8.0; leave `ref-api`
+   untouched and verify `/health`.
+3. Upgrade `aether` in an idle window, preserving injected `ctranslate2 4.8.3`,
+   `rocm-sdk-core`, and `rocm-sdk-libraries-gfx1151`; verify the lock and one
+   completed job.
+4. Fresh-install `nomnom` only if a CLI is required; never create a worker.
+5. `ref` needs no upgrade anywhere.
+
+### Verification
+
+Docs-only change: `git diff --stat origin/main -- . ':!*.md'` is empty.
+
+| Check | Result |
+|-------|--------|
+| Ruff (`ruff check --config pyproject.toml src tests`) | **All checks passed** |
+| Full suite (isolated XDG, `NO_COLOR=1`, tmpfs) | **341 passed, 11 skipped**; 1 pre-existing flake |
+| Version files / CLI | `0.8.0` in `pyproject.toml`, `__init__.py`, and `lt version` |
+| `lt queue --help` | 0 Deno references |
+| `git diff --check` | exit 0 |
+| Secret scan | no secret patterns, no raw `REF_*=` values |
+
+The pre-existing flake `test_queue_concurrency.py::test_concurrent_force_single_current_generation`
+also fails on untouched `origin/main` (3/3 isolated reruns). The 7
+default-environment failures are caused by `Console(force_terminal=True)`
+emitting ANSI into captured output and also reproduce on untouched `origin/main`.
+`test_wait_completed_via_foreground` is a pre-existing rename-then-write race
+that fails on ext4 and passes on tmpfs, identically on `origin/main`. None are
+attributable to this docs-only change.
+
+### Deliverables
+
+- `.crules/tasks/review/043-deploy-preflight-3host.md` — full evidence table and
+  proposed staging/backup/cutover/validation/rollback commands, labelled by
+  host, user, directory, and privilege. **Not executed.**
+- `docs/QUEUE_DESIGN_DECISIONS.md` §18 — preflight decisions.
+- This section.
+
+No secrets were copied; only configuration key names and redacted presence were
+recorded. No worker was created where none existed.
+
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.

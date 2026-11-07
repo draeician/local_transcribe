@@ -385,3 +385,48 @@ status filtering, UUID selection, stable pagination, and defaults
 `limit=60/offset=0/oldest-first`. The host has no Deno, yet queue
 inspection/enqueue stayed quiet while `lt transcribe <URL> --direct` still
 emitted the Deno warning. No tests or Ruff configuration were weakened.
+
+---
+
+## 18. Three-host upgrade preflight is read-only and artifact-first (task 043, 2026-11-07)
+
+**Decision.** Treat the 0.8.0 rollout to `nomnom`, `minion-26`, and `aether` as
+a separate, explicitly authorized task. Task 043 only collects evidence and
+proposes commands; it performs no install, service action, queue mutation, or
+configuration change. Rollback artifacts must exist **before** any host is
+upgraded.
+
+**Why.** The three hosts are not interchangeable. They differ in OS, Python,
+mount version, installed provenance, service role, and hardware. `aether` is the
+sole NLM lock holder and is actively processing a live queue; `minion-26` runs
+`ref-api` but no worker and mounts the queue over NFSv4.2; `nomnom` has no
+`local-transcribe` install at all. A single generic upgrade command would
+silently break at least one of them.
+
+**Provenance is a prerequisite, not a detail.** `aether`'s 0.7.0 install points
+at the deleted `file:///tmp/lt-branch`, so there is no on-host rollback wheel.
+`minion-26`'s 0.7.0 install points at commit `25b89f1`, so a reproducible 0.7.0
+wheel can be rebuilt from that commit. The preflight therefore requires an
+installed-tree tarball on `aether` and a rebuilt wheel on both hosts before
+cutover.
+
+**ROCm injection is state, not dependencies.** `aether` carries injected
+`ctranslate2 4.8.3`, `rocm-sdk-core`, and `rocm-sdk-libraries-gfx1151` packages
+plus a preserved wheel cache. Because 0.8.0 has no dependency changes versus
+0.7.0, the upgrade installs only the main package with `--no-deps` into the
+existing venv and verifies the injected set afterwards. Recreating the venv
+without re-injecting would silently downgrade the GPU path to CPU.
+
+**Mount version gates roles.** `local-transcribe` expects NFSv3. `minion-26`
+mounts `vers=4.2`, so it cannot be a worker and `queue doctor` will reject it.
+Producer-only enqueue on NFSv4.2 is not validated by the tooling and is not
+approved here. Remounting is a privileged, separately approved change.
+
+**Ordering.** Rollback artifacts → `minion-26` (no worker, lowest risk) →
+`aether` (idle window, sole lock holder) → `nomnom` (fresh install only if
+needed). `ref` needs no upgrade: both `ref-api` and the pipx CLI already run
+`1.6.12b1.dev129+g80c6e3791` from the audited wheel recorded at `5159878`.
+
+**Explicit non-goals.** No worker is created on `nomnom` or `minion-26`. No
+queue counters are reset. No archive files are edited. No `lt update`. No
+release, tag, merge, or branch cleanup.
