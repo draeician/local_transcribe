@@ -1,5 +1,16 @@
 # What's New
 
+## 0.8.1 — Queue wait and force-generation correctness (2026-11-07)
+
+- **No premature completion.** `lt transcribe` waiting on a job can no longer print `completed` before the execution's `output_path` (or a failure's error record) is available. The terminal state file is published with its final metadata in one atomic step, and the waiter ignores a terminal directory entry whose embedded status does not match it.
+- **Crash recovery still wins.** If a transition is interrupted after the destination is published but before the old state file is removed, recovery keeps the advanced state (`processing` over `pending`, `retry` or terminal over `processing`, `pending` over `retry`) instead of retrying a duplicate.
+- **Concurrent `--force` is safe.** Each generation advance is claimed with an immutable create-if-absent file, and the highest claim is authoritative. Concurrent force enqueues leave exactly one current generation; a slow writer cannot move the reservation backwards.
+- **Test-only ANSI correction.** CLI tests assert on plain captured text, so Rich styling cannot split expected substrings. No behavioural assertion was relaxed.
+
+Docs: [CHANGELOG.md](../CHANGELOG.md) · [docs/QUEUE_DESIGN_DECISIONS.md](QUEUE_DESIGN_DECISIONS.md)
+
+---
+
 ## 0.8.0 — Queue list reporting and download-path Deno checks (2026-11-04)
 
 - **`lt queue list [STATUS|UUID]`** now accepts a status or execution UUID positionally, with `--limit`, `--offset`, and `--sort oldest|newest`. Output includes enqueue time (local timezone), age, status, priority, source, origin, and the displayed range.

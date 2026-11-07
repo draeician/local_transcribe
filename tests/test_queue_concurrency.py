@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
@@ -10,10 +11,15 @@ from local_transcribe.queue_api import (
     append_pending_url,
     enqueue_youtube_safe,
 )
+from local_transcribe.services.atomic_files import link_publish_json
 from local_transcribe.services.legacy_import import import_pending_file
+from local_transcribe.services.queue_models import Execution
 from local_transcribe.services.queue_paths import initialize_queue_layout
 from local_transcribe.services.queue_store import QueueStore
-from local_transcribe.services.source_reservations import read_reservation
+from local_transcribe.services.source_reservations import (
+    read_reservation,
+    try_advance_generation,
+)
 
 
 def _enqueue_once(args: tuple[str, str, bool]) -> tuple[str, str | None]:
@@ -62,13 +68,34 @@ def test_multiprocess_enqueue_one_active(tmp_path: Path) -> None:
     assert len(pending) == 1
 
 
-def test_concurrent_force_single_current_generation(tmp_path: Path) -> None:
+def test_concurrent_force_single_current_generation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """All six producers must race for the *same* next generation.
+
+    A barrier at the generation claim guarantees every producer has already read
+    generation 1 and published its pending execution before any of them tries to
+    advance. That deterministically exercises the single-winner CAS instead of
+    relying on thread scheduling or a repair/heal retry.
+    """
     q = tmp_path / "q"
     initialize_queue_layout(q)
     store = QueueStore(q)
     url = "https://youtu.be/bbbbbbbbbbb"
     first = store.enqueue(url)
     assert first.kind == "enqueued"
+
+    barrier = threading.Barrier(6)
+    real_advance = try_advance_generation
+
+    def synchronized_advance(*args, **kwargs):  # type: ignore[no-untyped-def]
+        barrier.wait(timeout=10)
+        return real_advance(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "local_transcribe.services.queue_store.try_advance_generation",
+        synchronized_advance,
+    )
 
     def force_attempt(_i: int):
         return store.enqueue(url, force=True)
@@ -77,22 +104,76 @@ def test_concurrent_force_single_current_generation(tmp_path: Path) -> None:
         results = list(pool.map(force_attempt, range(6)))
 
     enqueued = [r for r in results if r.kind == "enqueued"]
-    assert len(enqueued) >= 1
-    store.repair_source("youtube:bbbbbbbbbbb")
+    assert len(enqueued) == 1
+    winner = enqueued[0].execution
+    assert winner is not None
+    # Every loser attaches to the same winner rather than creating a generation.
+    assert all(r.execution is not None for r in results)
+    assert {r.execution.execution_id for r in results} == {winner.execution_id}
+
     res = read_reservation(q, "youtube:bbbbbbbbbbb")
     assert res is not None
+    assert res.generation == 2
+    assert res.current_execution_id == winner.execution_id
     pending = list((q / "pending").glob("*.json"))
-    # At most one current pending; heal if a race left a stale pointer.
-    if len(pending) != 1 or pending[0].stem != res.current_execution_id:
-        healed = store.enqueue(url, force=True)
-        assert healed.kind in ("enqueued", "existing_active")
-        store.repair_source("youtube:bbbbbbbbbbb")
-        res = read_reservation(q, "youtube:bbbbbbbbbbb")
-        assert res is not None
-        pending = list((q / "pending").glob("*.json"))
     assert len(pending) == 1
     assert pending[0].stem == res.current_execution_id
-    assert res.generation >= 2
+
+
+def test_repair_source_keeps_newer_generation_mid_advance(tmp_path: Path) -> None:
+    """An older generation's repair must not cancel a newer producer's pending."""
+    q = tmp_path / "q"
+    initialize_queue_layout(q)
+    store = QueueStore(q)
+    url = "https://youtu.be/hhhhhhhhhhh"
+    first = store.enqueue(url)
+    assert first.kind == "enqueued"
+    second = store.enqueue(url, force=True)
+    assert second.kind == "enqueued"
+    assert second.execution is not None
+    source_key = second.source_key
+
+    res = read_reservation(q, source_key)
+    assert res is not None
+    assert res.generation == 2
+    current_id = res.current_execution_id
+
+    # A generation-3 producer has published its pending execution but has not
+    # yet claimed the reservation. Repair for generation 2 must leave it alone.
+    newer = Execution(
+        execution_id="newer-generation-3",
+        source_key=source_key,
+        generation=res.generation + 1,
+        source=url,
+        source_type="youtube",
+        status="pending",
+    )
+    assert link_publish_json(
+        q / "pending" / f"{newer.execution_id}.json",
+        newer.to_dict(),
+        tmp_dir=q / "tmp",
+    )
+
+    assert store.repair_source(source_key) == 0
+    pending = {path.stem for path in (q / "pending").glob("*.json")}
+    assert pending == {current_id, newer.execution_id}
+
+    # Once generation 3 is claimed, repair cancels the superseded generation 2.
+    advanced = try_advance_generation(
+        q,
+        source_key,
+        expected_generation=res.generation,
+        new_execution_id=newer.execution_id,
+    )
+    assert advanced is not None
+    assert advanced.won
+    assert store.repair_source(source_key) == 1
+    pending = {path.stem for path in (q / "pending").glob("*.json")}
+    assert pending == {newer.execution_id}
+    latest = read_reservation(q, source_key)
+    assert latest is not None
+    assert latest.generation == 3
+    assert latest.current_execution_id == newer.execution_id
 
 
 def test_multiprocess_force_no_dual_current(tmp_path: Path) -> None:

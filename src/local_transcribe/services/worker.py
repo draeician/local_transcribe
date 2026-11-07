@@ -117,6 +117,47 @@ def recover_processing(queue_dir: Path) -> int:
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             logger.warning("Skipping unreadable processing file %s: %s", path, exc)
             continue
+        # Interrupted publication: atomic_state_transition links the destination
+        # with final metadata before unlinking the source. If the process died
+        # in between, both names exist. The advanced state directory wins.
+        pending_copy = queue_dir / "pending" / path.name
+        if pending_copy.is_file():
+            try:
+                pending_copy.unlink()
+            except OSError as exc:
+                logger.warning(
+                    "Failed to remove stale pending duplicate %s: %s",
+                    pending_copy,
+                    exc,
+                )
+                continue
+            logger.info(
+                "Removed stale pending duplicate %s; processing is authoritative",
+                ex.execution_id,
+            )
+
+        advanced_copy = next(
+            (
+                queue_dir / status / path.name
+                for status in ("retry", *sorted(TERMINAL_STATUSES))
+                if (queue_dir / status / path.name).is_file()
+            ),
+            None,
+        )
+        if advanced_copy is not None:
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning(
+                    "Failed to remove stale processing duplicate %s: %s", path, exc
+                )
+                continue
+            logger.info(
+                "Removed stale processing duplicate %s; advanced copy at %s/",
+                ex.execution_id,
+                advanced_copy.parent.name,
+            )
+            continue
         can_retry = ex.attempts < ex.max_attempts
         if can_retry:
             status: str = "retry"
@@ -165,6 +206,25 @@ def promote_retries(queue_dir: Path, *, now: float | None = None) -> int:
     current = time.time() if now is None else now
     count = 0
     for path in list(retry_dir.glob("*.json")):
+        # Interrupted promotion: pending was published before the retry source
+        # was unlinked. Pending is the advanced state; drop the duplicate.
+        if (queue_dir / "pending" / path.name).is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            continue
+        # A terminal copy means this retry record is stale (for example an
+        # interrupted processing -> failed publication).
+        if any(
+            (queue_dir / status / path.name).is_file()
+            for status in TERMINAL_STATUSES
+        ):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             available = data.get("available_at")

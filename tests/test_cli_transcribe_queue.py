@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -209,6 +210,111 @@ def test_attribute_cache_miss_does_not_fail_immediately(
     )
     assert outcome.ok
     assert calls["n"] >= 3
+
+
+def test_wait_does_not_report_completed_before_final_metadata(
+    tmp_path: Path,
+) -> None:
+    """The legacy/interrupted rename-then-write interval must never complete.
+
+    The destination entry is present but still carries ``processing`` metadata
+    and no ``output_path``. The waiter must keep polling; only after the final
+    metadata is published may it report completion with the real path.
+    """
+    q = _queue(tmp_path)
+    store = QueueStore(q)
+    enq = store.enqueue("https://youtu.be/hhhhhhhhhhh", priority=100)
+    assert enq.execution is not None
+    eid = enq.execution.execution_id
+    located = locate_execution(q, eid)
+    assert located is not None
+    claimed = claim_execution(q, located.execution)
+    assert claimed is not None
+
+    processing = q / "processing" / f"{eid}.json"
+    completed = q / "completed" / f"{eid}.json"
+    stale = claimed.to_dict()
+    stale["status"] = "processing"
+    stale["output_path"] = None
+    completed.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+    processing.unlink()
+
+    polls = {"n": 0}
+
+    def publish_final_metadata(_seconds: float) -> None:
+        polls["n"] += 1
+        if polls["n"] == 1:
+            final = dict(stale)
+            final["status"] = "completed"
+            final["output_path"] = "/final/transcript.json"
+            completed.write_text(json.dumps(final) + "\n", encoding="utf-8")
+
+    outcome = wait_for_execution(
+        q,
+        eid,
+        timeout_seconds=5.0,
+        poll_interval_seconds=0.01,
+        ensure_worker=False,
+        validate_nfs=False,
+        sleep_fn=publish_final_metadata,
+    )
+
+    assert polls["n"] == 1
+    assert outcome.status == "completed"
+    assert outcome.output_path == "/final/transcript.json"
+
+
+def test_wait_does_not_report_failed_before_error_metadata(
+    tmp_path: Path,
+) -> None:
+    """A failed directory entry without final error metadata is not terminal."""
+    q = _queue(tmp_path)
+    store = QueueStore(q)
+    enq = store.enqueue("https://youtu.be/iiiiiiiiiii", priority=100)
+    assert enq.execution is not None
+    eid = enq.execution.execution_id
+    located = locate_execution(q, eid)
+    assert located is not None
+    claimed = claim_execution(q, located.execution)
+    assert claimed is not None
+
+    processing = q / "processing" / f"{eid}.json"
+    failed = q / "failed" / f"{eid}.json"
+    stale = claimed.to_dict()
+    stale["status"] = "processing"
+    stale["error"] = None
+    failed.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+    processing.unlink()
+
+    polls = {"n": 0}
+
+    def publish_final_metadata(_seconds: float) -> None:
+        polls["n"] += 1
+        if polls["n"] == 1:
+            final = dict(stale)
+            final["status"] = "failed"
+            final["error"] = ExecutionError(
+                category="unavailable",
+                message="source removed",
+                retryable=False,
+                occurred_at=utc_now_iso(),
+            ).to_dict()
+            failed.write_text(json.dumps(final) + "\n", encoding="utf-8")
+
+    outcome = wait_for_execution(
+        q,
+        eid,
+        timeout_seconds=5.0,
+        poll_interval_seconds=0.01,
+        ensure_worker=False,
+        validate_nfs=False,
+        sleep_fn=publish_final_metadata,
+    )
+
+    assert polls["n"] == 1
+    assert outcome.status == "failed"
+    assert "unavailable: source removed" in outcome.message
+    assert outcome.output_path is None
 
 
 def test_cli_no_wait(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -198,6 +198,7 @@ class QueueStore:
         """
         res = read_reservation(self.queue_dir, source_key)
         preferred = res.current_execution_id if res else None
+        res_generation = res.generation if res is not None else None
         pendings = self.find_by_source_key(source_key, statuses=("pending",))
         if preferred is not None:
             preferred_pending = any(
@@ -209,6 +210,12 @@ class QueueStore:
         for ex, st in pendings:
             if preferred is not None and ex.execution_id == preferred:
                 continue
+            # A newer generation may still be mid-advance: its producer
+            # publishes pending/ before claiming the reservation. Do not cancel
+            # it from an older generation's repair; the worker's post-claim
+            # generation check supersedes it if it is genuinely orphaned.
+            if res_generation is not None and ex.generation > res_generation:
+                continue
             try:
                 self.cancel_pending(ex.execution_id)
                 cancelled += 1
@@ -217,9 +224,28 @@ class QueueStore:
         return cancelled
 
     def _attach_existing(
-        self, source_key: str, *, message: str
+        self,
+        source_key: str,
+        *,
+        message: str,
+        preferred_execution_id: str | None = None,
     ) -> EnqueueResult:
-        """Return the reservation's active execution after losing a race."""
+        """Return the reservation's active execution after losing a race.
+
+        ``preferred_execution_id`` is the execution named by the generation
+        claim this caller lost; it is consulted first so a loser attaches to
+        the winner even before the reservation pointer is readable on NFS.
+        """
+        if preferred_execution_id is not None:
+            ex, st = self.find_execution(preferred_execution_id)
+            if ex is not None and st in ACTIVE_STATUSES:
+                return EnqueueResult(
+                    kind="existing_active",
+                    source_key=source_key,
+                    execution=ex,
+                    reservation_generation=ex.generation,
+                    message=f"{message}; active in {st}/",
+                )
         preferred = self._preferred_active(source_key)
         if preferred is not None:
             ex, st = preferred
@@ -374,13 +400,19 @@ class QueueStore:
                     expected_generation=current_gen,
                     new_execution_id=new_id,
                 )
-                if won is None:
-                    # Only cancel if we do not currently own the pointer.
+                if won is None or not won.won:
+                    # Only cancel our own orphan pending; the claim winner's
+                    # pending must survive even if the pointer is not visible
+                    # yet on NFS.
                     after = read_reservation(self.queue_dir, source_key)
                     if after is None or after.current_execution_id != new_id:
                         self._cancel_orphan_pending(new_id)
                     return self._attach_existing(
-                        source_key, message="Lost force race"
+                        source_key,
+                        message="Lost force race",
+                        preferred_execution_id=(
+                            won.winner_execution_id if won is not None else None
+                        ),
                     )
                 self.repair_source(source_key)
                 alive, st = self.find_execution(new_id)
@@ -392,7 +424,7 @@ class QueueStore:
                     kind="enqueued",
                     source_key=source_key,
                     execution=execution,
-                    reservation_generation=won.generation,
+                    reservation_generation=won.reservation.generation,
                     message="Enqueued (new generation)",
                 )
 

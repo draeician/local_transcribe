@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-11-07
+
+### Fixed
+- Queue waiters can no longer report a terminal result before the execution's final metadata exists. State transitions publish the destination with its final `status`, `output_path`, or error record in a single atomic `link()`, and `locate_execution` / `wait_for_execution` refuse to trust a terminal directory entry whose embedded status does not match that directory. An interrupted transition is reconciled in favour of the advanced state (`pending` → `processing` → `retry`/terminal), including the `pending` + `processing` and `retry` + `pending` duplicate cases.
+- Concurrent `--force` enqueues now advance exactly one generation at a time. Each advance is recorded as an immutable create-if-absent claim under `keys/.advance/`, and the highest claim is authoritative, so a slow writer cannot move the source reservation backwards or leave it pointing at a superseded/cancelled execution. This removes the intermittent `test_concurrent_force_single_current_generation` failure.
+- The six ANSI-sensitive CLI tests assert on plain text stripped of Rich styling instead of failing when `Console(force_terminal=True)` styles captured output. Behavioural assertions are unchanged.
+
 ## [0.8.0] - 2026-11-04
 
 ### Added

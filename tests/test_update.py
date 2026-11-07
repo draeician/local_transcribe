@@ -87,7 +87,7 @@ def test_perform_yt_dlp_update_stable_omits_pre() -> None:
     ]
 
 
-def test_cli_update_default_includes_pre() -> None:
+def test_cli_update_default_includes_pre(plain) -> None:
     runner = CliRunner()
     with patch(
         "local_transcribe.utils.ytdlp_update.resolve_deno_on_path",
@@ -104,12 +104,13 @@ def test_cli_update_default_includes_pre() -> None:
     ) as perform_mock:
         result = runner.invoke(app, ["update"])
 
+    out = plain(result.output)
     assert result.exit_code == 0, result.output
     perform_mock.assert_called_once()
     assert perform_mock.call_args.kwargs["stable"] is False
-    assert "Before: 2025.01.01" in result.output
-    assert "After: 2025.02.01" in result.output
-    assert "Updating yt-dlp in the current lt environment" in result.output
+    assert "Before: 2025.01.01" in out
+    assert "After: 2025.02.01" in out
+    assert "Updating yt-dlp in the current lt environment" in out
 
 
 def test_cli_update_stable_omits_pre() -> None:
@@ -135,7 +136,7 @@ def test_cli_update_stable_omits_pre() -> None:
     assert "--pre" not in perform_mock.return_value.pip_command
 
 
-def test_cli_update_dry_run_does_not_modify_environment() -> None:
+def test_cli_update_dry_run_does_not_modify_environment(plain) -> None:
     runner = CliRunner()
     pip_command = build_yt_dlp_pip_command(sys.executable, stable=False)
     with patch(
@@ -153,13 +154,14 @@ def test_cli_update_dry_run_does_not_modify_environment() -> None:
     ) as perform_mock:
         result = runner.invoke(app, ["update", "--dry-run"])
 
+    out = plain(result.output)
     assert result.exit_code == 0, result.output
     perform_mock.assert_called_once()
     assert perform_mock.call_args.kwargs["dry_run"] is True
-    assert "Dry run:" in result.output
-    assert "--pre" in result.output
-    assert "yt-dlp[default,curl-cffi]" in result.output
-    assert "After: 2025.01.01" in result.output
+    assert "Dry run:" in out
+    assert "--pre" in out
+    assert "yt-dlp[default,curl-cffi]" in out
+    assert "After: 2025.01.01" in out
 
 
 def test_cli_update_missing_deno_exits_with_clear_message() -> None:
@@ -175,7 +177,7 @@ def test_cli_update_missing_deno_exits_with_clear_message() -> None:
     assert "Deno is not on PATH" in result.output
 
 
-def test_cli_update_pip_failure_shows_command_and_stderr() -> None:
+def test_cli_update_pip_failure_shows_command_and_stderr(plain) -> None:
     runner = CliRunner()
     pip_command = build_yt_dlp_pip_command(sys.executable, stable=False)
     with patch(
@@ -195,9 +197,10 @@ def test_cli_update_pip_failure_shows_command_and_stderr() -> None:
     ):
         result = runner.invoke(app, ["update"])
 
+    out = plain(result.output)
     assert result.exit_code == 1, result.output
-    assert "yt-dlp update failed" in result.output
-    assert "Command:" in result.output
-    assert "--pre" in result.output
-    assert "yt-dlp[default,curl-cffi]" in result.output
-    assert "ERROR: pip install failed" in result.output
+    assert "yt-dlp update failed" in out
+    assert "Command:" in out
+    assert "--pre" in out
+    assert "yt-dlp[default,curl-cffi]" in out
+    assert "ERROR: pip install failed" in out

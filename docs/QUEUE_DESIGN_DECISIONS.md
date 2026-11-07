@@ -385,3 +385,57 @@ status filtering, UUID selection, stable pagination, and defaults
 `limit=60/offset=0/oldest-first`. The host has no Deno, yet queue
 inspection/enqueue stayed quiet while `lt transcribe <URL> --direct` still
 emitted the Deno warning. No tests or Ruff configuration were weakened.
+
+---
+
+## 20. Pre-deploy gate remediation: atomic terminal metadata and generation claims (task 044, 2026-11-07)
+
+**Numbering.** Sections 18 and 19 are reserved by the task-043 preflight
+correction (`b6d504f`, not merged here). This section starts at 20 so the two
+branches can be merged without renumbering.
+
+**Terminal metadata is published with the state entry, not after it.**
+`atomic_state_transition()` previously renamed `src` to the destination and then
+wrote the final metadata. A concurrent reader could see the destination with
+stale `processing` metadata and report `completed` with no `output_path` (the
+ext4 foreground-wait failure). The primitive now writes the final document to a
+unique temp, fsyncs it, and hard-links it to the destination in one step, then
+unlinks the source. Directory membership remains the authority, collisions still
+fail closed, and a crash between link and unlink leaves both names for recovery.
+`locate_execution()`/`wait_for_execution()` additionally refuse to trust a
+terminal directory entry whose embedded status does not match that directory,
+which protects against legacy or interrupted entries.
+
+**Recovery prefers the advanced state.** When a crash leaves two names for one
+execution, recovery keeps the later lifecycle state: `processing` over
+`pending`, `retry` or a terminal state over `processing`, and `pending` over
+`retry`. The `pending` + `processing` case is new because the atomic transition
+now publishes the destination before removing the source. Collision behavior in
+`atomic_state_transition()` itself is unchanged.
+
+**Generation advances are immutable claims.** The concurrent-force failure was
+an application defect, not test timing. Multiple producers could each write
+generation N+1 with a different execution id; a stale `repair_source()` could
+then cancel the execution the final pointer named, leaving zero winners. Each
+advance is now a create-if-absent claim under `keys/.advance/`; exactly one
+producer wins a generation. `read_reservation()` treats the highest claim as the
+authority and `keys/<source>.json` as a materialized cache, so a slow writer
+cannot move readers backwards and a producer that dies after claiming remains
+recoverable. Claims are never deleted; the file count is one small JSON per
+force generation per source. `repair_source()` also skips pending executions
+newer than the reservation, so an older generation cannot cancel a producer that
+is mid-advance.
+
+**ANSI tests assert plain text.** Rich's `Console(force_terminal=True)` styles
+captured output and can split literal substrings. The six affected tests strip
+CSI/SGR escapes before asserting; every behavioral assertion and exit-code
+check is unchanged. This is a test correction, not a change to CLI styling.
+
+**Verification and release.** The fix is a patch release: metadata, changelog,
+and release notes are synchronized to **0.8.1**. The required gate passes on
+ext4 in both default and `NO_COLOR=1` configurations (352 passed, 11 skipped);
+the concurrency file passed 100/100 tmpfs and 50/50 ext4 stress runs; Ruff,
+syntax, build, isolated CLI smoke, and an isolated pipx 0.8.0 → 0.8.1 upgrade
+all passed. Real NFSv3/NLM and GPU checks were not run (no production queue or
+GPU test); the 10 NFS tests skipped without `LT_NFS_QUEUE_DIR`. No tag, publish,
+merge, deployment, or production configuration change was performed.
