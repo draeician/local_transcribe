@@ -1698,3 +1698,108 @@ restart, or system configuration change was performed.
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
+
+## Pre-deploy gate remediation — task 044 (2026-11-07, OpenCode)
+
+### Context
+
+Task 043's corrected preflight (`b6d504f`) left the required gate red on
+untouched `origin/main` `abdedbe`: six ANSI-output test failures, one ext4
+foreground-wait race caused by `atomic_state_transition()` renaming before
+writing metadata, and an intermittent concurrent-force generation failure. Task
+043 and its worktree were preserved and not merged or modified.
+
+### Branch and worktree
+
+| Item | Value |
+|------|-------|
+| Branch | `fix/predeploy-queue-gate` |
+| Base | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
+| Worktree | `/tmp/opencode/local_transcribe-gate-remediation` (ext4) |
+| Host | `nomnom`, user `draeician`, unprivileged |
+| Task record | `.crules/tasks/review/044-predeploy-gate-remediation.md` |
+| Implementation commit | `bff5ca6` (`fix(queue): publish terminal metadata atomically`) |
+
+### Changes
+
+- **Terminal metadata publication** (`atomic_files.py`, `queue_wait.py`):
+  transitions write the final JSON to a temp, fsync it, and hard-link it to the
+  destination before unlinking the source. A destination can never be observed
+  with stale pre-transition metadata. `locate_execution()` and
+  `wait_for_execution()` only trust a terminal directory entry when its embedded
+  status matches the directory.
+- **Interrupted-publication recovery** (`worker.py`): duplicate state entries
+  resolve to the advanced state (`processing` over `pending`, `retry`/terminal
+  over `processing`, `pending` over `retry`).
+- **Concurrent force generations** (`source_reservations.py`,
+  `queue_store.py`): each generation advance is an immutable create-if-absent
+  claim under `keys/.advance/`; the highest claim is authoritative and
+  `keys/<source>.json` is a materialized cache. Exactly one producer wins a
+  generation, and a slow writer cannot move readers backwards. `repair_source()`
+  skips pending executions newer than the reservation. The failure was an
+  application defect: multiple writers could each install generation N+1 and a
+  stale repair could cancel the final pointer's execution.
+- **ANSI tests** (`tests/conftest.py` and six tests): strip CSI/SGR escapes from
+  captured output; all behavioral assertions and exit-code checks are unchanged.
+- **Regression tests**: deterministic barrier-synchronized force race; stale
+  terminal metadata for `completed` and `failed`; destination observation at the
+  `link()` boundary; crash windows before/after publication; recovery for
+  `pending`+`processing`, `processing`+`retry`, `retry`+`pending`; claim-ledger
+  monotonicity and claim visibility without a materialized reservation.
+- **Version**: patch release **0.8.1** synchronized across `pyproject.toml`,
+  `src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
+  `docs/WHATS_NEW.md`. No tag or publish.
+
+### Verification (exact results)
+
+Environment: isolated venv `/tmp/opencode/predeploy-gate-venv`, Python 3.12.3,
+pytest 9.2.0, ruff 0.17.4, build 1.6.1, pipx 1.4.3; ext4 worktree; isolated
+`HOME`/`XDG_*`/`TMPDIR`. Production config, queue, archives, and services were
+not loaded or touched.
+
+| Check | Result |
+|-------|--------|
+| Targeted regressions (six ANSI, two waiter, foreground wait, concurrency, worker transitions, reservations) | **43 passed** |
+| Full suite, ext4, default color | **352 passed, 11 skipped, 1 warning**, exit 0 |
+| Full suite, ext4, `NO_COLOR=1` | **352 passed, 11 skipped, 1 warning**, exit 0 |
+| Concurrency stress, tmpfs | **100/100** runs passed |
+| Concurrency stress, ext4 | **50/50** runs passed |
+| Ruff canonical | **All checks passed** |
+| Syntax (`compileall`) | clean |
+| Build | `local_transcribe-0.8.1` wheel + sdist; wheel `Version: 0.8.1`, entry point `lt = local_transcribe.cli:main` |
+| Isolated CLI smoke | `lt version` **0.8.1**; queue init/add/list/stats and `transcribe --no-wait` worked on a disposable queue |
+| Isolated pipx upgrade | 0.8.0 wheel installed, then forced 0.8.1 wheel; `lt version`, module, metadata, and `pip show` all **0.8.1** |
+| Diff hygiene | `git diff --check` clean |
+| Secret scan | 0 hits across 924 added lines; the full-file scan's only match is the pre-existing random-hex token-generator line in `atomic_files.py`, which is not a credential |
+
+Baseline `abdedbe` reproduction: the six ANSI tests fail, both new waiter tests
+fail (terminal returned before metadata), and the deterministic concurrency test
+failed 8/10 tmpfs runs. The new tests therefore exercise the defects rather than
+passing by construction.
+
+### Evidence
+
+Durable sanitized evidence:
+`~/.local/share/local-transcribe/evidence/20261107T-gate044/` — full pytest
+logs, targeted regressions, stress summaries, build logs, wheel hashes, pipx
+upgrade transcript, CLI smoke, Ruff/compileall, diff check, secret scans,
+baseline reproduction, and NFS skip reasons.
+
+### Unavailable checks
+
+Real NFSv3/NLM multi-client tests were not run: the 10
+`tests/test_nfs_integration.py` tests skipped because `LT_NFS_QUEUE_DIR` was not
+set. GPU/ROCm transcription was not run. The opt-in real pipx-install pytest was
+skipped; an equivalent isolated pipx install/upgrade was performed manually.
+
+### Blockers
+
+None for this remediation. Production deployment remains blocked by the
+separate task 043 prerequisites: artifact staging, rollback rehearsal, Minion
+config/identity, and the NFSv4.2 producer decision.
+
+### Next action
+
+Review `fix/predeploy-queue-gate`. If approved, merge it into `main` and resume
+the task 043 deployment preflight with a green required gate. Do not tag,
+publish, deploy, or modify production until that review authorizes it.
