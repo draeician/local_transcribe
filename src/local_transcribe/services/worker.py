@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,13 @@ from local_transcribe.services.legacy_import import (
 )
 from local_transcribe.services.model_cache import resolve_idle_maintenance
 from local_transcribe.services.mount_validation import validate_queue_mount
+from local_transcribe.services.queue_locks import (
+    execution_lock_path,
+    queue_lock,
+)
 from local_transcribe.services.queue_models import (
+    SCHEMA_VERSION,
+    STATE_DIRS,
     TERMINAL_STATUSES,
     Execution,
     ExecutionError,
@@ -100,97 +106,347 @@ class LocalRuntimeLock:
                 self._file = None
 
 
+@dataclass(frozen=True)
+class _StateRecord:
+    """One validated execution document in a state directory."""
+
+    status: str
+    path: Path
+    execution: Execution
+
+
+def _load_state_record(
+    path: Path, status: str
+) -> tuple[_StateRecord | None, str | None]:
+    """Parse and validate one state document without trusting its filename."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        return None, f"unreadable JSON ({exc})"
+    if not isinstance(data, dict):
+        return None, "document is not a JSON object"
+    try:
+        execution = Execution.from_dict(data)
+    except (KeyError, TypeError, ValueError) as exc:
+        return None, f"invalid execution schema ({exc})"
+
+    if execution.execution_id != path.stem:
+        return None, (
+            f"execution_id {execution.execution_id!r} does not match "
+            f"filename {path.stem!r}"
+        )
+    if execution.status != status:
+        return None, (
+            f"embedded status {execution.status!r} does not match "
+            f"{status}/ directory"
+        )
+    if execution.schema_version != SCHEMA_VERSION:
+        return None, f"unsupported schema_version {execution.schema_version}"
+    if execution.source_type not in ("youtube", "local_file"):
+        return None, f"invalid source_type {execution.source_type!r}"
+    if not execution.source_key.strip() or not execution.source.strip():
+        return None, "missing source identity"
+    if execution.generation < 1:
+        return None, f"invalid generation {execution.generation}"
+    if execution.max_attempts < 1:
+        return None, f"invalid max_attempts {execution.max_attempts}"
+    if execution.attempts < 0 or execution.attempts > execution.max_attempts:
+        return None, (
+            f"invalid attempts {execution.attempts}/{execution.max_attempts}"
+        )
+    return _StateRecord(status=status, path=path, execution=execution), None
+
+
+def _valid_transition(source: _StateRecord, successor: _StateRecord) -> bool:
+    """Return True when ``successor`` can validly follow ``source``.
+
+    Attempt counts and transition metadata are validated, not just filenames:
+    a claim increments attempts, a retry/terminal transition preserves the
+    claimed attempt count, cancellation preserves the pre-claim count, and a
+    retry promotion preserves the retry's attempt count.
+    """
+    a = source.execution
+    b = successor.execution
+
+    if a.status == "pending" and b.status == "processing":
+        return b.attempts == a.attempts + 1 and b.started_at is not None
+    if a.status == "pending" and b.status == "retry":
+        return b.attempts == a.attempts + 1 and b.error is not None
+    if a.status == "pending" and b.status == "completed":
+        return b.attempts == a.attempts + 1
+    if a.status == "pending" and b.status == "failed":
+        return b.attempts == a.attempts + 1 and b.error is not None
+    if a.status == "pending" and b.status == "cancelled":
+        return b.attempts == a.attempts
+    if a.status == "processing" and b.status in {
+        "retry",
+        "completed",
+        "failed",
+        "cancelled",
+    }:
+        if b.attempts != a.attempts:
+            return False
+        return not (b.status in {"retry", "failed"} and b.error is None)
+    if a.status == "retry" and b.status == "pending":
+        return b.attempts == a.attempts and available_at_elapsed(a.available_at)
+    if a.status == "retry" and b.status in {"completed", "failed", "cancelled"}:
+        if b.attempts != a.attempts:
+            return False
+        return not (b.status == "failed" and b.error is None)
+    return False
+
+
+def _find_recovery_winner(records: list[_StateRecord]) -> _StateRecord | None:
+    """Return the unique most-advanced record, or None when ambiguous.
+
+    A valid chain must have exactly one sink and every record must be able to
+    reach it. Multiple sinks, cycles, or unreachable records are conflicting
+    evidence and must be left intact rather than guessed at.
+    """
+    by_status = {record.status: record for record in records}
+    if len(by_status) != len(records):
+        return None
+
+    edges: dict[str, set[str]] = {status: set() for status in by_status}
+    for source in records:
+        for successor in records:
+            if source is successor:
+                continue
+            if _valid_transition(source, successor):
+                edges[source.status].add(successor.status)
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def has_cycle(status: str) -> bool:
+        if status in visiting:
+            return True
+        if status in visited:
+            return False
+        visiting.add(status)
+        for nxt in edges[status]:
+            if has_cycle(nxt):
+                return True
+        visiting.remove(status)
+        visited.add(status)
+        return False
+
+    if any(has_cycle(status) for status in edges):
+        return None
+
+    sinks = [status for status, outgoing in edges.items() if not outgoing]
+    if len(sinks) != 1:
+        return None
+    sink = sinks[0]
+
+    reverse: dict[str, set[str]] = {status: set() for status in edges}
+    for status, outgoing in edges.items():
+        for nxt in outgoing:
+            reverse[nxt].add(status)
+
+    seen: set[str] = set()
+    stack = [sink]
+    while stack:
+        status = stack.pop()
+        if status in seen:
+            continue
+        seen.add(status)
+        stack.extend(reverse[status])
+    if seen != set(edges):
+        return None
+    return by_status[sink]
+
+
+def _state_paths(queue_dir: Path, execution_id: str) -> list[tuple[str, Path]]:
+    return [
+        (status, queue_dir / status / f"{execution_id}.json")
+        for status in STATE_DIRS
+        if (queue_dir / status / f"{execution_id}.json").is_file()
+    ]
+
+
+def _other_state_paths(
+    queue_dir: Path, execution_id: str, *, exclude: str
+) -> list[Path]:
+    return [
+        path
+        for status, path in _state_paths(queue_dir, execution_id)
+        if status != exclude
+    ]
+
+
+def _recover_duplicates(queue_dir: Path) -> set[str]:
+    """Resolve interrupted-transition duplicates by validated transition order.
+
+    Returns the execution ids that could not be resolved safely. Unresolved
+    records are left exactly as found so a human/operator can inspect them.
+    """
+    ids: set[str] = set()
+    for status in STATE_DIRS:
+        directory = queue_dir / status
+        if not directory.is_dir():
+            continue
+        for path in directory.glob("*.json"):
+            ids.add(path.stem)
+
+    unresolved: set[str] = set()
+    for execution_id in sorted(ids):
+        if len(_state_paths(queue_dir, execution_id)) <= 1:
+            continue
+
+        with queue_lock(execution_lock_path(queue_dir, execution_id)):
+            paths = _state_paths(queue_dir, execution_id)
+            if len(paths) <= 1:
+                continue
+
+            records: list[_StateRecord] = []
+            for status, path in paths:
+                record, error = _load_state_record(path, status)
+                if record is None:
+                    logger.warning(
+                        "Duplicate recovery left execution %s intact: %s (%s)",
+                        execution_id,
+                        error,
+                        path,
+                    )
+                    unresolved.add(execution_id)
+                    records = []
+                    break
+                records.append(record)
+            if not records:
+                continue
+
+            identities = {
+                (
+                    record.execution.source_key,
+                    record.execution.generation,
+                    record.execution.source_type,
+                )
+                for record in records
+            }
+            if len(identities) != 1:
+                logger.warning(
+                    "Duplicate recovery left execution %s intact: conflicting "
+                    "source identity/generation across %s",
+                    execution_id,
+                    ", ".join(record.status for record in records),
+                )
+                unresolved.add(execution_id)
+                continue
+
+            winner = _find_recovery_winner(records)
+            if winner is None:
+                logger.warning(
+                    "Duplicate recovery left execution %s intact: ambiguous "
+                    "state copies %s",
+                    execution_id,
+                    ", ".join(
+                        f"{record.status}(attempts={record.execution.attempts})"
+                        for record in records
+                    ),
+                )
+                unresolved.add(execution_id)
+                continue
+
+            for record in records:
+                if record.path == winner.path:
+                    continue
+                try:
+                    record.path.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "Duplicate recovery could not remove stale %s copy %s "
+                        "for execution %s: %s",
+                        record.status,
+                        record.path,
+                        execution_id,
+                        exc,
+                    )
+                    unresolved.add(execution_id)
+            logger.info(
+                "Duplicate recovery kept %s copy for execution %s",
+                winner.status,
+                execution_id,
+            )
+    return unresolved
+
+
 def recover_processing(queue_dir: Path) -> int:
     """Move abandoned processing jobs to retry, or failed if attempts exhausted.
 
     SIGKILL/OOM never reaches ``fail_or_retry``, so recovery must honor
     ``max_attempts`` or the same job can death-loop forever.
+
+    Interrupted transitions are reconciled only after validating the proposed
+    successor (JSON/schema, execution id, source identity, generation, state,
+    attempts). Malformed or conflicting copies remain intact and are reported.
     """
+    unresolved = _recover_duplicates(queue_dir)
     processing = queue_dir / "processing"
     if not processing.is_dir():
         return 0
+
     count = 0
     for path in list(processing.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            ex = Execution.from_dict(data)
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            logger.warning("Skipping unreadable processing file %s: %s", path, exc)
+        execution_id = path.stem
+        if execution_id in unresolved:
             continue
-        # Interrupted publication: atomic_state_transition links the destination
-        # with final metadata before unlinking the source. If the process died
-        # in between, both names exist. The advanced state directory wins.
-        pending_copy = queue_dir / "pending" / path.name
-        if pending_copy.is_file():
-            try:
-                pending_copy.unlink()
-            except OSError as exc:
-                logger.warning(
-                    "Failed to remove stale pending duplicate %s: %s",
-                    pending_copy,
-                    exc,
-                )
-                continue
-            logger.info(
-                "Removed stale pending duplicate %s; processing is authoritative",
-                ex.execution_id,
-            )
+        if _other_state_paths(queue_dir, execution_id, exclude="processing"):
+            continue
 
-        advanced_copy = next(
-            (
-                queue_dir / status / path.name
-                for status in ("retry", *sorted(TERMINAL_STATUSES))
-                if (queue_dir / status / path.name).is_file()
-            ),
-            None,
-        )
-        if advanced_copy is not None:
+        with queue_lock(execution_lock_path(queue_dir, execution_id)):
+            if not path.is_file():
+                continue
+            if _other_state_paths(queue_dir, execution_id, exclude="processing"):
+                continue
             try:
-                path.unlink()
-            except OSError as exc:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                ex = Execution.from_dict(data)
+            except (
+                OSError,
+                json.JSONDecodeError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 logger.warning(
-                    "Failed to remove stale processing duplicate %s: %s", path, exc
+                    "Skipping unreadable processing file %s: %s", path, exc
                 )
                 continue
+
+            can_retry = ex.attempts < ex.max_attempts
+            if can_retry:
+                status: str = "retry"
+                dest = queue_dir / "retry" / path.name
+                message = "Recovered abandoned processing job"
+            else:
+                status = "failed"
+                dest = queue_dir / "failed" / path.name
+                message = (
+                    "Recovered abandoned processing job; max attempts exceeded "
+                    f"({ex.attempts}/{ex.max_attempts})"
+                )
+            ex.error = ExecutionError(
+                category="worker_interrupted",
+                message=message,
+                retryable=can_retry,
+                occurred_at=utc_now_iso(),
+            )
+            ex.status = status  # type: ignore[assignment]
+            ex.updated_at = utc_now_iso()
+            if can_retry:
+                ex.available_at = utc_now_iso()
+            try:
+                atomic_state_transition(path, dest, ex.to_dict())
+            except (AtomicFileError, OSError) as exc:
+                logger.warning(
+                    "Failed to recover processing job %s: %s", path.name, exc
+                )
+                continue
+            count += 1
             logger.info(
-                "Removed stale processing duplicate %s; advanced copy at %s/",
-                ex.execution_id,
-                advanced_copy.parent.name,
+                "Recovered processing job %s -> %s/", ex.execution_id, status
             )
-            continue
-        can_retry = ex.attempts < ex.max_attempts
-        if can_retry:
-            status: str = "retry"
-            dest = queue_dir / "retry" / path.name
-            message = "Recovered abandoned processing job"
-        else:
-            status = "failed"
-            dest = queue_dir / "failed" / path.name
-            message = (
-                "Recovered abandoned processing job; max attempts exceeded "
-                f"({ex.attempts}/{ex.max_attempts})"
-            )
-        ex.error = ExecutionError(
-            category="worker_interrupted",
-            message=message,
-            retryable=can_retry,
-            occurred_at=utc_now_iso(),
-        )
-        ex.status = status  # type: ignore[assignment]
-        ex.updated_at = utc_now_iso()
-        if can_retry:
-            ex.available_at = utc_now_iso()
-        try:
-            atomic_state_transition(path, dest, ex.to_dict())
-        except (AtomicFileError, OSError) as exc:
-            logger.warning(
-                "Failed to recover processing job %s: %s", path.name, exc
-            )
-            continue
-        count += 1
-        logger.info(
-            "Recovered processing job %s -> %s/", ex.execution_id, status
-        )
     return count
 
 
@@ -198,47 +454,49 @@ def promote_retries(queue_dir: Path, *, now: float | None = None) -> int:
     """Move retry jobs with available_at <= now to pending.
 
     Uses parsed ISO timestamps (not string compare) so timezone/format
-    differences do not strand jobs.
+    differences do not strand jobs. Interrupted promotions are reconciled by
+    the same validated duplicate recovery as claim/retry transitions.
     """
+    unresolved = _recover_duplicates(queue_dir)
     retry_dir = queue_dir / "retry"
     if not retry_dir.is_dir():
         return 0
+
     current = time.time() if now is None else now
     count = 0
     for path in list(retry_dir.glob("*.json")):
-        # Interrupted promotion: pending was published before the retry source
-        # was unlinked. Pending is the advanced state; drop the duplicate.
-        if (queue_dir / "pending" / path.name).is_file():
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        execution_id = path.stem
+        if execution_id in unresolved:
             continue
-        # A terminal copy means this retry record is stale (for example an
-        # interrupted processing -> failed publication).
-        if any(
-            (queue_dir / status / path.name).is_file()
-            for status in TERMINAL_STATUSES
-        ):
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        if _other_state_paths(queue_dir, execution_id, exclude="retry"):
             continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            available = data.get("available_at")
-            if not available_at_elapsed(
-                available if isinstance(available, str) else None, now=current
+
+        with queue_lock(execution_lock_path(queue_dir, execution_id)):
+            if not path.is_file():
+                continue
+            if _other_state_paths(queue_dir, execution_id, exclude="retry"):
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                ex = Execution.from_dict(data)
+            except (
+                OSError,
+                json.JSONDecodeError,
+                KeyError,
+                TypeError,
+                ValueError,
             ):
                 continue
-            data["status"] = "pending"
-            data["updated_at"] = utc_now_iso()
+            if not available_at_elapsed(ex.available_at, now=current):
+                continue
+            ex.status = "pending"  # type: ignore[assignment]
+            ex.updated_at = utc_now_iso()
             dest = queue_dir / "pending" / path.name
-            atomic_state_transition(path, dest, data)
-            count += 1
-        except (AtomicFileError, OSError, json.JSONDecodeError, KeyError, TypeError):
-            continue
+            try:
+                atomic_state_transition(path, dest, ex.to_dict())
+                count += 1
+            except (AtomicFileError, OSError):
+                continue
     return count
 
 
@@ -277,23 +535,42 @@ def select_next_execution(
 
 
 def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
-    """Rename pending -> processing. Returns updated execution or None if lost race."""
+    """Claim pending -> processing under the shared execution lock.
+
+    Claim and producer cancellation serialize on the same lock, so exactly one
+    can win. A claim never publishes processing after a cancellation has
+    published cancelled, and a cancel never publishes cancelled after a claim
+    has published processing.
+    """
     src = queue_dir / "pending" / f"{execution.execution_id}.json"
     dest = queue_dir / "processing" / f"{execution.execution_id}.json"
-    claimed = replace(
-        execution,
-        status="processing",
-        started_at=utc_now_iso(),
-        updated_at=utc_now_iso(),
-        attempts=execution.attempts + 1,
-    )
-    try:
-        atomic_state_transition(src, dest, claimed.to_dict())
-    except FileNotFoundError:
-        return None
-    except AtomicFileError:
-        return None
-    return claimed
+    with queue_lock(execution_lock_path(queue_dir, execution.execution_id)):
+        if not src.is_file():
+            return None
+        if dest.is_file():
+            return None
+        if (queue_dir / "cancelled" / f"{execution.execution_id}.json").is_file():
+            return None
+        if any(
+            (queue_dir / status / f"{execution.execution_id}.json").is_file()
+            for status in TERMINAL_STATUSES
+        ):
+            return None
+
+        claimed = replace(
+            execution,
+            status="processing",
+            started_at=utc_now_iso(),
+            updated_at=utc_now_iso(),
+            attempts=execution.attempts + 1,
+        )
+        try:
+            atomic_state_transition(src, dest, claimed.to_dict())
+        except FileNotFoundError:
+            return None
+        except AtomicFileError:
+            return None
+        return claimed
 
 
 def complete_execution(

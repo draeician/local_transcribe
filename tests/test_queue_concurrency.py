@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -18,8 +19,10 @@ from local_transcribe.services.queue_paths import initialize_queue_layout
 from local_transcribe.services.queue_store import QueueStore
 from local_transcribe.services.source_reservations import (
     read_reservation,
+    reservation_path,
     try_advance_generation,
 )
+from local_transcribe.services.worker import claim_execution
 
 
 def _enqueue_once(args: tuple[str, str, bool]) -> tuple[str, str | None]:
@@ -214,6 +217,59 @@ def test_partial_enqueue_repairable(tmp_path: Path) -> None:
     res = read_reservation(q, "youtube:ddddddddddd")
     assert res is not None
     assert res.current_execution_id == result.execution.execution_id
+
+
+def test_forced_generation_incomplete_repair_is_authoritative(
+    tmp_path: Path,
+) -> None:
+    """A forced generation's missing pointer is repaired through the real store."""
+    q = tmp_path / "q"
+    initialize_queue_layout(q)
+    store = QueueStore(q)
+    url = "https://youtu.be/iiiiiiiiiii"
+    key = "youtube:iiiiiiiiiii"
+
+    first = store.enqueue(url)
+    assert first.kind == "enqueued"
+    forced = store.enqueue(url, force=True)
+    assert forced.kind == "enqueued"
+    assert forced.execution is not None
+    forced_id = forced.execution.execution_id
+
+    reservation = read_reservation(q, key)
+    assert reservation is not None
+    assert reservation.generation == 2
+    assert reservation.current_execution_id == forced_id
+
+    # Supported missing-current-record condition: the forced pointer exists but
+    # its pending execution record was lost before the worker claimed it.
+    (q / "pending" / f"{forced_id}.json").unlink()
+    assert not (q / "pending" / f"{forced_id}.json").exists()
+
+    repaired = store.enqueue(url)
+    assert repaired.kind == "enqueued"
+    assert repaired.execution is not None
+    repaired_id = repaired.execution.execution_id
+    assert repaired_id != forced_id
+
+    reservation = read_reservation(q, key)
+    assert reservation is not None
+    assert reservation.generation == 2
+    assert reservation.current_execution_id == repaired_id
+    assert (q / "pending" / f"{repaired_id}.json").is_file()
+
+    # The repair must be authoritative for both the app and a direct key reader.
+    direct = json.loads(reservation_path(q, key).read_text(encoding="utf-8"))
+    assert direct["current_execution_id"] == repaired_id
+    assert direct["generation"] == 2
+
+    # And it must remain usable: claim it and pass the post-claim generation check.
+    claimed = claim_execution(q, repaired.execution)
+    assert claimed is not None
+    latest = read_reservation(q, key)
+    assert latest is not None
+    assert latest.current_execution_id == claimed.execution_id
+    assert (q / "processing" / f"{repaired_id}.json").is_file()
 
 
 def test_cancel_pending_no_contradiction(tmp_path: Path) -> None:
