@@ -1894,3 +1894,310 @@ approval.
 ## Standing constraint
 
 Do not make source-code changes from the coordinator session. For any implementation, debugging fix, refactor, or test change, prepare an OpenCode/pi prompt that includes the mandatory HANDOFF protocol and coding-agent prompt standard above.
+
+## Pre-deploy gate remediation — task 044 (2026-11-07, OpenCode)
+
+### Context
+
+Task 043's corrected preflight (`b6d504f`) left the required gate red on
+untouched `origin/main` `abdedbe`: six ANSI-output test failures, one ext4
+foreground-wait race caused by `atomic_state_transition()` renaming before
+writing metadata, and an intermittent concurrent-force generation failure. Task
+043 and its worktree were preserved and not merged or modified.
+
+### Branch and worktree
+
+| Item | Value |
+|------|-------|
+| Branch | `fix/predeploy-queue-gate` |
+| Base | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
+| Worktree | `/tmp/opencode/local_transcribe-gate-remediation` (ext4) |
+| Host | `nomnom`, user `draeician`, unprivileged |
+| Task record | `.crules/tasks/review/044-predeploy-gate-remediation.md` |
+| Implementation commit | `bff5ca6` (`fix(queue): publish terminal metadata atomically`) |
+| Correction commit | `e62b383cffff24e61eeb9dbae67e0024e15d18d0` (`fix(queue): serialize claim/cancel and validate recovery`) |
+| Superseded revision | `fe18821c0d5eb63c21a52a138d75c726860d8f31` — historical rejected revision; its evidence is not reused |
+
+### Changes
+
+- **Terminal metadata publication** (`atomic_files.py`, `queue_wait.py`):
+  transitions write the final JSON to a temp, fsync it, and hard-link it to the
+  destination before unlinking the source. A destination can never be observed
+  with stale pre-transition metadata. `locate_execution()` and
+  `wait_for_execution()` only trust a terminal directory entry when its embedded
+  status matches the directory.
+- **Interrupted-publication recovery** (`worker.py`): every same-named record is
+  parsed and validated (JSON/schema, execution id, source identity, generation,
+  status directory, attempts, transition metadata). Recovery keeps the unique
+  reachable transition sink; malformed, conflicting, cyclic, or unreachable
+  records stay intact with an explicit warning. `recover_processing()` and
+  `promote_retries()` skip unresolved ids so repeated recovery cannot lose
+  records or duplicate execution.
+- **Concurrent force generations** (`source_reservations.py`,
+  `queue_store.py`): `keys/<source>.json` is the sole reservation authority
+  again. The rejected `keys/.advance/` ledger is removed. Concurrent advances
+  and repairs use a short-lived advisory `fcntl.lockf` lock plus a per-path
+  thread lock under `.locks/`; lock files are coordination only, contain no
+  state, and are never removed. Compare-and-swap helpers re-read after writing
+  and report a lost race. `repair_source()` skips pending executions newer than
+  the reservation. A repair after a forced generation updates the keys pointer
+  and remains claimable.
+- **Claim versus cancellation** (`worker.py`, `queue_store.py`): both take the
+  same per-execution advisory lock. Claim-first makes cancel fail closed with a
+  processing-specific error and never publishes a contradictory cancelled
+  record; cancel-first makes the claim return `None`, so the worker does not
+  execute the job. Interrupted cancel is resolved only when the cancelled
+  successor validates against the pending record. No sleep-based fix.
+- **ANSI tests** (`tests/conftest.py` and six tests): strip CSI/SGR escapes from
+  captured output; all behavioral assertions and exit-code checks are unchanged.
+- **Regression tests**: deterministic claim/cancel interleavings (including a
+  paused-claim window), real `QueueStore` forced-generation repair, keys-file
+  compatibility for direct readers and interrupted writes, fail-closed
+  duplicate recovery, plus the existing stale-terminal and crash-window tests.
+- **Version**: patch release **0.8.1** synchronized across `pyproject.toml`,
+  `src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
+  `docs/WHATS_NEW.md`. No tag or publish.
+
+### Review corrections implemented (2026-11-07)
+
+| Correction | Implementation |
+|------------|----------------|
+| Exclusive worker-claim versus cancellation | `worker.claim_execution()` and `QueueStore.cancel_pending()` share `.locks/executions/<id>.lock`. Claim-first makes cancel fail closed with a processing-specific error and never publishes a contradictory cancelled record; cancel-first makes the claim return `None`, so the worker does not execute the job. Interrupted cancel is resolved only when the cancelled successor validates against the pending record. No sleep-based synchronization. |
+| Incomplete-reservation repair after a forced generation | `try_update_current_execution()` repairs `keys/<source>.json` under the reservation lock. The replacement becomes current at the same generation, is not cancelled by an earlier same-generation claim, and remains claimable. Covered by a real `QueueStore` lifecycle test (enqueue → force → delete forced pending → enqueue → claim). |
+| Compatibility with the existing `keys/<source>.json` authority | `keys/<source-key>.json` is the sole authority again; the `.advance` ledger is removed. Advisory `fcntl.lockf` locks serialize read-modify-write without adding durable state, so older direct key-file readers and the ref reconciler agree with the application. No queue migration or ref change. |
+| Validated, fail-closed duplicate recovery | Every same-named record is parsed and validated (JSON/schema, execution id, source identity, generation, status directory, attempts, transition metadata). Recovery keeps the unique reachable transition sink; malformed, conflicting, cyclic, or unreachable records stay intact with an explicit warning. |
+
+A prior delivery check at `fe18821` found none of these corrections implemented;
+that finding is retained as history and superseded by the implementation above.
+Its probe evidence remains at
+`~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections/`.
+
+### Verification (exact results — corrective tree)
+
+Environment: isolated venv `/tmp/opencode/predeploy-gate-venv`, Python 3.12.3,
+pytest 9.2.0, ruff 0.17.4, build 1.6.1, pipx 1.4.3; ext4 worktree; isolated
+`HOME`/`XDG_*`/`TMPDIR`. Production config, queue, archives, and services were
+not loaded or touched. Results apply to the corrective commit
+`e62b383cffff24e61eeb9dbae67e0024e15d18d0`, not to `fe18821`.
+
+| Check | Result |
+|-------|--------|
+| Targeted regressions (claim/cancel, recovery validation, concurrency, reservations, worker transitions, CLI queue/transcribe/batch, Deno warnings, update) | **134 passed** |
+| Full suite, ext4, default color | **368 passed, 11 skipped, 1 warning**, exit 0 |
+| Full suite, ext4, `NO_COLOR=1` | **368 passed, 11 skipped, 1 warning**, exit 0 |
+| Concurrency stress, ext4 | **50/50** runs passed (predefined mixed force/claim-cancel/reservation selection) |
+| Ruff canonical | **All checks passed** |
+| Syntax (`compileall`) | clean |
+| Build | `local_transcribe-0.8.1` wheel + sdist; wheel `Version: 0.8.1`, entry point `lt = local_transcribe.cli:main`, `queue_locks.py` present |
+| Wheel SHA256 | `4837c88d5406ccf0ae5c076111450484117f5ba61e9366be7b7e11ebd6a4238b` (wheel); `5a7c750e548305a4630c57c6b25f9096d47e888dc5545108919dfc3506c69d27` (sdist) |
+| Isolated CLI smoke | `lt version` **0.8.1**; queue init/add/list/stats and `transcribe --no-wait` worked on a disposable queue (3 pending) |
+| Isolated pipx upgrade | 0.8.0 wheel installed, then forced 0.8.1 wheel; `lt version`, module, metadata, and `pip show` all **0.8.1** |
+
+Baseline reproduction on rejected source `fe18821`: the new/changed test
+selection (claim/cancel, recovery validation, forced repair, keys authority,
+interrupted write, repair helpers) produced **13 failed, 3 passed**, exit 1. The
+three passes are the basic claim-first/cancel-first paths the rejected tree
+already handled. The new assertions therefore exercise the defects rather than
+passing by construction.
+
+### Evidence
+
+Durable sanitized evidence:
+`~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections-impl/` —
+`baseline-fe18821-new-tests.log`, `targeted.log`, `full-default.log`,
+`full-nocolor.log`, `stress-50.log`, `ruff.log`, `compileall.log`, `build.log`,
+`wheel-sha256.txt`, `cli-smoke.log`, `pipx-install.log`,
+`pipx-upgrade-080-081.log`, and `baseline-import.txt`.
+
+Earlier evidence at `~/.local/share/local-transcribe/evidence/20261107T-gate044/`
+and `.../20261107T-gate044-corrections/` remains historical for `fe18821` and the
+delivery check; it is not reused here.
+
+### Unavailable checks
+
+Real NFSv3/NLM multi-client tests were not run: the 10
+`tests/test_nfs_integration.py` tests skipped because `LT_NFS_QUEUE_DIR` was not
+set. Local ext4 passes do not prove multi-host NFS/NLM behavior. GPU/ROCm
+transcription was not run. The opt-in real pipx-install pytest was skipped; an
+equivalent isolated pipx install/upgrade was performed manually.
+
+### Blockers
+
+None for review. Production deployment remains blocked by the separate task 043
+prerequisites: artifact staging, rollback rehearsal, Minion config/identity, and
+the NFSv4.2 producer decision.
+
+### Next action
+
+Review the corrective commit on `fix/predeploy-queue-gate`. Do not merge, tag,
+publish, deploy, or clean up branches from this task.
+
+## Revision 2 — unresolved-recovery exclusion through the worker lifecycle (task 044, 2026-11-08, OpenCode)
+
+### Context
+
+The corrected task-044 tree at `60f774f` validated duplicate copies inside
+`recover_processing()`/`promote_retries()` but did not carry the unresolved
+result into eligibility. `select_next_execution()` accepted any pending JSON
+that parsed, and `claim_execution()` checked only the processing destination,
+`cancelled/`, and terminal directories. On `60f774f`, a valid pending plus a
+malformed/conflicting `retry/` copy was executed; a pending plus a conflicting
+`processing/`/terminal copy caused a tight claim-failure loop; a blocked
+high-priority job starved a healthy lower-priority job; and a copy created
+between selection and claim did not stop the claim.
+
+Task 044 was returned to `wip/` for this revision. Task 043 and its worktree
+were not modified.
+
+### Branch and worktree
+
+| Item | Value |
+|------|-------|
+| Branch | `fix/predeploy-queue-gate` |
+| Base | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
+| Worktree | `/tmp/opencode/local_transcribe-gate-remediation` (ext4) |
+| Host | `nomnom`, user `draeician`, unprivileged |
+| Task record | `.crules/tasks/review/044-predeploy-gate-remediation.md` |
+| Revision 2 commit | `6aff2837fb86eb17c4c250301783e16dbaa460d1` (`fix(queue): exclude unresolved executions from claim`) |
+| Previous correction | `e62b383cffff24e61eeb9dbae67e0024e15d18d0` |
+| Superseded revision | `fe18821c0d5eb63c21a52a138d75c726860d8f31` |
+
+### Changes
+
+- **Selection exclusion** (`worker.py`): every pending document is validated
+  with the same filename/status/schema/identity/generation/attempts checks used
+  by recovery. An execution id with any other state record is excluded before
+  priority ordering, so a blocked high-priority job cannot starve a healthy
+  one.
+- **Claim revalidation** (`worker.py`): `claim_execution()` re-loads the pending
+  record under the shared execution lock, rechecks for any retry/processing/
+  terminal counterpart, and compares the caller snapshot (source key,
+  generation, attempts) with the record it is about to claim. A conflicting
+  copy appearing between selection and claim fails closed.
+- **Bounded idle** (`worker.py`): only-blocked queues return `None` from
+  selection, so the existing idle path runs (idle model maintenance, then the
+  poll interval). `once=True` returns 0 without executing anything.
+- **Evidence preserved**: no record is deleted, no attempt count is reset, and
+  no winning state is invented.
+- **Compatibility correction** (`source_reservations.py`, journal §21,
+  CHANGELOG, WHATS_NEW): the post-write readback detects a race that happens
+  before it, not a non-cooperating older writer that writes after it. Direct
+  key-file readers remain compatible; mixed-version writer operation is an
+  unresolved deployment constraint. No queue migration, ref change, or
+  production change was made.
+
+### Regression coverage
+
+`tests/test_worker_unresolved_lifecycle.py` drives the real `run_worker` with a
+controlled job runner on disposable queues: malformed retry, conflicting retry
+generation/identity, malformed/conflicting terminal, conflicting processing, a
+blocked highest-priority job beside a healthy pending job, a queue containing
+only unresolved jobs (bounded idle wait), and a conflicting copy appearing
+between selection and claim. A bounded selection wrapper turns a tight loop
+into a test failure; the idle test replaces `time.sleep` with a sentinel. No
+sleep-based race synchronization or weakened assertions.
+
+Baseline on reviewed head `60f774f`: **9 failed** (unresolved jobs executed,
+healthy job starved, or 201-selection budget exceeded).
+
+### Verification (exact results — revision 2 tree)
+
+Environment: isolated venv `/tmp/opencode/predeploy-gate-venv`, Python 3.12.3,
+pytest 9.2.0, ruff 0.17.4, build 1.6.1, pipx 1.4.3; ext4 worktree; isolated
+`HOME`/`XDG_*`/`TMPDIR`. Production config, queue, archives, services, and
+installed pipx environments were not touched.
+
+| Check | Result |
+|-------|--------|
+| New lifecycle regressions | **9 passed** |
+| Existing task-044 + queue/CLI/Deno/update regressions (15 files) | **165 passed** |
+| Full suite, ext4, default color | **377 passed, 11 skipped, 1 warning**, exit 0 |
+| Full suite, ext4, `NO_COLOR=1` | **377 passed, 11 skipped, 1 warning**, exit 0 |
+| Predefined 50-run ext4 concurrency stress | **50/50** (6 tests per run) |
+| Canonical Ruff | **All checks passed** |
+| Syntax (`compileall`) | clean |
+| Build | `local_transcribe-0.8.1` wheel + sdist |
+| Wheel SHA256 | wheel `09291bdef875a8b609a9303eec7990ba8f9fbd8312ad34692e6760ac63d5b5e9`; sdist `43c05a36cfc4aff05f0025cd746ac34f9350c6d74a162e5c82b7a6dca0ad6a61` |
+| Wheel metadata | `Version: 0.8.1`; `lt = local_transcribe.cli:main`; `worker.py`, `queue_locks.py`, `queue_listing.py` present |
+| Isolated CLI smoke | version **0.8.1**; queue init/add/list/stats and `transcribe --no-wait` worked; 3 pending; no worker/download |
+| Isolated pipx upgrade | **0.8.0 → 0.8.1**; `lt version`, module, metadata, and `pip show` all **0.8.1** |
+
+Stress command: 50 ×
+`pytest -q tests/test_queue_concurrency.py -k "concurrent or multiprocess or forced_generation or cancel_pending"`.
+
+### Evidence
+
+`~/.local/share/local-transcribe/evidence/20261107T-gate044-unresolved-lifecycle/`
+— `baseline-reviewed-60f774f-new-tests.log`, `targeted.log`,
+`full-default.log`, `full-nocolor.log`, `stress-50.log`, `ruff.log`,
+`compileall.log`, `build.log`, `wheel-sha256.txt`, `cli-smoke.log`, and
+`pipx-upgrade-080-081.log`. Earlier evidence directories remain historical for
+`fe18821`/`e62b383` and are not reused.
+
+### Unavailable checks
+
+Real NFSv3/NLM multi-client tests were not run (`LT_NFS_QUEUE_DIR` unset; the 10
+NFS tests skipped). GPU/ROCm transcription was not run. Local ext4 passes do not
+prove multi-host NFS/NLM behavior. The mixed-version writer constraint is not
+demonstrated safe and is recorded as unresolved.
+
+### Blockers
+
+None for review. Production deployment remains blocked by task 043
+prerequisites (artifact staging, rollback rehearsal, Minion config/identity,
+NFSv4.2 producer decision) and by the unresolved mixed-version writer
+constraint: older producers must not write `keys/<source>.json` concurrently
+with 0.8.1.
+
+### Next action
+
+Review the revision-2 commit on `fix/predeploy-queue-gate`. Do not merge, tag,
+publish, deploy, or clean up branches from this task.
+
+## Task 044 closure — approved merge/cleanup (2026-11-08, OpenCode)
+
+### Approval
+
+ChatGPT approved feature head
+`084d212364cc1e2c8cdbb8de9fd89baa08cde328` for the task-044 merge/cleanup
+phase. No implementation work was redone.
+
+### Final pre-merge gate (approved feature tree)
+
+Host `nomnom`, user `draeician`, unprivileged; ext4 worktree; isolated
+`HOME`/`XDG_*`/`TMPDIR`; development venv
+`/tmp/opencode/predeploy-gate-venv`.
+
+| Check | Result |
+|-------|--------|
+| Canonical Ruff | **All checks passed** |
+| Full pytest on ext4 | **377 passed, 11 skipped, 1 warning** |
+| `git diff --check origin/main...HEAD` | clean |
+| Version consistency | **0.8.1** in `pyproject.toml`, `__init__.py`, `project_spec.md`, `CHANGELOG.md`, `WHATS_NEW.md` |
+| Secret scan of branch delta | no matches |
+
+Evidence: `~/.local/share/local-transcribe/evidence/20261108T-gate044-merge/`.
+
+### Merge and preservation
+
+Task 044 moves from `review/` to `done/` with `Status: done`. The complete
+feature branch is merged into `main` with a normal non-squash `--no-ff` merge;
+no history is rewritten or squashed. The implementation commits `bff5ca6`,
+`e62b383`, and `6aff283`, plus the task closure, remain ancestors of `main`.
+The task-044 implementation history in this file and the Decision Journal is
+preserved.
+
+### Deployment not authorized
+
+Production deployment remains **NOT authorized**. Task 043 prerequisites
+(artifact staging, rollback rehearsal, Minion config/identity, NFSv4.2 producer
+decision) and the mixed-version writer constraint (older producers must not
+write `keys/<source>.json` concurrently with 0.8.1) are unchanged. No tag,
+release, package publication, deployment, service action, or production change
+was performed.
+
+### Cleanup
+
+After remote `main` verification: the task-044 worktree and local/remote
+feature branches are removed, and any task-044 WIP marker is removed. Task 043's
+worktree, branch, and evidence are not touched.

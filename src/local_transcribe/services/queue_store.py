@@ -22,6 +22,10 @@ from local_transcribe.services.queue_listing import (
     paginate_executions,
     sort_executions,
 )
+from local_transcribe.services.queue_locks import (
+    execution_lock_path,
+    queue_lock,
+)
 from local_transcribe.services.queue_models import (
     ACTIVE_STATUSES,
     STATE_DIRS,
@@ -198,6 +202,7 @@ class QueueStore:
         """
         res = read_reservation(self.queue_dir, source_key)
         preferred = res.current_execution_id if res else None
+        res_generation = res.generation if res is not None else None
         pendings = self.find_by_source_key(source_key, statuses=("pending",))
         if preferred is not None:
             preferred_pending = any(
@@ -209,6 +214,12 @@ class QueueStore:
         for ex, st in pendings:
             if preferred is not None and ex.execution_id == preferred:
                 continue
+            # A newer generation may still be mid-advance: its producer
+            # publishes pending/ before claiming the reservation. Do not cancel
+            # it from an older generation's repair; the worker's post-claim
+            # generation check supersedes it if it is genuinely orphaned.
+            if res_generation is not None and ex.generation > res_generation:
+                continue
             try:
                 self.cancel_pending(ex.execution_id)
                 cancelled += 1
@@ -217,9 +228,28 @@ class QueueStore:
         return cancelled
 
     def _attach_existing(
-        self, source_key: str, *, message: str
+        self,
+        source_key: str,
+        *,
+        message: str,
+        preferred_execution_id: str | None = None,
     ) -> EnqueueResult:
-        """Return the reservation's active execution after losing a race."""
+        """Return the reservation's active execution after losing a race.
+
+        ``preferred_execution_id`` is the execution named by the generation
+        claim this caller lost; it is consulted first so a loser attaches to
+        the winner even before the reservation pointer is readable on NFS.
+        """
+        if preferred_execution_id is not None:
+            ex, st = self.find_execution(preferred_execution_id)
+            if ex is not None and st in ACTIVE_STATUSES:
+                return EnqueueResult(
+                    kind="existing_active",
+                    source_key=source_key,
+                    execution=ex,
+                    reservation_generation=ex.generation,
+                    message=f"{message}; active in {st}/",
+                )
         preferred = self._preferred_active(source_key)
         if preferred is not None:
             ex, st = preferred
@@ -374,13 +404,19 @@ class QueueStore:
                     expected_generation=current_gen,
                     new_execution_id=new_id,
                 )
-                if won is None:
-                    # Only cancel if we do not currently own the pointer.
+                if won is None or not won.won:
+                    # Only cancel our own orphan pending; the claim winner's
+                    # pending must survive even if the pointer is not visible
+                    # yet on NFS.
                     after = read_reservation(self.queue_dir, source_key)
                     if after is None or after.current_execution_id != new_id:
                         self._cancel_orphan_pending(new_id)
                     return self._attach_existing(
-                        source_key, message="Lost force race"
+                        source_key,
+                        message="Lost force race",
+                        preferred_execution_id=(
+                            won.winner_execution_id if won is not None else None
+                        ),
                     )
                 self.repair_source(source_key)
                 alive, st = self.find_execution(new_id)
@@ -392,7 +428,7 @@ class QueueStore:
                     kind="enqueued",
                     source_key=source_key,
                     execution=execution,
-                    reservation_generation=won.generation,
+                    reservation_generation=won.reservation.generation,
                     message="Enqueued (new generation)",
                 )
 
@@ -505,42 +541,99 @@ class QueueStore:
     def cancel_pending(self, execution_id: str) -> Execution:
         """Cancel a pending execution (producer-safe: pending → cancelled only).
 
-        Does not create a contradictory pending+cancelled pair for the same id.
-        Processing cancel requires the worker lock (not implemented here).
+        Claim and cancel share the per-execution advisory lock. The first
+        transition wins: if the worker already claimed the job, cancel fails
+        closed and never publishes a contradictory cancelled record. If cancel
+        wins, the worker's claim sees no pending file and must not execute it.
         """
-        path = self._execution_path("pending", execution_id)
-        cancelled_path = self._execution_path("cancelled", execution_id)
-        if cancelled_path.is_file() and not path.is_file():
-            data = json.loads(cancelled_path.read_text(encoding="utf-8"))
-            return Execution.from_dict(data)
-        if not path.is_file():
-            raise QueueStoreError(
-                f"Execution {execution_id} is not in pending/ "
-                "(processing cancel requires worker lock)"
-            )
-        data = json.loads(path.read_text(encoding="utf-8"))
-        execution = Execution.from_dict(data)
-        execution.status = "cancelled"
-        execution.updated_at = utc_now_iso()
-        dest = cancelled_path
-        try:
-            atomic_state_transition(path, dest, execution.to_dict())
-        except (FileNotFoundError, AtomicFileError, FileExistsError):
-            # Concurrent cancel won: pending gone and cancelled present.
-            if cancelled_path.is_file() and not path.is_file():
-                data = json.loads(cancelled_path.read_text(encoding="utf-8"))
-                return Execution.from_dict(data)
-            # Destination collision while pending still exists — fail closed.
-            if cancelled_path.is_file() and path.is_file():
-                raise
+        lock_path = execution_lock_path(self.queue_dir, execution_id)
+        with queue_lock(lock_path):
+            path = self._execution_path("pending", execution_id)
+            processing_path = self._execution_path("processing", execution_id)
+            cancelled_path = self._execution_path("cancelled", execution_id)
+
             if not path.is_file():
+                if processing_path.is_file():
+                    raise QueueStoreError(
+                        f"Execution {execution_id} is in processing/; "
+                        "processing cancel requires the worker lock"
+                    )
+                if cancelled_path.is_file():
+                    return self._read_cancelled(cancelled_path, execution_id)
                 raise QueueStoreError(
-                    f"Execution {execution_id} disappeared during cancel"
-                ) from None
-            raise
-        # Invariant: not still pending
-        if path.is_file():
-            raise QueueStoreError(
-                f"Cancel left contradictory pending state for {execution_id}"
+                    f"Execution {execution_id} is not in pending/ "
+                    "(processing cancel requires worker lock)"
+                )
+
+            data = json.loads(path.read_text(encoding="utf-8"))
+            execution = Execution.from_dict(data)
+
+            if processing_path.is_file():
+                # An interrupted claim left both names. Do not create a
+                # contradictory cancelled record; recovery must resolve it.
+                raise QueueStoreError(
+                    f"Execution {execution_id} has a processing copy; "
+                    "recovery must resolve the interrupted claim before cancel"
+                )
+
+            if cancelled_path.is_file():
+                # An interrupted cancel published cancelled but did not unlink
+                # pending. Accept it only if the successor validates.
+                cancelled = self._read_cancelled(cancelled_path, execution_id)
+                if (
+                    cancelled.source_key != execution.source_key
+                    or cancelled.source_type != execution.source_type
+                    or cancelled.generation != execution.generation
+                    or cancelled.attempts != execution.attempts
+                ):
+                    raise AtomicFileError(
+                        "Destination already exists with conflicting data: "
+                        f"{cancelled_path}"
+                    )
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    raise AtomicFileError(
+                        f"Published {cancelled_path} but failed to unlink {path}: {exc}"
+                    ) from exc
+                return cancelled
+
+            execution.status = "cancelled"
+            execution.updated_at = utc_now_iso()
+            dest = cancelled_path
+            try:
+                atomic_state_transition(path, dest, execution.to_dict())
+            except (FileNotFoundError, AtomicFileError, FileExistsError):
+                # Concurrent cancel won: pending gone and cancelled present.
+                if cancelled_path.is_file() and not path.is_file():
+                    return self._read_cancelled(cancelled_path, execution_id)
+                # Destination collision while pending still exists — fail closed.
+                if cancelled_path.is_file() and path.is_file():
+                    raise
+                if not path.is_file():
+                    raise QueueStoreError(
+                        f"Execution {execution_id} disappeared during cancel"
+                    ) from None
+                raise
+            # Invariant: not still pending
+            if path.is_file():
+                raise QueueStoreError(
+                    f"Cancel left contradictory pending state for {execution_id}"
+                )
+            return execution
+
+    @staticmethod
+    def _read_cancelled(path: Path, execution_id: str) -> Execution:
+        """Read and validate a cancelled successor; fail closed if malformed."""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            execution = Execution.from_dict(data)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise AtomicFileError(
+                f"Cancelled record is unreadable: {path}: {exc}"
+            ) from exc
+        if execution.execution_id != execution_id or execution.status != "cancelled":
+            raise AtomicFileError(
+                f"Cancelled record is inconsistent with {execution_id}: {path}"
             )
         return execution

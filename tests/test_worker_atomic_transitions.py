@@ -131,7 +131,7 @@ def test_fault_before_rename_leaves_source_untouched(
     assert _read_json(src)["status"] == "pending"
 
 
-def test_fault_after_rename_before_write_leaves_file_in_dest(
+def test_fault_after_publish_before_source_unlink_keeps_final_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     src = tmp_path / "processing" / "e.json"
@@ -139,26 +139,33 @@ def test_fault_after_rename_before_write_leaves_file_in_dest(
     src.parent.mkdir(parents=True)
     src.write_text('{"status": "processing", "attempts": 1}\n', encoding="utf-8")
 
-    def boom(path: Path, data: Any) -> None:
-        raise RuntimeError("injected: after rename before write")
+    real_unlink = Path.unlink
 
-    monkeypatch.setattr(atomic_files, "atomic_write_json", boom)
+    def selective_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == src:
+            raise OSError("injected: after publish before source unlink")
+        return real_unlink(self, *args, **kwargs)
 
-    with pytest.raises(RuntimeError, match="injected"):
-        atomic_files.atomic_state_transition(
-            src, dest, {"status": "completed", "attempts": 1}
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+
+    with pytest.raises(AtomicFileError, match="failed to unlink source"):
+        atomic_state_transition(
+            src,
+            dest,
+            {"status": "completed", "attempts": 1, "output_path": "/out.json"},
         )
 
-    assert not src.exists()
+    # Destination is published with final metadata; the stale source remains
+    # only for recovery to reconcile.
+    assert src.is_file()
     assert dest.is_file()
-    # Directory membership advanced; metadata may still be pre-write.
-    assert _read_json(dest)["status"] == "processing"
-    # Ensure we did not leave a truncated final via in-place open.
-    text = dest.read_text(encoding="utf-8")
-    json.loads(text)
+    data = _read_json(dest)
+    assert data["status"] == "completed"
+    assert data["output_path"] == "/out.json"
+    json.loads(dest.read_text(encoding="utf-8"))
 
 
-def test_fault_during_atomic_write_does_not_truncate_authority(
+def test_fault_before_publish_leaves_source_and_no_partial_dest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     src = tmp_path / "processing" / "e.json"
@@ -167,24 +174,46 @@ def test_fault_during_atomic_write_does_not_truncate_authority(
     original = {"status": "processing", "payload": "x" * 200}
     src.write_text(json.dumps(original) + "\n", encoding="utf-8")
 
-    # Succeed rename, fail mid atomic_write after tmp created but before replace.
-    def flaky_replace(tmp: str | os.PathLike[str], path: str | os.PathLike[str]) -> None:
-        raise OSError("injected: before os.replace")
+    def failing_write(_fd: int, _data: bytes) -> int:
+        raise OSError("injected: before publish")
 
-    monkeypatch.setattr(atomic_files.os, "replace", flaky_replace)
+    monkeypatch.setattr(atomic_files.os, "write", failing_write)
 
     with pytest.raises(OSError, match="injected"):
         atomic_state_transition(
             src, dest, {"status": "failed", "payload": "y" * 50}
         )
 
-    assert not src.exists()
-    assert dest.is_file()
-    data = _read_json(dest)
-    assert data["status"] == "processing"
-    assert data["payload"] == "x" * 200
-    # No leftover truncated finals named like the authority file.
-    assert dest.stat().st_size >= len(json.dumps(original))
+    assert src.is_file()
+    assert _read_json(src) == original
+    assert not dest.exists()
+    # No partial authority file was exposed under the destination name.
+    assert list(dest.parent.glob("*.json")) == []
+
+
+def test_destination_never_exposed_with_stale_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "processing" / "e.json"
+    dest = tmp_path / "completed" / "e.json"
+    src.parent.mkdir(parents=True)
+    src.write_text('{"status": "processing", "output_path": null}\n', encoding="utf-8")
+
+    observed: list[dict[str, Any]] = []
+    real_link = os.link
+
+    def observing_link(src_path: Any, dest_path: Any) -> None:
+        real_link(src_path, dest_path)
+        if Path(dest_path) == dest:
+            observed.append(_read_json(dest))
+
+    monkeypatch.setattr(atomic_files.os, "link", observing_link)
+
+    atomic_state_transition(
+        src, dest, {"status": "completed", "output_path": "/final.json"}
+    )
+
+    assert observed == [{"status": "completed", "output_path": "/final.json"}]
 
 
 def test_claim_execution_atomic(tmp_path: Path) -> None:
@@ -244,6 +273,171 @@ def test_complete_and_fail_or_retry_atomic(tmp_path: Path) -> None:
     assert list((queue2 / "retry").glob("*.json"))
     retry_data = _read_json(next((queue2 / "retry").glob("*.json")))
     assert retry_data["status"] == "retry"
+
+
+def test_interrupted_publish_recovery_prefers_terminal_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = tmp_path / "q"
+    initialize_queue_layout(queue)
+    ex = _enqueue(queue)
+    eid = ex.execution_id
+    claimed = claim_execution(queue, ex)
+    assert claimed is not None
+    processing = queue / "processing" / f"{eid}.json"
+    completed = queue / "completed" / f"{eid}.json"
+
+    real_unlink = Path.unlink
+
+    def selective_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == processing:
+            raise OSError("injected: after publish before source unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+    with pytest.raises(AtomicFileError, match="failed to unlink source"):
+        complete_execution(queue, claimed, output_path="/out.json")
+    monkeypatch.undo()
+
+    assert processing.is_file()
+    assert completed.is_file()
+    assert _read_json(completed)["status"] == "completed"
+    assert _read_json(completed)["output_path"] == "/out.json"
+
+    # Recovery drops the stale processing duplicate; the terminal copy wins.
+    assert recover_processing(queue) == 0
+    assert not processing.exists()
+    assert _read_json(completed)["status"] == "completed"
+    assert _read_json(completed)["output_path"] == "/out.json"
+
+
+def test_interrupted_claim_publication_recovery_removes_pending_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after processing is published leaves pending + processing.
+
+    Processing is the advanced state, so recovery drops the pending duplicate
+    and then applies the normal abandoned-processing policy.
+    """
+    queue = tmp_path / "q"
+    initialize_queue_layout(queue)
+    ex = _enqueue(queue)
+    eid = ex.execution_id
+    pending = queue / "pending" / f"{eid}.json"
+    processing = queue / "processing" / f"{eid}.json"
+
+    real_unlink = Path.unlink
+
+    def selective_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == pending:
+            raise OSError("injected: after publish before source unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+    assert claim_execution(queue, ex) is None
+    monkeypatch.undo()
+
+    assert pending.is_file()
+    assert processing.is_file()
+    assert _read_json(processing)["status"] == "processing"
+
+    assert recover_processing(queue) == 1
+    assert not pending.exists()
+    assert not processing.exists()
+    retry = queue / "retry" / f"{eid}.json"
+    assert retry.is_file()
+    assert _read_json(retry)["status"] == "retry"
+    assert _read_json(retry)["error"]["category"] == "worker_interrupted"
+
+
+def test_interrupted_retry_publication_recovery_removes_processing_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after retry is published leaves processing + retry; retry wins."""
+    queue = tmp_path / "q"
+    initialize_queue_layout(queue)
+    ex = _enqueue(queue)
+    eid = ex.execution_id
+    claimed = claim_execution(queue, ex)
+    assert claimed is not None
+    processing = queue / "processing" / f"{eid}.json"
+    retry = queue / "retry" / f"{eid}.json"
+
+    real_unlink = Path.unlink
+
+    def selective_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == processing:
+            raise OSError("injected: after publish before source unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+    with pytest.raises(AtomicFileError, match="failed to unlink source"):
+        fail_or_retry(
+            queue,
+            claimed,
+            ExecutionError(
+                category="rate_limited",
+                message="429",
+                retryable=True,
+                occurred_at=utc_now_iso(),
+            ),
+        )
+    monkeypatch.undo()
+
+    assert processing.is_file()
+    assert retry.is_file()
+    assert _read_json(retry)["status"] == "retry"
+
+    assert recover_processing(queue) == 0
+    assert not processing.exists()
+    assert _read_json(retry)["status"] == "retry"
+    assert _read_json(retry)["error"]["category"] == "rate_limited"
+
+
+def test_interrupted_promotion_recovery_removes_retry_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after pending is published leaves retry + pending; pending wins."""
+    queue = tmp_path / "q"
+    initialize_queue_layout(queue)
+    ex = _enqueue(queue)
+    eid = ex.execution_id
+    claimed = claim_execution(queue, ex)
+    assert claimed is not None
+    fail_or_retry(
+        queue,
+        claimed,
+        ExecutionError(
+            category="rate_limited",
+            message="429",
+            retryable=True,
+            occurred_at=utc_now_iso(),
+        ),
+        available_at="2000-01-01T00:00:00+00:00",
+    )
+    retry = queue / "retry" / f"{eid}.json"
+    pending = queue / "pending" / f"{eid}.json"
+    assert retry.is_file()
+
+    real_unlink = Path.unlink
+
+    def selective_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self == retry:
+            raise OSError("injected: after publish before source unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", selective_unlink)
+    # promote_retries treats publication failure as a per-record skip.
+    assert promote_retries(queue) == 0
+    monkeypatch.undo()
+
+    assert retry.is_file()
+    assert pending.is_file()
+    assert _read_json(pending)["status"] == "pending"
+
+    assert promote_retries(queue) == 0
+    assert not retry.exists()
+    assert _read_json(pending)["status"] == "pending"
 
 
 def test_recover_and_promote_use_atomic_transition(tmp_path: Path) -> None:
@@ -331,24 +525,25 @@ def test_worker_transitions_survive_inject_at_each_boundary(
     claimed = claim_execution(queue, ex)
     assert claimed is not None
 
-    # Boundary 2: fail complete after rename, before write
-    real_write = atomic_files.atomic_write_json
-    calls = {"n": 0}
+    # Boundary 2: fail publication before the destination entry exists
+    def write_once(fd: int, data: bytes) -> int:
+        raise OSError("inject complete write")
 
-    def write_once(path: Path, data: Any) -> None:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("inject complete write")
-        return real_write(path, data)
-
-    monkeypatch.setattr(atomic_files, "atomic_write_json", write_once)
-    with pytest.raises(RuntimeError, match="inject complete write"):
+    monkeypatch.setattr(atomic_files.os, "write", write_once)
+    with pytest.raises(OSError, match="inject complete write"):
         complete_execution(queue, claimed, output_path="/out.json")
-    # File should be in completed/ (rename succeeded) with parseable JSON
+    # Source remains authoritative; no destination entry was exposed.
+    processing = queue / "processing" / f"{eid}.json"
     completed = queue / "completed" / f"{eid}.json"
+    assert processing.is_file()
+    assert not completed.exists()
+    assert _read_json(processing)["status"] == "processing"
+    monkeypatch.undo()
+
+    complete_execution(queue, claimed, output_path="/out.json")
     assert completed.is_file()
-    json.loads(completed.read_text(encoding="utf-8"))
-    # No dual authority in processing
-    assert not (queue / "processing" / f"{eid}.json").exists()
+    assert not processing.exists()
+    assert _read_json(completed)["status"] == "completed"
+    assert _read_json(completed)["output_path"] == "/out.json"
     for path in _authority_files(queue):
         json.loads(path.read_text(encoding="utf-8"))

@@ -484,3 +484,167 @@ plus transcript files and hashes, not by lock-file contents.
 
 **Status.** Blocked. A pushed blocked checkpoint is not approval; the task moves
 to `review/` only when all required checks and correction criteria pass.
+## 20. Pre-deploy gate remediation: atomic terminal metadata and generation claims (task 044, 2026-11-07)
+
+**Numbering.** Sections 18 and 19 are reserved by the task-043 preflight
+correction (`b6d504f`, not merged here). This section starts at 20 so the two
+branches can be merged without renumbering.
+
+**Terminal metadata is published with the state entry, not after it.**
+`atomic_state_transition()` previously renamed `src` to the destination and then
+wrote the final metadata. A concurrent reader could see the destination with
+stale `processing` metadata and report `completed` with no `output_path` (the
+ext4 foreground-wait failure). The primitive now writes the final document to a
+unique temp, fsyncs it, and hard-links it to the destination in one step, then
+unlinks the source. Directory membership remains the authority, collisions still
+fail closed, and a crash between link and unlink leaves both names for recovery.
+`locate_execution()`/`wait_for_execution()` additionally refuse to trust a
+terminal directory entry whose embedded status does not match that directory,
+which protects against legacy or interrupted entries.
+
+**Recovery validates the proposed successor, then deletes.** When a crash leaves
+two names for one execution, recovery must not choose a winner from filename
+existence alone. `_recover_duplicates()` parses every same-named record, checks
+JSON/schema, execution id against the filename, embedded status against the
+directory, source identity, generation, `max_attempts`, and attempt counts, and
+only then selects the unique reachable transition sink. A valid chain must have
+exactly one sink and every record must reach it; malformed, conflicting, cyclic,
+or unreachable copies are left intact and logged as
+`Duplicate recovery left execution … intact`. `recover_processing()` and
+`promote_retries()` skip unresolved ids so repeated recovery cannot lose records
+or create duplicate execution. Valid transitions keep the earlier generation
+safety: `pending → processing` increments attempts, `processing → retry/failed`
+requires an error, cancellation preserves the pre-claim attempt count, and a
+retry promotion preserves the retry's attempts.
+
+**`keys/<source>.json` remains the sole reservation authority.** The earlier
+`.advance` claim ledger is withdrawn: it created a second durable authority that
+existing direct key-file readers and the ref reconciler do not consult.
+`read_reservation()` now reads only `keys/<source-key>.json`, as SPEC §5.1 and
+§6.4 require. Concurrent generation advances and repairs are serialized with a
+short-lived advisory lock (`fcntl.lockf`) plus a per-path in-process thread lock
+under `.locks/`. Lock files are coordination only, contain no queue state, and
+are never removed; removing a lock file after release would let a waiter on the
+old inode race a new opener on a new inode. A writer that bypasses the lock (an
+older client) simply leaves its document in the keys file, and both the
+application and direct readers observe that same document. Compare-and-swap
+helpers re-read after writing and report a lost race instead of overwriting a
+newer pointer.
+
+**Claim and cancellation share one execution lock.** `worker.claim_execution()`
+and `QueueStore.cancel_pending()` both take
+`.locks/executions/<execution-id>.lock`. The first transition wins. If the claim
+publishes `processing/` first, cancellation fails closed with a
+processing-specific `QueueStoreError` and never publishes a contradictory
+`cancelled/` record. If cancellation publishes `cancelled/` first, the claim
+sees no pending source and returns `None`, so the worker does not execute the
+job. An interrupted cancel that left both `pending/` and `cancelled/` is
+resolved only when the cancelled successor validates against the pending record;
+otherwise it raises `AtomicFileError` and leaves both files for inspection. No
+sleep-based synchronization is used.
+
+**Incomplete-reservation repair uses the keys authority.** After a forced
+generation loses its pending execution record, a normal enqueue repairs the
+pointer with `try_update_current_execution()` under the reservation lock. The
+replacement becomes the current execution at the same generation, stays
+claimable, and is not cancelled by an earlier same-generation claim. The repair
+is verified through the real `QueueStore` lifecycle (enqueue → force → delete the
+forced pending record → enqueue → claim).
+
+**ANSI tests assert plain text.** Rich's `Console(force_terminal=True)` styles
+captured output and can split literal substrings. The six affected tests strip
+CSI/SGR escapes before asserting; every behavioral assertion and exit-code
+check is unchanged. This is a test correction, not a change to CLI styling.
+
+**Verification and release.** The fix is a patch release: metadata, changelog,
+and release notes are synchronized to **0.8.1**. On the corrective tree the
+targeted suite passed **134**, the full suite passed **368 passed, 11 skipped,
+1 warning** in both default and `NO_COLOR=1` configurations, and the predefined
+50-run ext4 concurrency stress passed **50/50**. Ruff, `compileall`, package
+build, isolated CLI smoke, and an isolated pipx 0.8.0 → 0.8.1 upgrade all
+passed. The new assertions fail **13 of 16** on the rejected source `fe18821`
+(3 pass), proving they exercise the defects. Real NFSv3/NLM and GPU checks were
+not run (no production queue or GPU test); the NFS tests skipped without
+`LT_NFS_QUEUE_DIR`. No tag, publish, merge, deployment, or production
+configuration change was performed. Local ext4 passes do not prove multi-host
+NFS/NLM behavior.
+
+---
+
+## 21. Unresolved recovery excludes execution across selection and claim (task 044 correction, 2026-11-08)
+
+**Decision.** Recovery's "unresolved" result is no longer only a warning emitted
+by `recover_processing()`/`promote_retries()`; it is a live eligibility rule for
+the worker lifecycle. An execution id with more than one state record (a
+pending plus a retry, processing, or terminal counterpart, including a
+malformed or conflicting copy) is ineligible even when the pending JSON itself
+parses. Recovery leaves every conflicting copy intact, and both selection and
+claim fail closed on it.
+
+- `select_next_execution()` validates each pending document (filename,
+  embedded status, schema, identity, generation, attempts) and excludes ids
+  with any counterpart **before** priority ordering. A blocked high-priority
+  pending record therefore cannot starve a healthy lower-priority job.
+- `claim_execution()` re-loads the pending record under the shared execution
+  lock, rechecks for any counterpart, and compares the caller's snapshot
+  (source key, generation, attempts) with the record it is about to claim. A
+  conflicting copy that appears between selection and claim is therefore
+  excluded, and a stale snapshot is never claimed.
+- A queue containing only blocked executions reaches the normal idle path
+  (idle model maintenance, then the configured poll interval) instead of a
+  tight select/claim-failure loop. `once=True` returns without processing.
+
+No record is deleted, no attempt count is reset, and no winning state is
+invented to make progress. Conflicting evidence remains for inspection.
+
+**Compatibility correction (supersedes the readback wording in §20).** The
+advisory lock coordinates cooperating writers only. The post-write readback in
+`try_advance_generation()`/`try_update_current_execution()` detects a race that
+happens before the readback (including a non-cooperating write that lands
+inside the locked section), but it cannot detect a non-cooperating older writer
+that writes `keys/<source>.json` after the readback. Section 20's statement
+that the helpers "report a lost race instead of overwriting a newer pointer"
+must be read with that limit. Direct key-file readers remain compatible with
+the application because `keys/<source>.json` is still the sole authority, but
+**mixed-version writer operation is an unresolved deployment constraint**:
+older writers must not run concurrently with this version. No queue migration,
+ref change, or production change is made to resolve it.
+
+**Verification.** `tests/test_worker_unresolved_lifecycle.py` drives the real
+`run_worker` lifecycle with a controlled job runner and disposable queues for:
+malformed retry, conflicting retry generation/identity, malformed/conflicting
+terminal, conflicting processing, a blocked high-priority job beside a healthy
+pending job, a queue containing only unresolved jobs (bounded idle wait), and a
+conflicting copy appearing between selection and claim. On the reviewed source
+`60f774f` all nine cases failed (executed the unresolved job, starved the
+healthy job, or entered a 201-selection tight loop). Details and full gate
+results are recorded in task 044 and `HANDOFF.md`.
+
+---
+
+## 22. Task 044 approved and merged (2026-11-08)
+
+**Approval.** ChatGPT approved feature head
+`084d212364cc1e2c8cdbb8de9fd89baa08cde328` for the task-044 merge/cleanup
+phase. The implementation was not redone.
+
+**Final pre-merge gate.** On the approved feature tree (ext4 worktree,
+unprivileged `nomnom`, isolated `HOME`/`XDG_*`/`TMPDIR`): canonical Ruff **All
+checks passed**; full pytest **377 passed, 11 skipped, 1 warning**; `git diff
+--check origin/main...HEAD` clean; `0.8.1` consistent across `pyproject.toml`,
+`src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
+`docs/WHATS_NEW.md`; secret scan of the branch delta **no matches**. Evidence:
+`~/.local/share/local-transcribe/evidence/20261108T-gate044-merge/`.
+
+**Merge intent.** Merge the complete feature branch into `main` with a normal
+non-squash `--no-ff` merge. No history is rewritten or squashed.
+`bff5ca6` (atomic terminal metadata), `e62b383` (claim/cancel serialization and
+validated recovery), `6aff283` (unresolved-recovery exclusion), and the task
+closure remain ancestors of `main`. Task 044 moves from `review/` to `done/`.
+
+**Deployment is still not authorized.** The merge does not authorize a tag,
+release, package publication, deployment, service action, or production change.
+Production remains blocked by task 043 prerequisites (artifact staging, rollback
+rehearsal, Minion config/identity, NFSv4.2 producer decision) and by the
+mixed-version writer constraint in §21: older producers must not write
+`keys/<source>.json` concurrently with 0.8.1.

@@ -112,7 +112,7 @@ def test_version_and_help_are_quiet_without_deno(monkeypatch) -> None:
     assert calls == []
 
 
-def test_transcribe_url_no_wait_does_not_probe_deno(tmp_path: Path, monkeypatch) -> None:
+def test_transcribe_url_no_wait_does_not_probe_deno(tmp_path: Path, monkeypatch, plain) -> None:
     """`lt transcribe URL --no-wait` is a producer path: enqueue only, no Deno probe."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     q = _queue(tmp_path)
@@ -129,10 +129,11 @@ def test_transcribe_url_no_wait_does_not_probe_deno(tmp_path: Path, monkeypatch)
         ],
     )
 
+    out = plain(result.output)
     assert result.exit_code == 0, result.output
-    assert DENO_WARNING not in result.output, result.output
-    assert "Queue enqueued: youtube:dQw4w9WgXcQ" in result.output
-    assert "--no-wait: not waiting for worker" in result.output
+    assert DENO_WARNING not in out, result.output
+    assert "Queue enqueued: youtube:dQw4w9WgXcQ" in out
+    assert "--no-wait: not waiting for worker" in out
     assert calls == [], f"--no-wait enqueue invoked the Deno probe: {calls}"
 
 
@@ -171,7 +172,7 @@ def test_transcribe_url_wait_does_not_probe_deno(
 
 
 def test_transcribe_url_wait_surfaces_worker_failure(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, plain
 ) -> None:
     """Without a client probe, worker download failures stay actionable."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
@@ -201,10 +202,11 @@ def test_transcribe_url_wait_surfaces_worker_failure(
             ],
         )
 
+    out = plain(result.output)
     assert result.exit_code == 1
-    assert "temporary_forbidden" in result.output, result.output
-    assert "HTTP Error 403" in result.output, result.output
-    assert DENO_WARNING not in result.output
+    assert "temporary_forbidden" in out, result.output
+    assert "HTTP Error 403" in out, result.output
+    assert DENO_WARNING not in out
     assert calls == []
 
 
