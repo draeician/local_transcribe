@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `review` — four corrections implemented and verified; awaiting review |
+| **Status** | `review` — unresolved-recovery exclusion implemented and verified; awaiting review |
 | **Branch** | `fix/predeploy-queue-gate` |
 | **Base** | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
 | **Type** | `fix` (patch release 0.8.0 → 0.8.1) |
@@ -13,6 +13,7 @@
 | **Blocks** | Production upgrade approval for 0.8.x |
 | **Implementation commit** | `bff5ca6` (`fix(queue): publish terminal metadata atomically`) |
 | **Correction commit** | `e62b383cffff24e61eeb9dbae67e0024e15d18d0` (`fix(queue): serialize claim/cancel and validate recovery`) |
+| **Revision 2 commit** | `6aff2837fb86eb17c4c250301783e16dbaa460d1` (`fix(queue): exclude unresolved executions from claim`) |
 | **Superseded revision** | `fe18821c0d5eb63c21a52a138d75c726860d8f31` — historical rejected revision; its gate evidence is not reused |
 | **Correction status** | Implemented on this branch; targeted, full, stress, build, CLI, and pipx gates pass on the corrective tree |
 
@@ -226,15 +227,126 @@ implemented; that finding is retained as history and is superseded by the
 implementation above. Its probe evidence remains at
 `~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections/`.
 
+## Revision 2 — unresolved-recovery exclusion through the worker lifecycle (2026-11-08)
+
+### Gap
+
+The corrected tree validated duplicates inside `recover_processing()` and
+`promote_retries()` but did not carry the unresolved result into eligibility.
+`select_next_execution()` accepted any pending JSON that parsed, and
+`claim_execution()` checked only the destination, `cancelled/`, and terminal
+directories. Consequences on reviewed head `60f774f`:
+
+- A valid pending plus a malformed/conflicting `retry/` copy was selected,
+  claimed, and executed; recovery's warning had no lifecycle effect.
+- A valid pending plus a malformed/conflicting `processing/` or terminal copy
+  was re-selected every loop after the claim refused it, producing a tight
+  claim-failure loop (201 selections reached the test budget in under a
+  second).
+- A blocked highest-priority pending record was selected ahead of a healthy
+  lower-priority job, starving it.
+- A conflicting copy created between selection and claim did not stop the
+  claim, because the earlier selection snapshot was never revalidated.
+
+### Implementation
+
+| File | Change |
+|------|--------|
+| `src/local_transcribe/services/worker.py` | `select_next_execution()` validates every pending document with `_load_state_record()` (filename, embedded status, schema, identity, generation, attempts) and excludes any execution id with another state record **before** priority ordering. Blocked high-priority records therefore cannot starve healthy jobs. |
+| `src/local_transcribe/services/worker.py` | `claim_execution()` re-loads the pending record under the shared execution lock, rechecks for any retry/processing/terminal counterpart, and compares the caller snapshot (source key, generation, attempts) with the record it is about to claim. A conflicting copy appearing between selection and claim, or a stale snapshot, fails closed. |
+| `src/local_transcribe/services/worker.py` | Only-blocked queues now return `None` from selection, so `run_worker` takes its existing idle path (idle model maintenance, then `poll_interval_seconds` sleep). `once=True` returns 0 without executing anything. |
+| `src/local_transcribe/services/source_reservations.py` | Corrected the readback claim: the post-write readback detects a race that happens before it, but not a non-cooperating older writer that writes after it. Direct key-file readers remain compatible; mixed-version writer operation is recorded as an unresolved deployment constraint. |
+| `tests/test_worker_unresolved_lifecycle.py` | Nine lifecycle regressions driving the real `run_worker` with a controlled runner on disposable queues. |
+
+No record is deleted, no attempt count is reset, and no winning state is
+invented. Conflicting copies are asserted byte-for-byte unchanged.
+
+### Regression coverage
+
+| Scenario | Test |
+|----------|------|
+| Valid pending + malformed retry | `test_pending_with_malformed_retry_is_not_executed` |
+| Valid pending + conflicting retry generation | `test_pending_with_conflicting_retry_is_not_executed[generation]` |
+| Valid pending + conflicting retry identity | `test_pending_with_conflicting_retry_is_not_executed[identity]` |
+| Valid pending + malformed terminal | `test_pending_with_unresolved_terminal_is_not_executed[malformed]` |
+| Valid pending + conflicting terminal | `test_pending_with_unresolved_terminal_is_not_executed[conflicting]` |
+| Valid pending + conflicting processing | `test_pending_with_conflicting_processing_is_not_executed` |
+| Blocked highest-priority beside healthy pending | `test_blocked_high_priority_does_not_starve_healthy_pending` |
+| Queue containing only unresolved jobs | `test_queue_with_only_unresolved_jobs_uses_bounded_idle_wait` |
+| Conflict created between selection and claim | `test_conflicting_copy_between_selection_and_claim_is_not_executed` |
+
+The tests use deterministic synchronization: a bounded selection wrapper turns
+a tight loop into a failure instead of a hang, and the idle test replaces
+`time.sleep` with a sentinel that stops the loop after the first real idle wait.
+No sleep-based race synchronization and no weakened assertions.
+
+### Baseline reproduction on reviewed head `60f774f`
+
+`tests/test_worker_unresolved_lifecycle.py` → **9 failed** (exit 1):
+
+- malformed/conflicting retry, only-unresolved queue, and the selection/claim
+  race executed the unresolved job (`assert 1 == 0`, runner called);
+- malformed/conflicting terminal and conflicting processing hit the 201-
+  selection budget (`_BudgetExceeded`) instead of idling;
+- the blocked high-priority job was the only runner call while the healthy job
+  waited (`assert ['blocked-high'] == ['healthy-low']`).
+
+Log: `baseline-reviewed-60f774f-new-tests.log`.
+
+### Verification on the revision-2 tree
+
+Environment unchanged: isolated venv `/tmp/opencode/predeploy-gate-venv`,
+Python 3.12.3, pytest 9.2.0, ruff 0.17.4, build 1.6.1, pipx 1.4.3; ext4
+worktree; isolated `HOME`/`XDG_*`/`TMPDIR`. Production config, queue, archives,
+services, and installed pipx environments were not touched.
+
+| Check | Command | Result | Exit |
+|-------|---------|--------|------|
+| New lifecycle regressions | `python -m pytest -q tests/test_worker_unresolved_lifecycle.py` | **9 passed** | 0 |
+| Existing task-044 + queue/CLI/Deno/update regressions | `python -m pytest -q` on the 15 targeted files | **165 passed** | 0 |
+| Full suite, ext4, default color | `python -m pytest -q` | **377 passed, 11 skipped, 1 warning** | 0 |
+| Full suite, ext4, `NO_COLOR=1` | `NO_COLOR=1 python -m pytest -q` | **377 passed, 11 skipped, 1 warning** | 0 |
+| Predefined 50-run ext4 concurrency stress | 50 × `pytest -q tests/test_queue_concurrency.py -k "concurrent or multiprocess or forced_generation or cancel_pending"` | **50/50 passed** (6 tests each) | 0 |
+| Canonical Ruff | `python -m ruff check --config pyproject.toml src tests` | **All checks passed** | 0 |
+| Syntax | `python -m compileall -q src tests` | clean | 0 |
+| Package build | `python -m build --outdir /tmp/opencode/gate044-unresolved-build/dist` | `local_transcribe-0.8.1` wheel + sdist | 0 |
+| Wheel hashes | `sha256sum` | wheel `09291bdef875a8b609a9303eec7990ba8f9fbd8312ad34692e6760ac63d5b5e9`; sdist `43c05a36cfc4aff05f0025cd746ac34f9350c6d74a162e5c82b7a6dca0ad6a61` | 0 |
+| Wheel metadata | inspect `METADATA` / `entry_points.txt` | `Version: 0.8.1`; `lt = local_transcribe.cli:main`; `worker.py`, `queue_locks.py`, `queue_listing.py` present | 0 |
+| Isolated CLI smoke | `lt version`, `--help`, `queue init/add/list/stats`, `transcribe --no-wait` | version **0.8.1**; 3 pending; no worker/download | 0 |
+| Isolated pipx upgrade | `pipx install` 0.8.0 wheel, then `pipx install --force` 0.8.1 wheel | **0.8.0 → 0.8.1**; `lt version`, module, metadata, `pip show` all **0.8.1** | 0 |
+
+### Evidence path (revision 2)
+
+`~/.local/share/local-transcribe/evidence/20261107T-gate044-unresolved-lifecycle/`
+— `baseline-reviewed-60f774f-new-tests.log`, `targeted.log`,
+`full-default.log`, `full-nocolor.log`, `stress-50.log`, `ruff.log`,
+`compileall.log`, `build.log`, `wheel-sha256.txt`, `cli-smoke.log`, and
+`pipx-upgrade-080-081.log`. Earlier evidence directories remain historical for
+`fe18821`/`e62b383` and are not reused.
+
+### Compatibility correction
+
+The previous wording that the post-write readback "reports a lost race instead
+of overwriting a newer pointer" was too strong. The readback detects a race
+that occurs before it (including a non-cooperating write inside the locked
+section). It cannot detect a non-cooperating older writer that writes after the
+readback. `keys/<source>.json` remains the sole authority, so **direct key-file
+readers remain compatible**, but **mixed-version writer operation is an
+unresolved deployment constraint**: older writers must not run concurrently
+with this version. No queue migration, ref change, or production change was
+made to resolve it. Journal correction appended as §21 (history preserved).
+
 ## Blockers
 
 None for review. Production deployment remains blocked by the separate task 043
 prerequisites (artifact staging, rollback rehearsal, Minion config/identity,
-NFSv4.2 producer decision).
+NFSv4.2 producer decision), plus the unresolved mixed-version writer constraint
+above: older producers must not write `keys/<source>.json` concurrently with
+0.8.1.
 
 ## Next action
 
-Review the corrective commit on `fix/predeploy-queue-gate`. Do not merge, tag,
+Review the revision-2 commit on `fix/predeploy-queue-gate`. Do not merge, tag,
 publish, deploy, or clean up branches from this task.
 
 ## Coder notes
@@ -246,3 +358,7 @@ publish, deploy, or clean up branches from this task.
   used by the queue producer path.
 - The ANSI fix is test-only. `Console(force_terminal=True)` is unchanged; the
   application still styles output when a terminal is forced.
+- Eligibility is deliberately live rather than a cached recovery set: the
+  predicate is "more than one state record for this execution id". Recovery
+  leaves unresolved ids in that shape, so selection and claim fail closed even
+  if recovery ran in a different process or the copy appeared later.

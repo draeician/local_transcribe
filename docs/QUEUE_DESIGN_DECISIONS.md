@@ -472,3 +472,54 @@ not run (no production queue or GPU test); the NFS tests skipped without
 `LT_NFS_QUEUE_DIR`. No tag, publish, merge, deployment, or production
 configuration change was performed. Local ext4 passes do not prove multi-host
 NFS/NLM behavior.
+
+---
+
+## 21. Unresolved recovery excludes execution across selection and claim (task 044 correction, 2026-11-08)
+
+**Decision.** Recovery's "unresolved" result is no longer only a warning emitted
+by `recover_processing()`/`promote_retries()`; it is a live eligibility rule for
+the worker lifecycle. An execution id with more than one state record (a
+pending plus a retry, processing, or terminal counterpart, including a
+malformed or conflicting copy) is ineligible even when the pending JSON itself
+parses. Recovery leaves every conflicting copy intact, and both selection and
+claim fail closed on it.
+
+- `select_next_execution()` validates each pending document (filename,
+  embedded status, schema, identity, generation, attempts) and excludes ids
+  with any counterpart **before** priority ordering. A blocked high-priority
+  pending record therefore cannot starve a healthy lower-priority job.
+- `claim_execution()` re-loads the pending record under the shared execution
+  lock, rechecks for any counterpart, and compares the caller's snapshot
+  (source key, generation, attempts) with the record it is about to claim. A
+  conflicting copy that appears between selection and claim is therefore
+  excluded, and a stale snapshot is never claimed.
+- A queue containing only blocked executions reaches the normal idle path
+  (idle model maintenance, then the configured poll interval) instead of a
+  tight select/claim-failure loop. `once=True` returns without processing.
+
+No record is deleted, no attempt count is reset, and no winning state is
+invented to make progress. Conflicting evidence remains for inspection.
+
+**Compatibility correction (supersedes the readback wording in §20).** The
+advisory lock coordinates cooperating writers only. The post-write readback in
+`try_advance_generation()`/`try_update_current_execution()` detects a race that
+happens before the readback (including a non-cooperating write that lands
+inside the locked section), but it cannot detect a non-cooperating older writer
+that writes `keys/<source>.json` after the readback. Section 20's statement
+that the helpers "report a lost race instead of overwriting a newer pointer"
+must be read with that limit. Direct key-file readers remain compatible with
+the application because `keys/<source>.json` is still the sole authority, but
+**mixed-version writer operation is an unresolved deployment constraint**:
+older writers must not run concurrently with this version. No queue migration,
+ref change, or production change is made to resolve it.
+
+**Verification.** `tests/test_worker_unresolved_lifecycle.py` drives the real
+`run_worker` lifecycle with a controlled job runner and disposable queues for:
+malformed retry, conflicting retry generation/identity, malformed/conflicting
+terminal, conflicting processing, a blocked high-priority job beside a healthy
+pending job, a queue containing only unresolved jobs (bounded idle wait), and a
+conflicting copy appearing between selection and claim. On the reviewed source
+`60f774f` all nine cases failed (executed the unresolved job, starved the
+healthy job, or entered a 201-selection tight loop). Details and full gate
+results are recorded in task 044 and `HANDOFF.md`.
