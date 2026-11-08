@@ -7,6 +7,14 @@ directly, so this module never introduces a second durable authority.
 Concurrent generation advances are serialized with a short-lived advisory lock
 under ``.locks/reservations/``. The lock is coordination only; the reservation
 document remains the source of truth.
+
+Compatibility limit: the advisory lock coordinates only writers that take it.
+An older client that writes ``keys/<source>.json`` directly can still write
+after a locked writer's readback. The readback detects a race that happens
+before it (including a non-cooperating write that lands inside the locked
+section), but it does not detect a non-cooperating write that happens after
+it. Mixed-version producer operation is an unresolved deployment constraint;
+older writers must not run concurrently with this version.
 """
 
 from __future__ import annotations
@@ -164,10 +172,13 @@ def try_advance_generation(
     """Compare-and-swap the authoritative reservation to ``expected + 1``.
 
     The advisory lock serializes the read-modify-write sequence, so exactly one
-    concurrent caller can advance a given generation. After writing, the
-    document is re-read to confirm this caller still owns the pointer; an
-    unlocked legacy writer that lands afterwards causes this caller to lose
-    rather than claim a false win.
+    concurrent cooperating caller can advance a given generation. After writing,
+    the document is re-read to confirm this caller still owns the pointer. That
+    readback detects a cooperating writer that raced inside the locked section
+    and a non-cooperating legacy write that landed before the readback; it
+    cannot detect a non-cooperating legacy write that lands after the readback.
+    Mixed-version producer operation remains an unresolved deployment
+    constraint.
 
     Returns ``None`` when the reservation is missing or no longer at
     ``expected_generation``. On a lost race, ``winner_execution_id`` names the
@@ -250,6 +261,9 @@ def try_update_current_execution(
     """Point reservation at ``new_execution_id`` if still at ``expected_execution_id``.
 
     Returns the updated reservation on win, else None (lost race / changed).
+    The post-write readback has the same limit as ``try_advance_generation()``:
+    it cannot detect a non-cooperating older writer that writes after the
+    readback.
     """
     with queue_lock(reservation_lock_path(queue_dir, source_key)):
         current = read_reservation(queue_dir, source_key)

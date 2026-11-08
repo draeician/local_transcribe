@@ -507,15 +507,24 @@ def select_next_execution(
     max_interactive_streak: int = 5,
     interactive_streak: int = 0,
 ) -> Execution | None:
-    """Select next pending job by priority then created_at; fairness streak."""
+    """Select next pending job by priority then created_at; fairness streak.
+
+    A pending record is eligible only when it is the sole record for its
+    execution id. If recovery left a conflicting retry, processing, or terminal
+    counterpart intact, the pending JSON is not enough to make the execution
+    claimable. Blocked executions are filtered before priority ordering so a
+    blocked high-priority record cannot starve a healthy lower-priority job.
+    """
     pending = queue_dir / "pending"
     if not pending.is_dir():
         return None
     jobs: list[Execution] = []
     for path in pending.glob("*.json"):
-        try:
-            ex = Execution.from_dict(json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        record, _ = _load_state_record(path, "pending")
+        if record is None:
+            continue
+        ex = record.execution
+        if _other_state_paths(queue_dir, ex.execution_id, exclude="pending"):
             continue
         if ex.required_host and hostname and ex.required_host != hostname:
             continue
@@ -541,28 +550,39 @@ def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
     can win. A claim never publishes processing after a cancellation has
     published cancelled, and a cancel never publishes cancelled after a claim
     has published processing.
+
+    The selection snapshot is revalidated under the lock. A pending JSON that
+    parses is not sufficient: if any other state record exists for this
+    execution id (an unresolved retry/processing/terminal counterpart, including
+    a malformed or conflicting copy that recovery left intact), the claim fails
+    closed. A copy that appears between selection and claim is therefore still
+    excluded.
     """
     src = queue_dir / "pending" / f"{execution.execution_id}.json"
     dest = queue_dir / "processing" / f"{execution.execution_id}.json"
     with queue_lock(execution_lock_path(queue_dir, execution.execution_id)):
-        if not src.is_file():
+        record, _ = _load_state_record(src, "pending")
+        if record is None:
             return None
-        if dest.is_file():
+        current = record.execution
+        if _other_state_paths(queue_dir, current.execution_id, exclude="pending"):
             return None
-        if (queue_dir / "cancelled" / f"{execution.execution_id}.json").is_file():
-            return None
-        if any(
-            (queue_dir / status / f"{execution.execution_id}.json").is_file()
-            for status in TERMINAL_STATUSES
+        if (
+            current.execution_id != execution.execution_id
+            or current.source_key != execution.source_key
+            or current.generation != execution.generation
+            or current.attempts != execution.attempts
         ):
+            # The pending record changed after selection; never claim a stale
+            # snapshot. The next selection pass reads the current record.
             return None
 
         claimed = replace(
-            execution,
+            current,
             status="processing",
             started_at=utc_now_iso(),
             updated_at=utc_now_iso(),
-            attempts=execution.attempts + 1,
+            attempts=current.attempts + 1,
         )
         try:
             atomic_state_transition(src, dest, claimed.to_dict())
