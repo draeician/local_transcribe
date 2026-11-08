@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `review` — implementation and required verification complete |
+| **Status** | `wip` — blocked: four review corrections are not implemented |
 | **Branch** | `fix/predeploy-queue-gate` |
 | **Base** | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
 | **Type** | `fix` (patch release 0.8.0 → 0.8.1) |
@@ -12,6 +12,8 @@
 | **Depends on** | 043 preflight correction (`b6d504f`) |
 | **Blocks** | Production upgrade approval for 0.8.x |
 | **Implementation commit** | `bff5ca6` (`fix(queue): publish terminal metadata atomically`) |
+| **Current head** | `fe18821c0d5eb63c21a52a138d75c726860d8f31` (rejected revision; no corrections) |
+| **Correction status** | Not implemented in the worktree, local commits, remote branch, other branches, or unreachable commits |
 
 ## Ownership
 
@@ -121,6 +123,10 @@ single-winner operation.
 
 ## Required verification evidence
 
+> **Scope of this evidence:** every result below applies only to `fe18821`
+> (the rejected revision). It is **not** evidence for the four outstanding
+> review corrections and must not be reused when the corrective tree is tested.
+
 | Check | Command | Result | Exit |
 |-------|---------|--------|------|
 | Targeted regressions | `python -m pytest -q` on the six ANSI tests, two waiter tests, foreground wait, concurrency, worker transitions, source reservations | **43 passed** | 0 |
@@ -172,24 +178,53 @@ diff check, secret scans, baseline reproduction, and NFS skip reasons.
   an equivalent isolated pipx install/upgrade was performed manually and
   recorded above.
 
+## Review corrections — not delivered (2026-11-07)
+
+A delivery check at `fe18821` found **none** of the four outstanding review
+corrections. The worktree was clean; there was no uncommitted or unpushed
+correction commit; `origin/fix/predeploy-queue-gate` was still `fe18821`; the
+only other branches were `main` and `chore/three-host-upgrade-preflight`; and
+the unreachable commits contained only old stashes/unrelated history. No
+separate written correction artifact was found in `.crules`, `HANDOFF.md`,
+`docs`, or `/tmp/opencode`, so the four prompt areas were used as the checklist.
+
+| Correction | Finding | Evidence |
+|------------|---------|----------|
+| Exclusive worker-claim versus cancellation | `worker.claim_execution()` publishes `pending → processing`; `QueueStore.cancel_pending()` publishes `pending → cancelled`. Both use `atomic_state_transition()`, which hard-links to a distinct destination and then unlinks the shared source. A synchronized race left **both** `processing/<id>.json` and `cancelled/<id>.json`, with `pending` gone and no error. | `claim-cancel-and-forced-repair.json` |
+| Incomplete-reservation repair after a forced generation | `try_update_current_execution()` repairs by writing `keys/<source>.json` only, but `read_reservation()` treats the highest `keys/.advance` claim as authoritative. A repair after a forced generation is therefore ignored. Probe: reservation gen 2 pointed at `forced-missing`; a normal enqueue returned `existing_active` with `execution=None`, left the pointer at `forced-missing`, and cancelled its repair pending. | `claim-cancel-and-forced-repair.json` |
+| Compatibility with the existing `keys/<source>.json` authority | `read_reservation()` makes the highest `keys/.advance` claim authoritative and demotes `keys/<source>.json` to a cache. `docs/QUEUE_DESIGN_DECISIONS.md` §5.4 still defines `keys/<source-key>.json` as the reservation authority. The correction requires compatibility with that authority; the current tree adds a second authority instead. | `source-references.log`; `source_reservations.py` lines 61–99, 168–263 |
+| Validated, fail-closed duplicate recovery | `recover_processing()` and `promote_retries()` delete duplicates based on file existence alone and do not parse the duplicate. Probe: a valid `processing/<id>.json` plus a corrupt same-named `retry/<id>.json` caused recovery to delete the valid processing record and leave only the corrupt retry. A same-named `pending` document naming a different execution was also deleted without validation. | `duplicate-recovery.json` |
+
+Evidence directory:
+`~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections/`
+(probe scripts, JSON results, git/repository scan, source references, summary).
+
+The earlier gate evidence at
+`~/.local/share/local-transcribe/evidence/20261107T-gate044/` applies only to
+`fe18821` and is not evidence for these corrections.
+
 ## Blockers
 
-None for this remediation. Production deployment remains blocked by the
+**Blocked on implementation:** the four review corrections above are absent from
+the branch. The branch remains at the rejected revision `fe18821`; review
+readiness is not claimed. Production deployment also remains blocked by the
 separate task 043 prerequisites (artifact staging, rollback rehearsal, Minion
 config/identity, NFSv4.2 producer decision).
 
 ## Next action
 
-Review the branch. If approved, merge `fix/predeploy-queue-gate` into `main` and
-resume the task 043 deployment preflight with the now-green gate. Do not tag or
-publish until that review authorizes it.
+Implement the four corrections on `fix/predeploy-queue-gate`, add regression
+tests for each, rerun the targeted regressions and the full gate on the exact
+corrective tree, update this record and `HANDOFF.md`, then return the task to
+`review/`. Do not reuse the `fe18821` test results.
 
 ## Coder notes
 
 - The immutable claim ledger adds one small JSON file per force generation under
   `keys/.advance/`. It is never pruned; this is intentional so the highest claim
   remains authoritative after a crash. Force is rare; the storage cost is
-  negligible.
+  negligible. **This ledger-as-authority design is the subject of outstanding
+  review correction 3; it is not accepted for delivery.**
 - `advance_generation()` (unconditional admin/test helper) still writes the
   materialized reservation directly. It is not used by the queue producer path;
   a later claim still wins because the ledger is authoritative.

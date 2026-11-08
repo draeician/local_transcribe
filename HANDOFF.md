@@ -1717,8 +1717,9 @@ writing metadata, and an intermittent concurrent-force generation failure. Task
 | Base | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
 | Worktree | `/tmp/opencode/local_transcribe-gate-remediation` (ext4) |
 | Host | `nomnom`, user `draeician`, unprivileged |
-| Task record | `.crules/tasks/review/044-predeploy-gate-remediation.md` |
+| Task record | `.crules/tasks/wip/044-predeploy-gate-remediation.md` |
 | Implementation commit | `bff5ca6` (`fix(queue): publish terminal metadata atomically`) |
+| Current head | `fe18821c0d5eb63c21a52a138d75c726860d8f31` (rejected; no corrections) |
 
 ### Changes
 
@@ -1749,6 +1750,28 @@ writing metadata, and an intermittent concurrent-force generation failure. Task
 - **Version**: patch release **0.8.1** synchronized across `pyproject.toml`,
   `src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
   `docs/WHATS_NEW.md`. No tag or publish.
+
+### Review-correction delivery check (2026-11-07)
+
+A follow-up check at `fe18821` found **none** of the four outstanding review
+corrections implemented. The worktree was clean; there was no uncommitted or
+unpushed correction commit; the remote branch was still `fe18821`; the only
+other branches were `main` and `chore/three-host-upgrade-preflight`; and the
+unreachable commits contained only old stashes/unrelated history. No separate
+written correction artifact was found in `.crules`, `HANDOFF.md`, `docs`, or
+`/tmp/opencode`, so the four prompt areas were used as the checklist.
+
+| Correction | Finding |
+|------------|---------|
+| Exclusive worker-claim versus cancellation | `worker.claim_execution()` and `QueueStore.cancel_pending()` both use `atomic_state_transition()` to publish to distinct destinations (`processing/` and `cancelled/`) before unlinking the shared `pending/` source. A synchronized race left both state files present, with `pending` gone and no error. |
+| Incomplete-reservation repair after a forced generation | `try_update_current_execution()` writes only `keys/<source>.json`, but `read_reservation()` treats the highest `keys/.advance` claim as authoritative. A repair after a forced generation is ignored. Probe: the pointer stayed at `forced-missing` generation 2 and the enqueue returned `existing_active` with `execution=None`. |
+| Compatibility with the existing `keys/<source>.json` authority | The tree makes the `keys/.advance` claim ledger authoritative and demotes `keys/<source>.json` to a cache, while `docs/QUEUE_DESIGN_DECISIONS.md` §5.4 still defines `keys/<source-key>.json` as the authority. The correction requires compatibility with that authority. |
+| Validated, fail-closed duplicate recovery | `recover_processing()` and `promote_retries()` delete duplicates from file existence alone without parsing them. Probe: a corrupt same-named `retry/<id>.json` caused recovery to delete the valid `processing/<id>.json` and leave only the corrupt retry; a foreign `pending` document was also deleted unvalidated. |
+
+Evidence: `~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections/`
+(probe scripts, JSON results, git/repository scan, source references, summary).
+The verification table below applies only to `fe18821` and must not be reused
+for the corrective tree.
 
 ### Verification (exact results)
 
@@ -1794,12 +1817,15 @@ skipped; an equivalent isolated pipx install/upgrade was performed manually.
 
 ### Blockers
 
-None for this remediation. Production deployment remains blocked by the
-separate task 043 prerequisites: artifact staging, rollback rehearsal, Minion
-config/identity, and the NFSv4.2 producer decision.
+**Blocked on implementation:** the four review corrections are absent from the
+branch. The branch remains at the rejected revision `fe18821`; review readiness
+is not claimed. Production deployment also remains blocked by the separate task
+043 prerequisites: artifact staging, rollback rehearsal, Minion config/identity,
+and the NFSv4.2 producer decision.
 
 ### Next action
 
-Review `fix/predeploy-queue-gate`. If approved, merge it into `main` and resume
-the task 043 deployment preflight with a green required gate. Do not tag,
-publish, deploy, or modify production until that review authorizes it.
+Implement the four corrections on `fix/predeploy-queue-gate`, add regression
+tests for each, rerun the targeted regressions and the full gate on the exact
+corrective tree, update the task record and this handoff, then return task 044
+to `review/`. Do not reuse the `fe18821` test results.
