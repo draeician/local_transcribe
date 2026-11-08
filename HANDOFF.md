@@ -1717,9 +1717,10 @@ writing metadata, and an intermittent concurrent-force generation failure. Task
 | Base | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
 | Worktree | `/tmp/opencode/local_transcribe-gate-remediation` (ext4) |
 | Host | `nomnom`, user `draeician`, unprivileged |
-| Task record | `.crules/tasks/wip/044-predeploy-gate-remediation.md` |
+| Task record | `.crules/tasks/review/044-predeploy-gate-remediation.md` |
 | Implementation commit | `bff5ca6` (`fix(queue): publish terminal metadata atomically`) |
-| Current head | `fe18821c0d5eb63c21a52a138d75c726860d8f31` (rejected; no corrections) |
+| Correction commit | `e62b383cffff24e61eeb9dbae67e0024e15d18d0` (`fix(queue): serialize claim/cancel and validate recovery`) |
+| Superseded revision | `fe18821c0d5eb63c21a52a138d75c726860d8f31` — historical rejected revision; its evidence is not reused |
 
 ### Changes
 
@@ -1729,110 +1730,108 @@ writing metadata, and an intermittent concurrent-force generation failure. Task
   with stale pre-transition metadata. `locate_execution()` and
   `wait_for_execution()` only trust a terminal directory entry when its embedded
   status matches the directory.
-- **Interrupted-publication recovery** (`worker.py`): duplicate state entries
-  resolve to the advanced state (`processing` over `pending`, `retry`/terminal
-  over `processing`, `pending` over `retry`).
+- **Interrupted-publication recovery** (`worker.py`): every same-named record is
+  parsed and validated (JSON/schema, execution id, source identity, generation,
+  status directory, attempts, transition metadata). Recovery keeps the unique
+  reachable transition sink; malformed, conflicting, cyclic, or unreachable
+  records stay intact with an explicit warning. `recover_processing()` and
+  `promote_retries()` skip unresolved ids so repeated recovery cannot lose
+  records or duplicate execution.
 - **Concurrent force generations** (`source_reservations.py`,
-  `queue_store.py`): each generation advance is an immutable create-if-absent
-  claim under `keys/.advance/`; the highest claim is authoritative and
-  `keys/<source>.json` is a materialized cache. Exactly one producer wins a
-  generation, and a slow writer cannot move readers backwards. `repair_source()`
-  skips pending executions newer than the reservation. The failure was an
-  application defect: multiple writers could each install generation N+1 and a
-  stale repair could cancel the final pointer's execution.
+  `queue_store.py`): `keys/<source>.json` is the sole reservation authority
+  again. The rejected `keys/.advance/` ledger is removed. Concurrent advances
+  and repairs use a short-lived advisory `fcntl.lockf` lock plus a per-path
+  thread lock under `.locks/`; lock files are coordination only, contain no
+  state, and are never removed. Compare-and-swap helpers re-read after writing
+  and report a lost race. `repair_source()` skips pending executions newer than
+  the reservation. A repair after a forced generation updates the keys pointer
+  and remains claimable.
+- **Claim versus cancellation** (`worker.py`, `queue_store.py`): both take the
+  same per-execution advisory lock. Claim-first makes cancel fail closed with a
+  processing-specific error and never publishes a contradictory cancelled
+  record; cancel-first makes the claim return `None`, so the worker does not
+  execute the job. Interrupted cancel is resolved only when the cancelled
+  successor validates against the pending record. No sleep-based fix.
 - **ANSI tests** (`tests/conftest.py` and six tests): strip CSI/SGR escapes from
   captured output; all behavioral assertions and exit-code checks are unchanged.
-- **Regression tests**: deterministic barrier-synchronized force race; stale
-  terminal metadata for `completed` and `failed`; destination observation at the
-  `link()` boundary; crash windows before/after publication; recovery for
-  `pending`+`processing`, `processing`+`retry`, `retry`+`pending`; claim-ledger
-  monotonicity and claim visibility without a materialized reservation.
+- **Regression tests**: deterministic claim/cancel interleavings (including a
+  paused-claim window), real `QueueStore` forced-generation repair, keys-file
+  compatibility for direct readers and interrupted writes, fail-closed
+  duplicate recovery, plus the existing stale-terminal and crash-window tests.
 - **Version**: patch release **0.8.1** synchronized across `pyproject.toml`,
   `src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
   `docs/WHATS_NEW.md`. No tag or publish.
 
-### Review-correction delivery check (2026-11-07)
+### Review corrections implemented (2026-11-07)
 
-A follow-up check at `fe18821` found **none** of the four outstanding review
-corrections implemented. The worktree was clean; there was no uncommitted or
-unpushed correction commit; the remote branch was still `fe18821`; the only
-other branches were `main` and `chore/three-host-upgrade-preflight`; and the
-unreachable commits contained only old stashes/unrelated history. No separate
-written correction artifact was found in `.crules`, `HANDOFF.md`, `docs`, or
-`/tmp/opencode`, so the four prompt areas were used as the checklist.
+| Correction | Implementation |
+|------------|----------------|
+| Exclusive worker-claim versus cancellation | `worker.claim_execution()` and `QueueStore.cancel_pending()` share `.locks/executions/<id>.lock`. Claim-first makes cancel fail closed with a processing-specific error and never publishes a contradictory cancelled record; cancel-first makes the claim return `None`, so the worker does not execute the job. Interrupted cancel is resolved only when the cancelled successor validates against the pending record. No sleep-based synchronization. |
+| Incomplete-reservation repair after a forced generation | `try_update_current_execution()` repairs `keys/<source>.json` under the reservation lock. The replacement becomes current at the same generation, is not cancelled by an earlier same-generation claim, and remains claimable. Covered by a real `QueueStore` lifecycle test (enqueue → force → delete forced pending → enqueue → claim). |
+| Compatibility with the existing `keys/<source>.json` authority | `keys/<source-key>.json` is the sole authority again; the `.advance` ledger is removed. Advisory `fcntl.lockf` locks serialize read-modify-write without adding durable state, so older direct key-file readers and the ref reconciler agree with the application. No queue migration or ref change. |
+| Validated, fail-closed duplicate recovery | Every same-named record is parsed and validated (JSON/schema, execution id, source identity, generation, status directory, attempts, transition metadata). Recovery keeps the unique reachable transition sink; malformed, conflicting, cyclic, or unreachable records stay intact with an explicit warning. |
 
-| Correction | Finding |
-|------------|---------|
-| Exclusive worker-claim versus cancellation | `worker.claim_execution()` and `QueueStore.cancel_pending()` both use `atomic_state_transition()` to publish to distinct destinations (`processing/` and `cancelled/`) before unlinking the shared `pending/` source. A synchronized race left both state files present, with `pending` gone and no error. |
-| Incomplete-reservation repair after a forced generation | `try_update_current_execution()` writes only `keys/<source>.json`, but `read_reservation()` treats the highest `keys/.advance` claim as authoritative. A repair after a forced generation is ignored. Probe: the pointer stayed at `forced-missing` generation 2 and the enqueue returned `existing_active` with `execution=None`. |
-| Compatibility with the existing `keys/<source>.json` authority | The tree makes the `keys/.advance` claim ledger authoritative and demotes `keys/<source>.json` to a cache, while `docs/QUEUE_DESIGN_DECISIONS.md` §5.4 still defines `keys/<source-key>.json` as the authority. The correction requires compatibility with that authority. |
-| Validated, fail-closed duplicate recovery | `recover_processing()` and `promote_retries()` delete duplicates from file existence alone without parsing them. Probe: a corrupt same-named `retry/<id>.json` caused recovery to delete the valid `processing/<id>.json` and leave only the corrupt retry; a foreign `pending` document was also deleted unvalidated. |
+A prior delivery check at `fe18821` found none of these corrections implemented;
+that finding is retained as history and superseded by the implementation above.
+Its probe evidence remains at
+`~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections/`.
 
-Evidence: `~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections/`
-(probe scripts, JSON results, git/repository scan, source references, summary).
-The verification table below applies only to `fe18821` and must not be reused
-for the corrective tree.
-
-`SPEC-queue.md` is also contradicted: `keys/` is the authoritative
-identity/generation store (line 267), only the NLM lock holder may move
-execution files between processing states or write reservation advances that
-imply execution ownership (line 279), incomplete pairs must be repairable
-(lines 354–355), and post-claim checks must verify the reservation is current
-(line 836).
-
-### Verification (exact results)
+### Verification (exact results — corrective tree)
 
 Environment: isolated venv `/tmp/opencode/predeploy-gate-venv`, Python 3.12.3,
 pytest 9.2.0, ruff 0.17.4, build 1.6.1, pipx 1.4.3; ext4 worktree; isolated
 `HOME`/`XDG_*`/`TMPDIR`. Production config, queue, archives, and services were
-not loaded or touched.
+not loaded or touched. Results apply to the corrective commit
+`e62b383cffff24e61eeb9dbae67e0024e15d18d0`, not to `fe18821`.
 
 | Check | Result |
 |-------|--------|
-| Targeted regressions (six ANSI, two waiter, foreground wait, concurrency, worker transitions, reservations) | **43 passed** |
-| Full suite, ext4, default color | **352 passed, 11 skipped, 1 warning**, exit 0 |
-| Full suite, ext4, `NO_COLOR=1` | **352 passed, 11 skipped, 1 warning**, exit 0 |
-| Concurrency stress, tmpfs | **100/100** runs passed |
-| Concurrency stress, ext4 | **50/50** runs passed |
+| Targeted regressions (claim/cancel, recovery validation, concurrency, reservations, worker transitions, CLI queue/transcribe/batch, Deno warnings, update) | **134 passed** |
+| Full suite, ext4, default color | **368 passed, 11 skipped, 1 warning**, exit 0 |
+| Full suite, ext4, `NO_COLOR=1` | **368 passed, 11 skipped, 1 warning**, exit 0 |
+| Concurrency stress, ext4 | **50/50** runs passed (predefined mixed force/claim-cancel/reservation selection) |
 | Ruff canonical | **All checks passed** |
 | Syntax (`compileall`) | clean |
-| Build | `local_transcribe-0.8.1` wheel + sdist; wheel `Version: 0.8.1`, entry point `lt = local_transcribe.cli:main` |
-| Isolated CLI smoke | `lt version` **0.8.1**; queue init/add/list/stats and `transcribe --no-wait` worked on a disposable queue |
+| Build | `local_transcribe-0.8.1` wheel + sdist; wheel `Version: 0.8.1`, entry point `lt = local_transcribe.cli:main`, `queue_locks.py` present |
+| Wheel SHA256 | `4837c88d5406ccf0ae5c076111450484117f5ba61e9366be7b7e11ebd6a4238b` (wheel); `5a7c750e548305a4630c57c6b25f9096d47e888dc5545108919dfc3506c69d27` (sdist) |
+| Isolated CLI smoke | `lt version` **0.8.1**; queue init/add/list/stats and `transcribe --no-wait` worked on a disposable queue (3 pending) |
 | Isolated pipx upgrade | 0.8.0 wheel installed, then forced 0.8.1 wheel; `lt version`, module, metadata, and `pip show` all **0.8.1** |
-| Diff hygiene | `git diff --check` clean |
-| Secret scan | 0 hits across 924 added lines; the full-file scan's only match is the pre-existing random-hex token-generator line in `atomic_files.py`, which is not a credential |
 
-Baseline `abdedbe` reproduction: the six ANSI tests fail, both new waiter tests
-fail (terminal returned before metadata), and the deterministic concurrency test
-failed 8/10 tmpfs runs. The new tests therefore exercise the defects rather than
+Baseline reproduction on rejected source `fe18821`: the new/changed test
+selection (claim/cancel, recovery validation, forced repair, keys authority,
+interrupted write, repair helpers) produced **13 failed, 3 passed**, exit 1. The
+three passes are the basic claim-first/cancel-first paths the rejected tree
+already handled. The new assertions therefore exercise the defects rather than
 passing by construction.
 
 ### Evidence
 
 Durable sanitized evidence:
-`~/.local/share/local-transcribe/evidence/20261107T-gate044/` — full pytest
-logs, targeted regressions, stress summaries, build logs, wheel hashes, pipx
-upgrade transcript, CLI smoke, Ruff/compileall, diff check, secret scans,
-baseline reproduction, and NFS skip reasons.
+`~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections-impl/` —
+`baseline-fe18821-new-tests.log`, `targeted.log`, `full-default.log`,
+`full-nocolor.log`, `stress-50.log`, `ruff.log`, `compileall.log`, `build.log`,
+`wheel-sha256.txt`, `cli-smoke.log`, `pipx-install.log`,
+`pipx-upgrade-080-081.log`, and `baseline-import.txt`.
+
+Earlier evidence at `~/.local/share/local-transcribe/evidence/20261107T-gate044/`
+and `.../20261107T-gate044-corrections/` remains historical for `fe18821` and the
+delivery check; it is not reused here.
 
 ### Unavailable checks
 
 Real NFSv3/NLM multi-client tests were not run: the 10
 `tests/test_nfs_integration.py` tests skipped because `LT_NFS_QUEUE_DIR` was not
-set. GPU/ROCm transcription was not run. The opt-in real pipx-install pytest was
-skipped; an equivalent isolated pipx install/upgrade was performed manually.
+set. Local ext4 passes do not prove multi-host NFS/NLM behavior. GPU/ROCm
+transcription was not run. The opt-in real pipx-install pytest was skipped; an
+equivalent isolated pipx install/upgrade was performed manually.
 
 ### Blockers
 
-**Blocked on implementation:** the four review corrections are absent from the
-branch. The branch remains at the rejected revision `fe18821`; review readiness
-is not claimed. Production deployment also remains blocked by the separate task
-043 prerequisites: artifact staging, rollback rehearsal, Minion config/identity,
-and the NFSv4.2 producer decision.
+None for review. Production deployment remains blocked by the separate task 043
+prerequisites: artifact staging, rollback rehearsal, Minion config/identity, and
+the NFSv4.2 producer decision.
 
 ### Next action
 
-Implement the four corrections on `fix/predeploy-queue-gate`, add regression
-tests for each, rerun the targeted regressions and the full gate on the exact
-corrective tree, update the task record and this handoff, then return task 044
-to `review/`. Do not reuse the `fe18821` test results.
+Review the corrective commit on `fix/predeploy-queue-gate`. Do not merge, tag,
+publish, deploy, or clean up branches from this task.

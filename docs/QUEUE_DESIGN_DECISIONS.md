@@ -406,25 +406,54 @@ fail closed, and a crash between link and unlink leaves both names for recovery.
 terminal directory entry whose embedded status does not match that directory,
 which protects against legacy or interrupted entries.
 
-**Recovery prefers the advanced state.** When a crash leaves two names for one
-execution, recovery keeps the later lifecycle state: `processing` over
-`pending`, `retry` or a terminal state over `processing`, and `pending` over
-`retry`. The `pending` + `processing` case is new because the atomic transition
-now publishes the destination before removing the source. Collision behavior in
-`atomic_state_transition()` itself is unchanged.
+**Recovery validates the proposed successor, then deletes.** When a crash leaves
+two names for one execution, recovery must not choose a winner from filename
+existence alone. `_recover_duplicates()` parses every same-named record, checks
+JSON/schema, execution id against the filename, embedded status against the
+directory, source identity, generation, `max_attempts`, and attempt counts, and
+only then selects the unique reachable transition sink. A valid chain must have
+exactly one sink and every record must reach it; malformed, conflicting, cyclic,
+or unreachable copies are left intact and logged as
+`Duplicate recovery left execution … intact`. `recover_processing()` and
+`promote_retries()` skip unresolved ids so repeated recovery cannot lose records
+or create duplicate execution. Valid transitions keep the earlier generation
+safety: `pending → processing` increments attempts, `processing → retry/failed`
+requires an error, cancellation preserves the pre-claim attempt count, and a
+retry promotion preserves the retry's attempts.
 
-**Generation advances are immutable claims.** The concurrent-force failure was
-an application defect, not test timing. Multiple producers could each write
-generation N+1 with a different execution id; a stale `repair_source()` could
-then cancel the execution the final pointer named, leaving zero winners. Each
-advance is now a create-if-absent claim under `keys/.advance/`; exactly one
-producer wins a generation. `read_reservation()` treats the highest claim as the
-authority and `keys/<source>.json` as a materialized cache, so a slow writer
-cannot move readers backwards and a producer that dies after claiming remains
-recoverable. Claims are never deleted; the file count is one small JSON per
-force generation per source. `repair_source()` also skips pending executions
-newer than the reservation, so an older generation cannot cancel a producer that
-is mid-advance.
+**`keys/<source>.json` remains the sole reservation authority.** The earlier
+`.advance` claim ledger is withdrawn: it created a second durable authority that
+existing direct key-file readers and the ref reconciler do not consult.
+`read_reservation()` now reads only `keys/<source-key>.json`, as SPEC §5.1 and
+§6.4 require. Concurrent generation advances and repairs are serialized with a
+short-lived advisory lock (`fcntl.lockf`) plus a per-path in-process thread lock
+under `.locks/`. Lock files are coordination only, contain no queue state, and
+are never removed; removing a lock file after release would let a waiter on the
+old inode race a new opener on a new inode. A writer that bypasses the lock (an
+older client) simply leaves its document in the keys file, and both the
+application and direct readers observe that same document. Compare-and-swap
+helpers re-read after writing and report a lost race instead of overwriting a
+newer pointer.
+
+**Claim and cancellation share one execution lock.** `worker.claim_execution()`
+and `QueueStore.cancel_pending()` both take
+`.locks/executions/<execution-id>.lock`. The first transition wins. If the claim
+publishes `processing/` first, cancellation fails closed with a
+processing-specific `QueueStoreError` and never publishes a contradictory
+`cancelled/` record. If cancellation publishes `cancelled/` first, the claim
+sees no pending source and returns `None`, so the worker does not execute the
+job. An interrupted cancel that left both `pending/` and `cancelled/` is
+resolved only when the cancelled successor validates against the pending record;
+otherwise it raises `AtomicFileError` and leaves both files for inspection. No
+sleep-based synchronization is used.
+
+**Incomplete-reservation repair uses the keys authority.** After a forced
+generation loses its pending execution record, a normal enqueue repairs the
+pointer with `try_update_current_execution()` under the reservation lock. The
+replacement becomes the current execution at the same generation, stays
+claimable, and is not cancelled by an earlier same-generation claim. The repair
+is verified through the real `QueueStore` lifecycle (enqueue → force → delete the
+forced pending record → enqueue → claim).
 
 **ANSI tests assert plain text.** Rich's `Console(force_terminal=True)` styles
 captured output and can split literal substrings. The six affected tests strip
@@ -432,10 +461,14 @@ CSI/SGR escapes before asserting; every behavioral assertion and exit-code
 check is unchanged. This is a test correction, not a change to CLI styling.
 
 **Verification and release.** The fix is a patch release: metadata, changelog,
-and release notes are synchronized to **0.8.1**. The required gate passes on
-ext4 in both default and `NO_COLOR=1` configurations (352 passed, 11 skipped);
-the concurrency file passed 100/100 tmpfs and 50/50 ext4 stress runs; Ruff,
-syntax, build, isolated CLI smoke, and an isolated pipx 0.8.0 → 0.8.1 upgrade
-all passed. Real NFSv3/NLM and GPU checks were not run (no production queue or
-GPU test); the 10 NFS tests skipped without `LT_NFS_QUEUE_DIR`. No tag, publish,
-merge, deployment, or production configuration change was performed.
+and release notes are synchronized to **0.8.1**. On the corrective tree the
+targeted suite passed **134**, the full suite passed **368 passed, 11 skipped,
+1 warning** in both default and `NO_COLOR=1` configurations, and the predefined
+50-run ext4 concurrency stress passed **50/50**. Ruff, `compileall`, package
+build, isolated CLI smoke, and an isolated pipx 0.8.0 → 0.8.1 upgrade all
+passed. The new assertions fail **13 of 16** on the rejected source `fe18821`
+(3 pass), proving they exercise the defects. Real NFSv3/NLM and GPU checks were
+not run (no production queue or GPU test); the NFS tests skipped without
+`LT_NFS_QUEUE_DIR`. No tag, publish, merge, deployment, or production
+configuration change was performed. Local ext4 passes do not prove multi-host
+NFS/NLM behavior.
