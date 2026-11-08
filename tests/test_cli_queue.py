@@ -133,7 +133,7 @@ def test_queue_retry_help_documents_all_failed() -> None:
     assert "lt queue retry" in help_text
 
 
-def test_queue_retry_all_failed(tmp_path: Path, monkeypatch) -> None:
+def test_queue_retry_all_failed(tmp_path: Path, monkeypatch, plain) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     q = tmp_path / "queue"
@@ -163,9 +163,10 @@ def test_queue_retry_all_failed(tmp_path: Path, monkeypatch) -> None:
 
     assert len(store.list_executions(status="failed")) == 2
     r = runner.invoke(app, ["queue", "retry", "--queue-dir", str(q)])
+    out = plain(r.output)
     assert r.exit_code == 0, r.output
-    assert "Retry summary:" in r.output
-    assert "sources=2" in r.output
+    assert "Retry summary:" in out
+    assert "sources=2" in out
     assert len(store.list_executions(status="pending")) == 2
 
 

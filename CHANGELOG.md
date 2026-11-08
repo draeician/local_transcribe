@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-11-07
+
+### Fixed
+- Queue waiters can no longer report a terminal result before the execution's final metadata exists. State transitions publish the destination with its final `status`, `output_path`, or error record in a single atomic `link()`, and `locate_execution` / `wait_for_execution` refuse to trust a terminal directory entry whose embedded status does not match that directory. An interrupted transition is reconciled in favour of the advanced state (`pending` → `processing` → `retry`/terminal), including the `pending` + `processing` and `retry` + `pending` duplicate cases.
+- A pending execution with an unresolved retry, processing, or terminal counterpart can no longer reach the job runner merely because the pending JSON parses. Duplicate recovery validates every copy and leaves malformed or conflicting evidence intact; selection skips those execution ids before priority ordering, and claim revalidates under the execution lock. A blocked high-priority job therefore cannot starve a healthy pending job, and a queue containing only blocked jobs uses the normal idle wait instead of a tight claim-failure loop.
+- Concurrent `--force` enqueues now advance exactly one generation at a time. `keys/<source>.json` remains the sole reservation authority; a short-lived advisory `fcntl.lockf` lock (plus a per-path thread lock) serializes each read-modify-write, and compare-and-swap helpers re-read after writing to detect a cooperating lost race. A slow writer can no longer move the source reservation backwards or leave it pointing at a superseded/cancelled execution. This removes the intermittent `test_concurrent_force_single_current_generation` failure.
+- Claim and producer cancellation share a per-execution advisory lock. Claim-first makes cancel fail closed; cancel-first makes the claim return `None`, so the job is not executed.
+- The six ANSI-sensitive CLI tests assert on plain text stripped of Rich styling instead of failing when `Console(force_terminal=True)` styles captured output. Behavioural assertions are unchanged.
+
+### Compatibility note
+- Direct readers of `keys/<source>.json` remain compatible because the document is still the sole authority. The post-write readback detects only a race that happens before it; a non-cooperating older writer that writes after the readback is not detectable. Mixed-version writer operation is an unresolved deployment constraint — do not run older writers concurrently with this version.
+
 ## [0.8.0] - 2026-11-04
 
 ### Added

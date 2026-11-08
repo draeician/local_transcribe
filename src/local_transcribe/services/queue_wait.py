@@ -62,6 +62,12 @@ def locate_execution(
     Open-to-close revalidation: each candidate is opened, read, and closed.
     Transient OSError / JSON errors are treated as not-yet-visible (attribute
     cache / mid-write), not as permanent failure.
+
+    A file under a terminal state directory is only returned once its embedded
+    ``status`` matches that directory. ``atomic_state_transition`` publishes
+    final metadata atomically, so a mismatch means the entry is mid-publication
+    or a stale copy from an interrupted transition; reporting it would surface
+    a terminal result before ``output_path``/error metadata exists.
     """
     queue_dir = Path(queue_dir)
     name = f"{execution_id}.json"
@@ -73,6 +79,14 @@ def locate_execution(
             if not isinstance(data, dict):
                 continue
             execution = Execution.from_dict(data)
+            if state in TERMINAL_STATUSES and execution.status != state:
+                logger.debug(
+                    "Terminal dir %s has non-final metadata for %s; "
+                    "treating as transient",
+                    state,
+                    path,
+                )
+                continue
             return LocatedExecution(state_dir=state, path=path, execution=execution)
         except FileNotFoundError:
             continue
@@ -221,32 +235,36 @@ def wait_for_execution(
         located = locate_execution(queue_dir, execution_id)
         if located is not None:
             ever_seen = True
-            status = located.execution.status
-            # Prefer directory membership when it disagrees with the field.
-            if located.state_dir in TERMINAL_STATUSES:
-                status = located.state_dir  # type: ignore[assignment]
-            if status == "completed" or located.state_dir == "completed":
-                out = located.execution.output_path
+            state = located.state_dir
+            execution = located.execution
+            # Directory membership is the state authority, but a terminal
+            # directory entry is only trustworthy once its embedded metadata
+            # has been published. locate_execution filters this; keep the
+            # guard here so the waiter can never surface a terminal result
+            # with a stale/missing output path or error record.
+            if state in TERMINAL_STATUSES and execution.status != state:
+                located = None
+            elif state == "completed":
                 return WaitOutcome(
                     status="completed",
-                    execution=located.execution,
-                    output_path=out,
+                    execution=execution,
+                    output_path=execution.output_path,
                     message="Execution completed",
                 )
-            if status == "failed" or located.state_dir == "failed":
-                err = located.execution.error
+            elif state == "failed":
+                err = execution.error
                 detail = err.message if err else "execution failed"
                 category = err.category if err else "failed"
                 return WaitOutcome(
                     status="failed",
-                    execution=located.execution,
+                    execution=execution,
                     output_path=None,
                     message=f"{category}: {detail}",
                 )
-            if status == "cancelled" or located.state_dir == "cancelled":
+            elif state == "cancelled":
                 return WaitOutcome(
                     status="cancelled",
-                    execution=located.execution,
+                    execution=execution,
                     output_path=None,
                     message="Execution cancelled",
                 )

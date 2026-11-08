@@ -254,16 +254,40 @@ def atomic_state_transition(
     dest: Path,
     data: Mapping[str, Any] | dict[str, Any],
 ) -> None:
-    """Exclusive-move execution JSON ``src`` → ``dest``, then write ``data``.
+    """Move execution JSON ``src`` → ``dest`` with final metadata published atomically.
 
-    Order matters for crash safety:
+    Order matters for crash safety and for readers:
 
-    1. :func:`rename_exclusive` — directory membership is the state authority;
-       collision leaves ``src`` untouched.
-    2. :func:`atomic_write_json` — durable metadata update at the new path
-       (tmp + fsync + ``os.replace`` + parent fsync).
+    1. Write ``data`` to a unique temp file in ``dest.parent`` and fsync it.
+    2. :func:`link_publish` that temp to ``dest`` — directory membership and the
+       final metadata become visible in one atomic step, so a reader can never
+       observe a terminal-state path carrying stale pre-transition metadata.
+       Collision leaves ``src`` untouched (fail closed).
+    3. Unlink ``src`` — the execution leaves the old state directory.
+    4. Fsync the destination (and source, when different) parent directories.
 
-    Never copy-then-unlink and never truncate the authoritative file in place.
+    Directory membership remains the state authority. A crash after step 2 but
+    before step 3 leaves both names; recovery resolves the duplicate in favour
+    of the advanced state (``processing`` over ``pending``, ``retry`` or a
+    terminal state over ``processing``, ``pending`` over ``retry``). Never
+    copy-then-unlink and never truncate the authoritative file in place.
     """
-    rename_exclusive(src, dest)
-    atomic_write_json(dest, data)
+    src = Path(src)
+    dest = Path(dest)
+    if not src.is_file():
+        raise FileNotFoundError(str(src))
+
+    if not link_publish_json(dest, data, tmp_dir=dest.parent):
+        raise AtomicFileError(f"Destination already exists: {dest}")
+
+    try:
+        src.unlink()
+    except OSError as exc:
+        # Dest is published with final metadata. Do not remove it; leave both
+        # names for recovery rather than destroying the authoritative copy.
+        raise AtomicFileError(
+            f"Published {dest} but failed to unlink source {src}: {exc}"
+        ) from exc
+
+    if src.parent.resolve() != dest.parent.resolve():
+        fsync_directory(src.parent)
