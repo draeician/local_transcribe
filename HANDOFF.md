@@ -1773,6 +1773,13 @@ Evidence: `~/.local/share/local-transcribe/evidence/20261107T-gate044-correction
 The verification table below applies only to `fe18821` and must not be reused
 for the corrective tree.
 
+`SPEC-queue.md` is also contradicted: `keys/` is the authoritative
+identity/generation store (line 267), only the NLM lock holder may move
+execution files between processing states or write reservation advances that
+imply execution ownership (line 279), incomplete pairs must be repairable
+(lines 354–355), and post-claim checks must verify the reservation is current
+(line 836).
+
 ### Verification (exact results)
 
 Environment: isolated venv `/tmp/opencode/predeploy-gate-venv`, Python 3.12.3,

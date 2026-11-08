@@ -199,6 +199,13 @@ Evidence directory:
 `~/.local/share/local-transcribe/evidence/20261107T-gate044-corrections/`
 (probe scripts, JSON results, git/repository scan, source references, summary).
 
+These findings also conflict with `SPEC-queue.md`: `keys/` is the
+authoritative identity/generation store (line 267), only the NLM lock holder
+may move execution files between processing states or write reservation
+advances that imply execution ownership (line 279), incomplete pairs must be
+repairable (lines 354–355), and post-claim checks must verify the reservation is
+current (line 836).
+
 The earlier gate evidence at
 `~/.local/share/local-transcribe/evidence/20261107T-gate044/` applies only to
 `fe18821` and is not evidence for these corrections.
