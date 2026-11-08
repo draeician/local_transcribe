@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `review` — unresolved-recovery exclusion implemented and verified; awaiting review |
+| **Status** | `done` — approved, final gate passed, merged into `main`; production deployment not authorized |
 | **Branch** | `fix/predeploy-queue-gate` |
 | **Base** | `origin/main` @ `abdedbe88b8b44d24582520264f463bebcc83109` |
 | **Type** | `fix` (patch release 0.8.0 → 0.8.1) |
@@ -15,7 +15,7 @@
 | **Correction commit** | `e62b383cffff24e61eeb9dbae67e0024e15d18d0` (`fix(queue): serialize claim/cancel and validate recovery`) |
 | **Revision 2 commit** | `6aff2837fb86eb17c4c250301783e16dbaa460d1` (`fix(queue): exclude unresolved executions from claim`) |
 | **Superseded revision** | `fe18821c0d5eb63c21a52a138d75c726860d8f31` — historical rejected revision; its gate evidence is not reused |
-| **Correction status** | Implemented on this branch; targeted, full, stress, build, CLI, and pipx gates pass on the corrective tree |
+| **Correction status** | Approved at `084d212364cc1e2c8cdbb8de9fd89baa08cde328`; final pre-merge gate passed; merged into `main` with a non-squash merge |
 
 ## Ownership
 
@@ -336,18 +336,51 @@ unresolved deployment constraint**: older writers must not run concurrently
 with this version. No queue migration, ref change, or production change was
 made to resolve it. Journal correction appended as §21 (history preserved).
 
+## Closure — approved merge (2026-11-08)
+
+**Approval.** ChatGPT approved the feature head
+`084d212364cc1e2c8cdbb8de9fd89baa08cde328` for the task-044 merge/cleanup phase.
+The implementation was not redone.
+
+**Final pre-merge gate on the approved feature tree.** Host `nomnom`, user
+`draeician`, unprivileged, ext4 worktree, isolated `HOME`/`XDG_*`/`TMPDIR`,
+development venv `/tmp/opencode/predeploy-gate-venv`.
+
+| Check | Result | Exit |
+|-------|--------|------|
+| Canonical Ruff (`python -m ruff check --config pyproject.toml src tests`) | **All checks passed** | 0 |
+| Full pytest on ext4 (`python -m pytest -q`) | **377 passed, 11 skipped, 1 warning** | 0 |
+| Diff hygiene (`git diff --check origin/main...HEAD`) | clean | 0 |
+| Version consistency (`pyproject.toml`, `__init__.py`, `project_spec.md`, `CHANGELOG.md`, `WHATS_NEW.md`) | **0.8.1** everywhere | 0 |
+| Secret scan of `origin/main...HEAD` delta | no matches | 0 |
+
+Evidence: `~/.local/share/local-transcribe/evidence/20261108T-gate044-merge/`
+(`ruff.log`, `full-pytest.log`, `diff-check.log`, `version-consistency.log`,
+`secret-scan.log`).
+
+**Merge intent and result.** Merge the complete feature branch into `main` with
+a normal non-squash `--no-ff` merge. The implementation history
+(`bff5ca6`, `e62b383`, `6aff283`, and this closure commit) is preserved as
+ancestry; no history is rewritten or squashed.
+
+**Production deployment remains NOT authorized.** Task 043 prerequisites
+(artifact staging, rollback rehearsal, Minion config/identity, NFSv4.2 producer
+decision) and the mixed-version writer constraint are unchanged. No tag,
+release, package publication, deployment, service action, or production change
+is authorized by this closure.
+
 ## Blockers
 
-None for review. Production deployment remains blocked by the separate task 043
-prerequisites (artifact staging, rollback rehearsal, Minion config/identity,
-NFSv4.2 producer decision), plus the unresolved mixed-version writer constraint
-above: older producers must not write `keys/<source>.json` concurrently with
-0.8.1.
+Production deployment remains blocked by the separate task 043 prerequisites
+(artifact staging, rollback rehearsal, Minion config/identity, NFSv4.2 producer
+decision), plus the unresolved mixed-version writer constraint above: older
+producers must not write `keys/<source>.json` concurrently with 0.8.1. These do
+not block the approved merge into `main`.
 
 ## Next action
 
-Review the revision-2 commit on `fix/predeploy-queue-gate`. Do not merge, tag,
-publish, deploy, or clean up branches from this task.
+None for task 044. The approved feature is merged into `main`; deployment
+approval remains a separate task-043 gate.
 
 ## Coder notes
 

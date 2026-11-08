@@ -1957,3 +1957,51 @@ with 0.8.1.
 
 Review the revision-2 commit on `fix/predeploy-queue-gate`. Do not merge, tag,
 publish, deploy, or clean up branches from this task.
+
+## Task 044 closure — approved merge/cleanup (2026-11-08, OpenCode)
+
+### Approval
+
+ChatGPT approved feature head
+`084d212364cc1e2c8cdbb8de9fd89baa08cde328` for the task-044 merge/cleanup
+phase. No implementation work was redone.
+
+### Final pre-merge gate (approved feature tree)
+
+Host `nomnom`, user `draeician`, unprivileged; ext4 worktree; isolated
+`HOME`/`XDG_*`/`TMPDIR`; development venv
+`/tmp/opencode/predeploy-gate-venv`.
+
+| Check | Result |
+|-------|--------|
+| Canonical Ruff | **All checks passed** |
+| Full pytest on ext4 | **377 passed, 11 skipped, 1 warning** |
+| `git diff --check origin/main...HEAD` | clean |
+| Version consistency | **0.8.1** in `pyproject.toml`, `__init__.py`, `project_spec.md`, `CHANGELOG.md`, `WHATS_NEW.md` |
+| Secret scan of branch delta | no matches |
+
+Evidence: `~/.local/share/local-transcribe/evidence/20261108T-gate044-merge/`.
+
+### Merge and preservation
+
+Task 044 moves from `review/` to `done/` with `Status: done`. The complete
+feature branch is merged into `main` with a normal non-squash `--no-ff` merge;
+no history is rewritten or squashed. The implementation commits `bff5ca6`,
+`e62b383`, and `6aff283`, plus the task closure, remain ancestors of `main`.
+The task-044 implementation history in this file and the Decision Journal is
+preserved.
+
+### Deployment not authorized
+
+Production deployment remains **NOT authorized**. Task 043 prerequisites
+(artifact staging, rollback rehearsal, Minion config/identity, NFSv4.2 producer
+decision) and the mixed-version writer constraint (older producers must not
+write `keys/<source>.json` concurrently with 0.8.1) are unchanged. No tag,
+release, package publication, deployment, service action, or production change
+was performed.
+
+### Cleanup
+
+After remote `main` verification: the task-044 worktree and local/remote
+feature branches are removed, and any task-044 WIP marker is removed. Task 043's
+worktree, branch, and evidence are not touched.

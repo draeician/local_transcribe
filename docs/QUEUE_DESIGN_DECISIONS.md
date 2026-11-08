@@ -523,3 +523,32 @@ conflicting copy appearing between selection and claim. On the reviewed source
 `60f774f` all nine cases failed (executed the unresolved job, starved the
 healthy job, or entered a 201-selection tight loop). Details and full gate
 results are recorded in task 044 and `HANDOFF.md`.
+
+---
+
+## 22. Task 044 approved and merged (2026-11-08)
+
+**Approval.** ChatGPT approved feature head
+`084d212364cc1e2c8cdbb8de9fd89baa08cde328` for the task-044 merge/cleanup
+phase. The implementation was not redone.
+
+**Final pre-merge gate.** On the approved feature tree (ext4 worktree,
+unprivileged `nomnom`, isolated `HOME`/`XDG_*`/`TMPDIR`): canonical Ruff **All
+checks passed**; full pytest **377 passed, 11 skipped, 1 warning**; `git diff
+--check origin/main...HEAD` clean; `0.8.1` consistent across `pyproject.toml`,
+`src/local_transcribe/__init__.py`, `project_spec.md`, `CHANGELOG.md`, and
+`docs/WHATS_NEW.md`; secret scan of the branch delta **no matches**. Evidence:
+`~/.local/share/local-transcribe/evidence/20261108T-gate044-merge/`.
+
+**Merge intent.** Merge the complete feature branch into `main` with a normal
+non-squash `--no-ff` merge. No history is rewritten or squashed.
+`bff5ca6` (atomic terminal metadata), `e62b383` (claim/cancel serialization and
+validated recovery), `6aff283` (unresolved-recovery exclusion), and the task
+closure remain ancestors of `main`. Task 044 moves from `review/` to `done/`.
+
+**Deployment is still not authorized.** The merge does not authorize a tag,
+release, package publication, deployment, service action, or production change.
+Production remains blocked by task 043 prerequisites (artifact staging, rollback
+rehearsal, Minion config/identity, NFSv4.2 producer decision) and by the
+mixed-version writer constraint in §21: older producers must not write
+`keys/<source>.json` concurrently with 0.8.1.
