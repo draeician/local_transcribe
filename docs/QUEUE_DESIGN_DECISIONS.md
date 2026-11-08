@@ -648,3 +648,70 @@ Production remains blocked by task 043 prerequisites (artifact staging, rollback
 rehearsal, Minion config/identity, NFSv4.2 producer decision) and by the
 mixed-version writer constraint in §21: older producers must not write
 `keys/<source>.json` concurrently with 0.8.1.
+
+## 23. Task 043 refresh: 0.8.1 artifact-first rollback and mixed-version cutover rule (2026-11-08)
+
+**Candidate moved to 0.8.1.** The task-043 candidate is now `local_transcribe`
+**0.8.1** at `f147340f9c6e4f36da10618c7abb947bd491fccb`. The task branch was
+reconciled by a **normal merge** of `origin/main` into the branch (no rebase, no
+force-push), preserving both histories; the head is
+`1343b3badef6c199840a7451930ef892ed6fd95f`. The earlier 0.8.0 / `abdedbe`
+candidate and its failed-gate conclusions are retained as history and marked
+superseded, not deleted.
+
+**Artifact built from the exact release commit.** The deploy artifact was built
+from a detached worktree at `f147340`, not from the docs branch, so the shipped
+bytes correspond to the release commit. Wheel
+`local_transcribe-0.8.1-py3-none-any.whl` SHA256
+`3b05384388bad18a1d2bdb3eadd2838c83256bda047eaf3fee04b76f4a16ff3d`; sdist
+`b79124cf0b236e970c362bca6e4c6b5118f2c36438a65983e8da563fd9844004`. A later
+verification build from the reconciled tree is content-identical (48/48 wheel
+members) but has a different archive hash because wheel files embed timestamps;
+the **staged** wheel remains the deployment artifact.
+
+**Rollback is captured-bytes-first, not rebuilt-wheel-first.** A rebuilt 0.7.0
+wheel (`bc6eae40...`) is used only as a representative rehearsal baseline and is
+not claimed to equal installed production bytes. The authoritative rollback
+source is the captured installed 0.7.0 tree (Aether
+`62d4a74e...`, Minion `28e1e495...`) plus, on Aether, the preserved CTranslate2
+ROCm wheel (`f4790b7c...`) and the ROCm SDK installed-trees tarball
+(`12a1c8be...`, 890,062,815 bytes, 3,359 files). Both hosts rehearsed restoring
+those captured bytes and then upgrading to 0.8.1 in disposable environments.
+
+**Two rehearsal corrections are now required procedure.** First, `pipx inject`
+**must use `--force`** when replacing the PyPI CPU `ctranslate2` with the ROCm
+wheel; without it pipx reports "already injected" and leaves the CPU build in
+place. Second, the HF `faster-whisper-tiny` cache is Xet-backed (`model.bin` is a
+symlink to an out-of-directory blob), so offline rehearsals must copy a **flat**
+model directory; copying only the model directory yields
+`IncompleteSnapshotError`. The Aether ROCm rehearsal passed all four stages
+(0.7.0 → 0.8.1 → 0.7.0 → 0.8.1) with `gpu_backend=amd-rocm`, one GPU, and a
+non-empty transcript each time; production was verified untouched afterward.
+
+**Mixed-version writer rule.** `keys/<source-key>.json` is the sole reservation
+authority and is written only through `QueueStore.enqueue`/force/repair and the
+`source_reservations` helpers. The worker claim path only reads reservations.
+On the current hosts the only `keys/` writer is the Minion `lt` (manual and via
+ref-api's external-CLI fallback); Aether's worker is a reader because
+`watch_legacy_pending: false`; Nomnom has no producer. Therefore the cutover is:
+**upgrade the Aether worker first** (it reads 0.7.0 records fine — a 0.8.1 scan
+of 8,290 keys and 6,481 state records found 0 errors), then **quiesce Minion
+producers, replace Minion `lt`, and restart `ref-api`**. A 0.7.0 producer must
+never write concurrently with a 0.8.1 producer; do not add a second producer
+host until it is 0.8.1, and do not run admin writes (`repair`/`import`/`force`)
+during the window.
+
+**Minion NFSv4.2 is acceptable for the producer role only.** `queue add` resolves
+the path/UUID and publishes atomically; it does not call the worker's NFSv3/NLM
+mount gate. NFSv3/NLM remains required for the worker role. Minion keeps
+`expected_nfs_version: 3` as a deliberate worker-role guard even after fixing the
+stale `queue.path`/`expected_uuid`, because producers ignore that field and the
+guard prevents accidentally starting a worker on NFSv4.2. No production producer
+write was made during the read-only phase; the post-cutover test URL is required.
+
+**Gates and authorization.** The refreshed tree passed canonical Ruff, full
+pytest (377 passed, 11 skipped in both color modes on ext4), diff check, version
+consistency, build verification, and secret scan. Task 043 moves to `review/`.
+Production cutover — service stop/start, pipx replacement, live config edit, or
+a production test enqueue — remains **not authorized** and requires the explicit
+window described in the task record.

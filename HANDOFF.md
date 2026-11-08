@@ -2201,3 +2201,81 @@ was performed.
 After remote `main` verification: the task-044 worktree and local/remote
 feature branches are removed, and any task-044 WIP marker is removed. Task 043's
 worktree, branch, and evidence are not touched.
+
+## Task 043 refresh — 0.8.1 staging, rollback baselines, isolated rehearsals (2026-11-08, OpenCode)
+
+### Branch and candidate
+
+- Branch `chore/three-host-upgrade-preflight`, head
+  `1343b3badef6c199840a7451930ef892ed6fd95f`, a **normal merge** of
+  `origin/main` `f147340` into the task branch (no rebase, no force-push). Both
+  histories are preserved.
+- Candidate is `local_transcribe` **0.8.1** at
+  `f147340f9c6e4f36da10618c7abb947bd491fccb`. The prior 0.8.0 / `abdedbe`
+  candidate and failed-gate conclusions are marked superseded in the task
+  record, not deleted.
+- Task record moved from `.crules/tasks/wip/` to `.crules/tasks/review/`.
+
+### Artifact and rollback inventory
+
+| Item | SHA256 |
+|------|--------|
+| 0.8.1 wheel (deploy artifact, built from `f147340`) | `3b05384388bad18a1d2bdb3eadd2838c83256bda047eaf3fee04b76f4a16ff3d` |
+| 0.8.1 sdist | `b79124cf0b236e970c362bca6e4c6b5118f2c36438a65983e8da563fd9844004` |
+| Aether captured 0.7.0 installed tree | `62d4a74e30b137d23cb556b19deba883550bf9dbbcafad4353d35383ddee6152` |
+| Aether ROCm SDK installed trees (890,062,815 bytes) | `12a1c8be41621ef111d1458f88026b29597e629ca425479ea20b1bba77fb6266` |
+| Minion captured 0.7.0 installed tree | `28e1e495f4cdb713f4bb67f5e3092c71309243307ed21704c04831329ecbd14e` |
+| Representative 0.7.0 rehearsal wheel | `bc6eae40d9b45f708d87c7f98d8f2410df7c5ad6330e85d5869dfb7281bc2e31` |
+
+Durable set: `~/.local/share/local-transcribe/deploy-artifacts/20261108T1624Z-v0.8.1/`
+(852M, 130 files, mirrored on Minion/Aether). The ROCm tarball is mirrored to
+Nomnom for redundancy. `sha256sum -c SHA256SUMS` passed on all three hosts.
+
+### Rehearsal results
+
+- **Minion:** representative-wheel 0.7.0 → 0.8.1 → 0.7.0 → 0.8.1 and
+  captured-bytes restore + 0.8.1 upgrade both passed on disposable environments
+  and disposable ext4 queues. Production untouched.
+- **Aether ROCm:** 0.7.0 → 0.8.1 → 0.7.0 → 0.8.1 passed with
+  `gpu_backend=amd-rocm`, one GPU, and a non-empty transcript each stage; the
+  captured-bytes restore + 0.8.1 upgrade also passed. Production verified
+  untouched (`lt 0.7.0`, worker PID `910154`, `libhsa` hash unchanged,
+  `ctranslate2 4.8.3`).
+- Rehearsal found two required corrections: `pipx inject --force` is needed to
+  replace the PyPI CPU `ctranslate2` with the ROCm wheel, and the Xet-backed
+  tiny model must be copied as a flat model directory.
+
+### Writer cutover rule and NFS conclusion
+
+- Only Minion `lt` writes `keys/` (manual and ref-api fallback); Aether's worker
+  is a reader (`watch_legacy_pending: false`); Nomnom has no producer.
+- Order: upgrade Aether worker first, then quiesce Minion producers, replace
+  Minion `lt`, restart `ref-api`. Never run a 0.7.0 producer concurrently with a
+  0.8.1 producer; no admin writes during the window.
+- 0.8.1 read the production queue cleanly: 8,290/8,290 keys valid and 6,481
+  state records valid, 0 errors.
+- Minion NFSv4.2 is acceptable for the **producer** role only; NFSv3/NLM remains
+  required for the worker. Keep `expected_nfs_version: 3` as a worker-role
+  guard; producers ignore it.
+
+### Gates on the refreshed tree
+
+Canonical Ruff `ruff check --config pyproject.toml src tests`: All checks
+passed. Full pytest on ext4: **377 passed, 11 skipped, 1 warning** in both
+`NO_COLOR=1` and default. `git diff --check` clean. Version 0.8.1 consistent.
+Build verification succeeds and the wheel is content-identical to the staged
+artifact (48/48 files). Secret scan no matches. Evidence:
+`~/.local/share/local-transcribe/evidence/20261108T-gate043-refresh/`.
+Root `ruff check .` still reports 52 pre-existing findings in root helper
+scripts outside canonical scope.
+
+### Blockers and next authorization
+
+Production cutover is **not authorized**; nothing on production was stopped,
+replaced, reconfigured, or deployed. Minion `lt` and the Aether worker remain
+0.7.0, and Minion's live config is still stale (ref-api currently falls back to
+the legacy pending file). The next phase needs an explicit window authorizing:
+Aether worker stop/start plus pipx/ROCm replacement; Minion config backup/edit,
+`lt` replacement, and `ref-api` restart; and one known test URL enqueued into
+the production queue for post-cutover verification. Nomnom remains without
+`lt`/worker. No tag, release, publication, merge, or deployment was performed.
