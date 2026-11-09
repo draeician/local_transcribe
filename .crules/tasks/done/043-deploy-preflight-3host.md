@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `review` — preflight, staging, and isolated rehearsals complete; production cutover **not authorized** |
+| **Status** | `done` — approved by ChatGPT; final pre-merge gate passed; merged into `main`; production cutover **not authorized and not part of this merge** |
 | **Branch** | `chore/three-host-upgrade-preflight` |
 | **Reviewed head** | `1343b3badef6c199840a7451930ef892ed6fd95f` (normal merge of `origin/main` `f147340` into the task branch) |
 | **Base** | `origin/main` @ `f147340f9c6e4f36da10618c7abb947bd491fccb` |
@@ -1004,3 +1004,68 @@ Evidence:
   `.../20261108T1624Z-rollback-rehearsal-aether-evidence/`.
 - Fresh gate evidence:
   `~/.local/share/local-transcribe/evidence/20261108T-gate043-refresh/`.
+
+---
+
+## Closure 2026-11-08 — approved preflight merge and cleanup
+
+**Approval.** ChatGPT approved task 043 for the preflight merge and cleanup
+phase. Approval covered only: final pre-merge verification, the `review` →
+`done` transition, a normal non-squash merge into `main`, pushing `main`,
+cleanup of the task-043 branch/worktree, and the required lifecycle
+documentation. It did **not** authorize production deployment.
+
+**Approved head and base.** Remote feature head
+`1758e4b9a4df9753a3d4a5b248dadb425f9120e4`; expected and verified `origin/main`
+`f147340f9c6e4f36da10618c7abb947bd491fccb`. The worktree had no unintended
+changes before the gate.
+
+### Final pre-merge verification (fresh, not reused)
+
+Environment: `nomnom`, user `draeician`, unprivileged; worktree
+`/tmp/opencode/local_transcribe-preflight` on ext4; venv
+`/tmp/opencode/task043-gate-venv` (Python 3.12.3, pytest 9.2.0, Ruff 0.17.4,
+editable install of this tree at 0.8.1).
+
+| Check | Command | Result | Exit |
+| --- | --- | --- | --- |
+| Canonical Ruff | `ruff check --config pyproject.toml src tests` | **All checks passed** | 0 |
+| Full pytest (ext4, `NO_COLOR=1`) | `python -m pytest -q` | **377 passed, 11 skipped, 1 warning** (85.07 s) | 0 |
+| Working-tree whitespace | `git diff --check` | no output | 0 |
+| Branch whitespace | `git diff --check origin/main...HEAD` | no output | 0 |
+| Version consistency | `pyproject.toml`, `__init__.py`, `project_spec.md`, `CHANGELOG.md`, `docs/WHATS_NEW.md` | all **0.8.1** | 0 |
+| Secret scan (branch delta) | `git diff --unified=0 f147340...HEAD` + `git grep` over 3 changed files | 8 diff / 15 changed-file matches, all policy prose or scan-command text; **0 credential-shape matches** | reviewed |
+
+Evidence: `~/.local/share/local-transcribe/evidence/20261108T-gate043-merge/`.
+
+### Artifact and rehearsal facts carried into the merge
+
+- **0.8.1 wheel SHA256:**
+  `3b05384388bad18a1d2bdb3eadd2838c83256bda047eaf3fee04b76f4a16ff3d`
+  (sdist `b79124cf0b236e970c362bca6e4c6b5118f2c36438a65983e8da563fd9844004`).
+- **Minion rehearsal:** passed from both the representative 0.7.0 wheel and the
+  captured installed 0.7.0 tree; upgrade to 0.8.1, rollback, and re-upgrade
+  exercised `lt version` and queue commands against disposable queues only.
+- **Aether ROCm rehearsal:** passed all four stages (0.7.0 → 0.8.1 → 0.7.0 →
+  0.8.1) plus a captured-bytes restore, with `gpu_backend=amd-rocm`, one GPU,
+  and a non-empty transcript each stage; production verified untouched
+  afterward.
+- **Remaining production limitations:** Minion live config is still stale
+  (path/UUID); Minion `lt` and the Aether worker remain 0.7.0; no producer write
+  was exercised against the production NFSv4.2 queue; the documented cutover
+  window and explicit operator authorization are still required.
+
+### Merge and cleanup
+
+Merged the complete feature branch into `main` with a normal non-squash,
+non-rewriting merge; pushed `main`; verified the remote `main`, the `done/`
+location of this task, task 044 still under `done/`, the 0.8.1 source version,
+and the preflight commit ancestry. Then removed the feature worktree and deleted
+the local and remote feature branch, and removed the local WIP marker. Durable
+deployment/rollback artifacts and evidence were retained for the production
+window.
+
+**Production cutover is NOT part of this merge.** No Aether worker stop/start,
+Aether pipx change, Minion config edit, Minion pipx change, ref-api restart,
+production enqueue, NFS/ROCm change, tag, publication, release, or Nomnom
+installation was performed.

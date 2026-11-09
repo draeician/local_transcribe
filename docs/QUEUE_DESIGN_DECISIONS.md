@@ -715,3 +715,46 @@ consistency, build verification, and secret scan. Task 043 moves to `review/`.
 Production cutover — service stop/start, pipx replacement, live config edit, or
 a production test enqueue — remains **not authorized** and requires the explicit
 window described in the task record.
+
+## 24. Task 043 approved and merged as a preflight record (2026-11-08)
+
+**Approval.** ChatGPT approved the task-043 preflight merge at remote feature
+head `1758e4b9a4df9753a3d4a5b248dadb425f9120e4`, based on `origin/main`
+`f147340f9c6e4f36da10618c7abb947bd491fccb`. The approval covers only the final
+pre-merge gate, the `review` → `done` transition, a normal non-squash merge into
+`main`, pushing `main`, branch/worktree cleanup, and lifecycle documentation. It
+does **not** authorize production deployment.
+
+**Final pre-merge gate (fresh, not reused).** On `nomnom`, unprivileged, in an
+ext4 worktree with a fresh venv: canonical Ruff **All checks passed**; full
+pytest **377 passed, 11 skipped, 1 warning**; `git diff --check` and
+`git diff --check origin/main...HEAD` clean; version **0.8.1** consistent across
+`pyproject.toml`, `src/local_transcribe/__init__.py`, `project_spec.md`,
+`CHANGELOG.md`, and `docs/WHATS_NEW.md`; branch-delta secret scan reviewed with
+no credential-shape match. Evidence:
+`~/.local/share/local-transcribe/evidence/20261108T-gate043-merge/`.
+
+**What is being merged is evidence, not a deployment.** The deploy artifact is
+the 0.8.1 wheel with SHA256
+`3b05384388bad18a1d2bdb3eadd2838c83256bda047eaf3fee04b76f4a16ff3d`. The Minion
+rehearsal passed from both the representative wheel and the captured installed
+0.7.0 tree, including upgrade, rollback, and re-upgrade on disposable queues.
+The Aether ROCm rehearsal passed 0.7.0 → 0.8.1 → 0.7.0 → 0.8.1 plus a
+captured-bytes restore, with `gpu_backend=amd-rocm`, one GPU, and a non-empty
+transcript each stage. Production was verified untouched afterward.
+
+**Remaining production limitations are unchanged.** Minion's live config is
+still stale (path/UUID); Minion `lt` and the Aether worker remain 0.7.0; no
+producer write was exercised against the production NFSv4.2 queue; and the
+mixed-version writer rule still requires a quiesced, authorized cutover window.
+This merge does not stop or start the Aether worker, change either host's pipx
+environment, edit the Minion config, restart ref-api, enqueue into production,
+change NFS/ROCm, tag, publish, release, or install anything on Nomnom.
+
+**Merge and cleanup.** The complete feature branch was merged into `main` with a
+normal non-squash, non-rewriting merge. After verifying the remote `main`, the
+`done/` task location, task 044 still under `done/`, the 0.8.1 source version,
+and the preflight ancestry, the feature worktree was removed, the local and
+remote feature branch deleted, and the WIP marker removed. Durable
+deployment/rollback artifacts and evidence were retained for the production
+window.

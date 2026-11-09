@@ -2279,3 +2279,61 @@ Aether worker stop/start plus pipx/ROCm replacement; Minion config backup/edit,
 `lt` replacement, and `ref-api` restart; and one known test URL enqueued into
 the production queue for post-cutover verification. Nomnom remains without
 `lt`/worker. No tag, release, publication, merge, or deployment was performed.
+
+## Task 043 closure — approved preflight merge and cleanup (2026-11-08, OpenCode)
+
+### Approval and scope
+
+ChatGPT approved task 043 for the preflight merge and cleanup phase at remote
+feature head `1758e4b9a4df9753a3d4a5b248dadb425f9120e4`, based on
+`origin/main` `f147340f9c6e4f36da10618c7abb947bd491fccb`. Approval covered only
+the final pre-merge verification, the `review` → `done` transition, a normal
+non-squash merge into `main`, pushing `main`, branch/worktree cleanup, and this
+lifecycle documentation. **Production deployment is not authorized.**
+
+### Final pre-merge gate (fresh)
+
+Host `nomnom`, user `draeician`, unprivileged; ext4 worktree
+`/tmp/opencode/local_transcribe-preflight`; fresh venv
+`/tmp/opencode/task043-gate-venv` (Python 3.12.3, pytest 9.2.0, Ruff 0.17.4).
+
+| Check | Result | Exit |
+| --- | --- | --- |
+| Canonical Ruff (`ruff check --config pyproject.toml src tests`) | All checks passed | 0 |
+| Full pytest on ext4 (`NO_COLOR=1 python -m pytest -q`) | **377 passed, 11 skipped, 1 warning** (85.07 s) | 0 |
+| `git diff --check` and `git diff --check origin/main...HEAD` | no output | 0 |
+| Version consistency (`pyproject.toml`, `__init__.py`, `project_spec.md`, `CHANGELOG.md`, `docs/WHATS_NEW.md`) | all **0.8.1** | 0 |
+| Secret scan of the branch delta (3 changed files) | 8 diff / 15 changed-file matches, all policy prose or scan-command text; 0 credential-shape matches | reviewed |
+
+Evidence: `~/.local/share/local-transcribe/evidence/20261108T-gate043-merge/`.
+
+### Artifact, rehearsal, and remaining limits
+
+- Deploy artifact: `local_transcribe-0.8.1-py3-none-any.whl`, SHA256
+  `3b05384388bad18a1d2bdb3eadd2838c83256bda047eaf3fee04b76f4a16ff3d`;
+  sdist `b79124cf0b236e970c362bca6e4c6b5118f2c36438a65983e8da563fd9844004`.
+- Minion rehearsal passed from the representative wheel and from the captured
+  installed 0.7.0 tree, including upgrade, rollback, and re-upgrade against
+  disposable queues.
+- Aether ROCm rehearsal passed 0.7.0 → 0.8.1 → 0.7.0 → 0.8.1 and a
+  captured-bytes restore, with `gpu_backend=amd-rocm`, one GPU, and a non-empty
+  transcript each stage; production was verified untouched afterward.
+- Remaining production limitations: Minion's live config is still stale
+  (path/UUID); Minion `lt` and the Aether worker remain 0.7.0; no producer write
+  was exercised against the production NFSv4.2 queue. A separate authorized
+  cutover window is still required.
+
+### Merge and cleanup
+
+The complete feature branch was merged into `main` with a normal non-squash,
+non-rewriting merge and pushed. Verification confirmed the remote `main`, the
+task under `done/`, task 044 still under `done/`, the 0.8.1 source version, and
+the preflight commit ancestry. The feature worktree was then removed, the local
+and remote feature branch deleted, and the local WIP marker removed. Durable
+deployment/rollback artifacts and evidence were retained for the production
+window.
+
+**Production cutover is not part of this merge.** No Aether worker stop/start,
+Aether pipx change, Minion config edit, Minion pipx change, ref-api restart,
+production enqueue, NFS/ROCm change, tag, publication, release, or Nomnom
+installation was performed.
