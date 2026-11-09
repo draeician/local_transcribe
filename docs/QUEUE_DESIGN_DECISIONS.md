@@ -388,6 +388,102 @@ emitted the Deno warning. No tests or Ruff configuration were weakened.
 
 ---
 
+## 18. Three-host upgrade preflight is read-only and artifact-first (task 043, 2026-11-07)
+
+**Decision.** Treat the 0.8.0 rollout to `nomnom`, `minion-26`, and `aether` as
+a separate, explicitly authorized task. Task 043 only collects evidence and
+proposes commands; it performs no install, service action, queue mutation, or
+configuration change. Rollback artifacts must exist **before** any host is
+upgraded.
+
+**Why.** The three hosts are not interchangeable. They differ in OS, Python,
+mount version, installed provenance, service role, and hardware. `aether` is the
+sole NLM lock holder and is actively processing a live queue; `minion-26` runs
+`ref-api` but no worker and mounts the queue over NFSv4.2; `nomnom` has no
+`local-transcribe` install at all. A single generic upgrade command would
+silently break at least one of them.
+
+**Provenance is a prerequisite, not a detail.** `aether`'s 0.7.0 install points
+at the deleted `file:///tmp/lt-branch`, so there is no on-host rollback wheel.
+`minion-26`'s 0.7.0 install points at commit `25b89f1`, so a reproducible 0.7.0
+wheel can be rebuilt from that commit. The preflight therefore requires an
+installed-tree tarball on `aether` and a rebuilt wheel on both hosts before
+cutover.
+
+**ROCm injection is state, not dependencies.** `aether` carries injected
+`ctranslate2 4.8.3`, `rocm-sdk-core`, and `rocm-sdk-libraries-gfx1151` packages
+plus a preserved wheel cache. Because 0.8.0 has no dependency changes versus
+0.7.0, the upgrade installs only the main package with `--no-deps` into the
+existing venv and verifies the injected set afterwards. Recreating the venv
+without re-injecting would silently downgrade the GPU path to CPU.
+
+**Mount version gates roles.** `local-transcribe` expects NFSv3. `minion-26`
+mounts `vers=4.2`, so it cannot be a worker and `queue doctor` will reject it.
+Producer-only enqueue on NFSv4.2 is not validated by the tooling and is not
+approved here. Remounting is a privileged, separately approved change.
+
+**Ordering.** Rollback artifacts → `minion-26` (no worker, lowest risk) →
+`aether` (idle window, sole lock holder) → `nomnom` (fresh install only if
+needed). `ref` needs no upgrade: both `ref-api` and the pipx CLI already run
+`1.6.12b1.dev129+g80c6e3791` from the audited wheel recorded at `5159878`.
+
+**Explicit non-goals.** No worker is created on `nomnom` or `minion-26`. No
+queue counters are reset. No archive files are edited. No `lt update`. No
+release, tag, merge, or branch cleanup.
+
+---
+
+## 19. Review correction: task 043 gate failed; rollback is artifact-first (2026-11-07)
+
+**Correction.** Section 18's conclusion that the required gate passed, and the
+move of task 043 to `review/`, were wrong. The full suite fails on the branch
+**and** on untouched `origin/main`. Task 043 is back in `wip/` as blocked, with
+a local-only WIP marker, until the required checks pass honestly.
+
+**Gate is failed, not passed.** In an isolated venv (Python 3.12.3, pytest
+9.0.3) with isolated `XDG_*`/`HOME`, `python -m pytest -q` gives **7 failed,
+335 passed, 11 skipped** in the default environment on ext4, on both branch and
+baseline; with `NO_COLOR=1` on ext4 it gives **1 failed, 341 passed, 11
+skipped**, again on both. A tmpfs run (1 failure on branch, 0 on baseline) is
+diagnostic only and must not be cited as a pass. Three distinct classes:
+six ANSI-output failures from `Console(force_terminal=True)`; one ext4
+foreground-wait race in `test_wait_completed_via_foreground` caused by
+`atomic_state_transition()` renaming before writing metadata; and one
+nondeterministic concurrency flake. Baseline reproduction explains the failures
+but does not make the gate pass. Fixing them is a separately authorized code
+task; this documentation task changes no source or tests.
+
+**Artifacts before upgrade.** Aether's rollback baseline is the captured
+installed bytes (82 files / 876,760 bytes, source hashes, dist-info, shims,
+interpreter, pipx metadata, injected ROCm packages, ROCm cache), not a rebuilt
+0.7.0 wheel. A rebuilt wheel is not equivalent because its version matches;
+equivalence must be proven by comparing source hashes and dist-info separately
+from generated caches and metadata. Restoration uses a clean fresh venv rather
+than extraction over upgraded site-packages, and must re-inject the pinned ROCm
+packages. Restoration rehearsal is required future staging work and was not
+performed.
+
+**One version-aware upgrade method.** Clean replace with the exact pinned wheel:
+`pipx uninstall local-transcribe` → `pipx install <0.8.0 wheel> --python
+<pinned>` → re-inject pinned ROCm on Aether. All preservation checks precede
+any production restart; explicit abort conditions apply; versions alone are not
+a gate. The worker is stopped first, then the lock and `processing/` are
+checked, to avoid the race between observing an idle worker and stopping it.
+`worker.lock` contents and heartbeat are advisory only; `lslocks` proves lock
+ownership. Historical ABRT/OOM events are separated from current failures and
+are bounded evidence, not a new troubleshooting task.
+
+**Host roles.** Minion's `ref-api`/`ref-cli` already match the candidate and stay
+unchanged; `--queue-dir` does not override `expected_uuid`, so the `lt` fallback
+cannot reach the production queue until the config is explicitly corrected, and
+NFSv4.2 producer compatibility remains unresolved (no worker, no remount).
+Nomnom's reported config disappearance is unsubstantiated (the listing belonged
+to `~/.config/ref/`), the directory was not recreated, and a fresh CLI install
+is a separate decision. Aether's queue progress is proven by full execution IDs
+plus transcript files and hashes, not by lock-file contents.
+
+**Status.** Blocked. A pushed blocked checkpoint is not approval; the task moves
+to `review/` only when all required checks and correction criteria pass.
 ## 20. Pre-deploy gate remediation: atomic terminal metadata and generation claims (task 044, 2026-11-07)
 
 **Numbering.** Sections 18 and 19 are reserved by the task-043 preflight
@@ -552,3 +648,113 @@ Production remains blocked by task 043 prerequisites (artifact staging, rollback
 rehearsal, Minion config/identity, NFSv4.2 producer decision) and by the
 mixed-version writer constraint in §21: older producers must not write
 `keys/<source>.json` concurrently with 0.8.1.
+
+## 23. Task 043 refresh: 0.8.1 artifact-first rollback and mixed-version cutover rule (2026-11-08)
+
+**Candidate moved to 0.8.1.** The task-043 candidate is now `local_transcribe`
+**0.8.1** at `f147340f9c6e4f36da10618c7abb947bd491fccb`. The task branch was
+reconciled by a **normal merge** of `origin/main` into the branch (no rebase, no
+force-push), preserving both histories; the head is
+`1343b3badef6c199840a7451930ef892ed6fd95f`. The earlier 0.8.0 / `abdedbe`
+candidate and its failed-gate conclusions are retained as history and marked
+superseded, not deleted.
+
+**Artifact built from the exact release commit.** The deploy artifact was built
+from a detached worktree at `f147340`, not from the docs branch, so the shipped
+bytes correspond to the release commit. Wheel
+`local_transcribe-0.8.1-py3-none-any.whl` SHA256
+`3b05384388bad18a1d2bdb3eadd2838c83256bda047eaf3fee04b76f4a16ff3d`; sdist
+`b79124cf0b236e970c362bca6e4c6b5118f2c36438a65983e8da563fd9844004`. A later
+verification build from the reconciled tree is content-identical (48/48 wheel
+members) but has a different archive hash because wheel files embed timestamps;
+the **staged** wheel remains the deployment artifact.
+
+**Rollback is captured-bytes-first, not rebuilt-wheel-first.** A rebuilt 0.7.0
+wheel (`bc6eae40...`) is used only as a representative rehearsal baseline and is
+not claimed to equal installed production bytes. The authoritative rollback
+source is the captured installed 0.7.0 tree (Aether
+`62d4a74e...`, Minion `28e1e495...`) plus, on Aether, the preserved CTranslate2
+ROCm wheel (`f4790b7c...`) and the ROCm SDK installed-trees tarball
+(`12a1c8be...`, 890,062,815 bytes, 3,359 files). Both hosts rehearsed restoring
+those captured bytes and then upgrading to 0.8.1 in disposable environments.
+
+**Two rehearsal corrections are now required procedure.** First, `pipx inject`
+**must use `--force`** when replacing the PyPI CPU `ctranslate2` with the ROCm
+wheel; without it pipx reports "already injected" and leaves the CPU build in
+place. Second, the HF `faster-whisper-tiny` cache is Xet-backed (`model.bin` is a
+symlink to an out-of-directory blob), so offline rehearsals must copy a **flat**
+model directory; copying only the model directory yields
+`IncompleteSnapshotError`. The Aether ROCm rehearsal passed all four stages
+(0.7.0 → 0.8.1 → 0.7.0 → 0.8.1) with `gpu_backend=amd-rocm`, one GPU, and a
+non-empty transcript each time; production was verified untouched afterward.
+
+**Mixed-version writer rule.** `keys/<source-key>.json` is the sole reservation
+authority and is written only through `QueueStore.enqueue`/force/repair and the
+`source_reservations` helpers. The worker claim path only reads reservations.
+On the current hosts the only `keys/` writer is the Minion `lt` (manual and via
+ref-api's external-CLI fallback); Aether's worker is a reader because
+`watch_legacy_pending: false`; Nomnom has no producer. Therefore the cutover is:
+**upgrade the Aether worker first** (it reads 0.7.0 records fine — a 0.8.1 scan
+of 8,290 keys and 6,481 state records found 0 errors), then **quiesce Minion
+producers, replace Minion `lt`, and restart `ref-api`**. A 0.7.0 producer must
+never write concurrently with a 0.8.1 producer; do not add a second producer
+host until it is 0.8.1, and do not run admin writes (`repair`/`import`/`force`)
+during the window.
+
+**Minion NFSv4.2 is acceptable for the producer role only.** `queue add` resolves
+the path/UUID and publishes atomically; it does not call the worker's NFSv3/NLM
+mount gate. NFSv3/NLM remains required for the worker role. Minion keeps
+`expected_nfs_version: 3` as a deliberate worker-role guard even after fixing the
+stale `queue.path`/`expected_uuid`, because producers ignore that field and the
+guard prevents accidentally starting a worker on NFSv4.2. No production producer
+write was made during the read-only phase; the post-cutover test URL is required.
+
+**Gates and authorization.** The refreshed tree passed canonical Ruff, full
+pytest (377 passed, 11 skipped in both color modes on ext4), diff check, version
+consistency, build verification, and secret scan. Task 043 moves to `review/`.
+Production cutover — service stop/start, pipx replacement, live config edit, or
+a production test enqueue — remains **not authorized** and requires the explicit
+window described in the task record.
+
+## 24. Task 043 approved and merged as a preflight record (2026-11-08)
+
+**Approval.** ChatGPT approved the task-043 preflight merge at remote feature
+head `1758e4b9a4df9753a3d4a5b248dadb425f9120e4`, based on `origin/main`
+`f147340f9c6e4f36da10618c7abb947bd491fccb`. The approval covers only the final
+pre-merge gate, the `review` → `done` transition, a normal non-squash merge into
+`main`, pushing `main`, branch/worktree cleanup, and lifecycle documentation. It
+does **not** authorize production deployment.
+
+**Final pre-merge gate (fresh, not reused).** On `nomnom`, unprivileged, in an
+ext4 worktree with a fresh venv: canonical Ruff **All checks passed**; full
+pytest **377 passed, 11 skipped, 1 warning**; `git diff --check` and
+`git diff --check origin/main...HEAD` clean; version **0.8.1** consistent across
+`pyproject.toml`, `src/local_transcribe/__init__.py`, `project_spec.md`,
+`CHANGELOG.md`, and `docs/WHATS_NEW.md`; branch-delta secret scan reviewed with
+no credential-shape match. Evidence:
+`~/.local/share/local-transcribe/evidence/20261108T-gate043-merge/`.
+
+**What is being merged is evidence, not a deployment.** The deploy artifact is
+the 0.8.1 wheel with SHA256
+`3b05384388bad18a1d2bdb3eadd2838c83256bda047eaf3fee04b76f4a16ff3d`. The Minion
+rehearsal passed from both the representative wheel and the captured installed
+0.7.0 tree, including upgrade, rollback, and re-upgrade on disposable queues.
+The Aether ROCm rehearsal passed 0.7.0 → 0.8.1 → 0.7.0 → 0.8.1 plus a
+captured-bytes restore, with `gpu_backend=amd-rocm`, one GPU, and a non-empty
+transcript each stage. Production was verified untouched afterward.
+
+**Remaining production limitations are unchanged.** Minion's live config is
+still stale (path/UUID); Minion `lt` and the Aether worker remain 0.7.0; no
+producer write was exercised against the production NFSv4.2 queue; and the
+mixed-version writer rule still requires a quiesced, authorized cutover window.
+This merge does not stop or start the Aether worker, change either host's pipx
+environment, edit the Minion config, restart ref-api, enqueue into production,
+change NFS/ROCm, tag, publish, release, or install anything on Nomnom.
+
+**Merge and cleanup.** The complete feature branch was merged into `main` with a
+normal non-squash, non-rewriting merge. After verifying the remote `main`, the
+`done/` task location, task 044 still under `done/`, the 0.8.1 source version,
+and the preflight ancestry, the feature worktree was removed, the local and
+remote feature branch deleted, and the WIP marker removed. Durable
+deployment/rollback artifacts and evidence were retained for the production
+window.
