@@ -822,7 +822,9 @@ def status(
                 )
             console.print(table)
             console.print(f"Worker NLM lock: {summary.worker_lock}")
-            if summary.worker_state_active:
+            for line in summary.worker_lines:
+                console.print(line)
+            if summary.worker_state_active and not summary.worker_lines:
                 console.print(
                     "Worker state: active"
                     + (
@@ -831,8 +833,6 @@ def status(
                         else ""
                     )
                 )
-            else:
-                console.print("Worker state: inactive / none")
 
             if write_compat:
                 compat_path = output_path / "batch_status.json"

@@ -1,6 +1,6 @@
 # Quick Reference Guide
 
-Queue-first workflow (0.5.0+). Producers enqueue; one NLM-locked worker downloads and transcribes.
+Queue-first workflow (0.5.0+). Producers enqueue. `queue.max_workers` NLM-locked workers download and transcribe (default 1).
 
 ## Most common commands
 
@@ -171,7 +171,9 @@ transcription-queue/
 ├── cancelled/
 ├── keys/              # source reservations
 ├── worker/
-│   ├── worker.lock    # NLM exclusive ownership
+│   ├── worker.lock    # shared by 0.9 workers; exclusive means a pre-0.9 worker
+│   ├── slots/         # one exclusive NLM lock per active worker
+│   ├── claims/        # one exclusive NLM lock per in-flight job
 │   └── state.json     # diagnostic heartbeat only
 └── tmp/
 ```
@@ -205,7 +207,7 @@ lt queue doctor
 Export Netscape YouTube cookies, set `default_auth_profile`, restart worker. API keys do not help yt-dlp.
 
 ### Second host also tries to work
-Only one NLM lock holder runs jobs. Other hosts should only enqueue (`lt transcribe` / `lt batch` / `lt queue add`).
+`queue.max_workers` is the cap for the whole queue (default 1). Set the same value on every worker host, then run `lt worker run --standby` there. Hosts beyond the cap stay in standby. Two workers never hold the same job: each in-flight job has its own NLM claim lock. With the default cap, other hosts should only enqueue (`lt transcribe` / `lt batch` / `lt queue add`).
 
 ### Need legacy batch ledger tools
 ```bash
@@ -222,7 +224,8 @@ lt report
 |------|---------|-----------------|
 | `queue/pending|processing|…` | Job records | ⚠️ only via `lt queue purge` for terminal states |
 | `queue/keys/` | Source reservations | ⚠️ NO |
-| `queue/worker/worker.lock` | Ownership | ⚠️ NEVER replace while held |
+| `queue/worker/worker.lock` | Shared by 0.9 workers; exclusive while a pre-0.9 worker runs | ⚠️ NEVER replace while held |
+| `queue/worker/slots/` and `claims/` | Per-worker and per-job NLM locks | ⚠️ NEVER delete |
 | `~/.config/local-transcribe/config.yaml` | Queue path + auth | ⚠️ keep |
 | Transcript `*.json` | Your data | ⚠️ NO |
 | `batch_status.json` | Legacy direct-mode resume | only if unused |

@@ -1,10 +1,10 @@
 # Local YouTube Transcription System
 
-> **Queue-first local transcription** on NFSv3 with one NLM-locked GPU worker, durable jobs, and multi-host producers.
+> **Queue-first local transcription** on NFSv3. Producers enqueue from any host. A configured number of NLM-locked workers (default one) download and transcribe.
 
 **Features:**
 - ✅ Durable NFSv3 transcription queue (`pending` → `processing` → `completed` / `failed` / `retry`)
-- ✅ Single exclusive worker via NLM lock (`lt worker` + systemd user unit)
+- ✅ NLM-locked workers (`lt worker` + systemd user unit). `queue.max_workers` defaults to 1; raise it to run one worker each on aether and Nomnom without sharing a job
 - ✅ Producers enqueue from any host (`lt transcribe`, `lt batch`, `lt queue add`, ref-cli)
 - ✅ CUDA GPU acceleration + AMD ROCm acceleration + CPU fallback; ModelCache keeps Whisper loaded
 - ✅ Auth profiles (cookies file / browser) for YouTube downloads
@@ -122,7 +122,10 @@ Configure YouTube cookies for the worker (recommended):
 queue:
   path: /path/to/transcription-queue
   expected_uuid: <from init>
+  max_workers: 1          # queue-wide cap; set the same value on every worker host
   default_auth_profile: yt
+worker:
+  concurrency: 1          # how many workers this host may start
 auth_profiles:
   yt:
     cookies_file: ~/.config/local-transcribe/youtube-cookies.txt

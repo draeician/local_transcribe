@@ -23,12 +23,19 @@ class WorkerState:
     heartbeat_at: str
     current_execution_id: str | None = None
     active: bool = True
+    slot: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def create(cls, queue_uuid: str, execution_id: str | None = None) -> WorkerState:
+    def create(
+        cls,
+        queue_uuid: str,
+        execution_id: str | None = None,
+        *,
+        slot: int | None = None,
+    ) -> WorkerState:
         host = socket.gethostname()
         pid = os.getpid()
         now = utc_now_iso()
@@ -41,6 +48,7 @@ class WorkerState:
             heartbeat_at=now,
             current_execution_id=execution_id,
             active=True,
+            slot=slot,
         )
 
 
@@ -48,8 +56,18 @@ def state_path(queue_dir: Path) -> Path:
     return Path(queue_dir) / "worker" / "state.json"
 
 
+def per_worker_state_path(queue_dir: Path, worker_id: str) -> Path:
+    """Diagnostic file for one worker. Not ownership authority."""
+    import re
+
+    safe = re.sub(r"[^A-Za-z0-9._+-]", "_", worker_id) or "worker"
+    return Path(queue_dir) / "worker" / "workers" / f"{safe}.json"
+
+
 def write_worker_state(queue_dir: Path, state: WorkerState) -> None:
-    atomic_write_json(state_path(queue_dir), state.to_dict())
+    payload = state.to_dict()
+    atomic_write_json(state_path(queue_dir), payload)
+    atomic_write_json(per_worker_state_path(queue_dir, state.worker_id), payload)
 
 
 def read_worker_state(queue_dir: Path) -> WorkerState | None:

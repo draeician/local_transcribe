@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-14
+
+### Added
+- The queue can run more than one worker at a time. `queue.max_workers` in `~/.config/local-transcribe/config.yaml` is the cap across every host (default **1**, so an unchanged config still has a single active worker). Workers past the cap stay in `--standby` and take a slot when one is released. Optional `worker.concurrency` (default **1**) limits how many workers one host starts.
+- Each active worker holds an exclusive NLM slot lock (`worker/slots/slot-N.lock`) and, for the job it is running, an exclusive NLM claim lock (`worker/claims/<execution-id>.lock`). The claim is published with `link()` (not `O_EXCL`). The processing record stores `worker_host`, `worker_pid`, `worker_slot`, and a refreshed `lease_expires_at`.
+- Crash recovery: when a worker is killed or its host reboots, NLM drops the slot lock and the claim lock. The next worker pass requeues that processing job (retry, or failed when `max_attempts` is exhausted). No manual lock-file cleanup.
+- `lt queue stats`, `lt queue doctor`, and `lt status` show the worker cap and each active worker's host, pid, and current job. A slot counts as active only while its NLM lock is held.
+
+### Changed
+- 0.9 workers hold a **shared** lock on the existing `worker/worker.lock` for their whole lifetime, instead of the old exclusive lock. Several 0.9 workers can share it. YouTube download admission is serialized with its own NLM lock so concurrent workers still share one rate budget.
+
+### Upgrade
+Stop the pre-0.9 worker before relying on 0.9 workers. On aether the unit is `local-transcribe-worker.service` (`lt worker run --standby`):
+
+1. On aether: `systemctl --user stop local-transcribe-worker.service`. Confirm `lt worker status` reports `Legacy worker.lock: free`.
+2. Upgrade `lt` on every host that will run a worker (aether, then Nomnom). Set the **same** `queue.max_workers` on each of those hosts (for example `2`). Leave `worker.concurrency` at `1` unless that host should run more than one local process.
+3. Start the unit again: `systemctl --user start local-transcribe-worker.service`. With `--standby`, a second host takes the next free slot. Hosts beyond the cap stay in standby.
+
+Do not start a 0.9 worker while a pre-0.9 worker still holds `worker/worker.lock`. If that exclusive lock is held, `lt worker run` exits, and `lt worker run --standby` waits and does not claim jobs. A pre-0.9 worker also cannot take the exclusive lock while any 0.9 worker holds the shared lock, so the two generations do not process jobs at the same time. The safe order is still: stop the old worker, upgrade, start the new one.
+
+A held per-job NLM lock is not broken when its lease expires. Breaking it could run the same job twice. `kill -9` and a host reboot release the lock through NLM (after NSM recovery on reboot); the job is then requeued.
+
 ## [0.8.1] - 2026-11-07
 
 ### Fixed

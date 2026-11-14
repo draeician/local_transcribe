@@ -138,16 +138,23 @@ def queue_doctor(
         console.print(f"[red]✗[/red] {err}")
     for warn in result.warnings:
         console.print(f"[yellow]![/yellow] {warn}")
-    # Lock probe
-    try:
-        lock = WorkerLock.acquire(worker_lock_path(resolved))
-        lock.release()
-        console.print("[green]✓[/green] NLM lock acquire/release probe OK")
-    except WorkerAlreadyActive:
-        console.print("[yellow]![/yellow] NLM lock currently held by another worker")
-    except Exception as exc:  # noqa: BLE001
+    from local_transcribe.services.worker_slots import format_worker_lines, inspect_workers
+
+    report = inspect_workers(resolved, cfg.queue.max_workers)
+    for line in format_worker_lines(report):
+        console.print(line)
+    if report.legacy_lock == "unavailable":
         ok = False
-        console.print(f"[red]✗[/red] NLM lock probe failed: {exc}")
+        console.print("[red]✗[/red] NLM lock probe failed")
+    elif report.legacy_lock == "exclusive":
+        console.print(
+            "[yellow]![/yellow] Pre-0.9 worker holds worker.lock exclusively. "
+            "Stop it before starting 0.9 workers."
+        )
+    elif report.legacy_lock == "free":
+        console.print("[green]✓[/green] NLM lock acquire/release probe OK")
+    else:
+        console.print("[green]✓[/green] NLM shared worker lock is held by 0.9 workers")
     if not ok:
         raise typer.Exit(1)
 
@@ -407,12 +414,18 @@ def queue_cancel(
 def queue_stats(
     queue_dir: Annotated[Path | None, typer.Option("--queue-dir")] = None,
 ) -> None:
-    """Show counts by state directory."""
+    """Show counts by state directory, the worker cap, and active workers."""
+    from local_transcribe.services.config import load_config
+    from local_transcribe.services.worker_slots import format_worker_lines, inspect_workers
+
     qdir = _queue_dir_opt(queue_dir)
     for name in ("pending", "processing", "retry", "completed", "failed", "cancelled"):
         d = qdir / name
         n = len(list(d.glob("*.json"))) if d.is_dir() else 0
         console.print(f"{name}: {n}")
+    report = inspect_workers(qdir, load_config().queue.max_workers)
+    for line in format_worker_lines(report):
+        console.print(line)
 
 
 @queue_app.command("purge")

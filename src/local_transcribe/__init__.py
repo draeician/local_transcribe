@@ -14,7 +14,7 @@ there is nothing to preload, and a missing ROCm runtime must not prevent import.
 
 import contextlib
 
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 
 
 def _preload_rocm_runtime() -> None:

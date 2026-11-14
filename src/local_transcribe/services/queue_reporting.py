@@ -12,10 +12,20 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from local_transcribe.services.config import load_config
 from local_transcribe.services.queue_models import STATE_DIRS, Execution
 from local_transcribe.services.queue_store import QueueStore
 from local_transcribe.services.status_store import JsonStatusStore, TranscriptStatus
-from local_transcribe.services.worker_lock import WorkerAlreadyActive, WorkerLock, worker_lock_path
+from local_transcribe.services.worker_lock import (
+    WorkerAlreadyActive,
+    WorkerLock,
+    worker_lock_path,
+)
+from local_transcribe.services.worker_slots import (
+    WorkerInspection,
+    format_worker_lines,
+    inspect_workers,
+)
 from local_transcribe.services.worker_state import read_worker_state
 
 
@@ -31,6 +41,10 @@ class QueueStatusSummary:
     worker_state_active: bool = False
     worker_current_execution_id: str | None = None
     queue_dir: Path | None = None
+    max_workers: int = 1
+    legacy_lock: str = "unknown"
+    worker_lines: list[str] = field(default_factory=list)
+    active_workers: list[dict[str, object]] = field(default_factory=list)
 
 
 def _video_id_from_execution(execution: Execution) -> str:
@@ -51,8 +65,13 @@ def transcript_is_validated(execution: Execution) -> bool:
 
 
 def _probe_worker_lock(queue_dir: Path) -> str:
+    """Compat string: exclusive acquire succeeds only when nobody holds the file.
+
+    0.9 workers hold a shared lock, so a running worker still reports
+    ``held_elsewhere``. ``free`` is ``available``.
+    """
     try:
-        lock = WorkerLock.acquire(worker_lock_path(queue_dir))
+        lock = WorkerLock.acquire(worker_lock_path(queue_dir), write_metadata=False)
     except WorkerAlreadyActive:
         return "held_elsewhere"
     except OSError:
@@ -62,6 +81,19 @@ def _probe_worker_lock(queue_dir: Path) -> str:
     except OSError:
         pass
     return "available"
+
+
+def _active_worker_payload(report: WorkerInspection) -> list[dict[str, object]]:
+    return [
+        {
+            "slot": worker.slot,
+            "hostname": worker.hostname,
+            "pid": worker.pid,
+            "current_execution_id": worker.current_execution_id,
+            "kind": worker.kind,
+        }
+        for worker in report.active
+    ]
 
 
 def summarize_queue(queue_dir: Path) -> QueueStatusSummary:
@@ -81,13 +113,20 @@ def summarize_queue(queue_dir: Path) -> QueueStatusSummary:
                 else:
                     completed_missing += 1
 
-    worker_state_active = False
-    current_id: str | None = None
+    max_workers = 1
     with contextlib.suppress(Exception):
-        state = read_worker_state(queue_dir)
-        if state is not None:
-            worker_state_active = bool(state.active)
-            current_id = state.current_execution_id
+        max_workers = load_config().queue.max_workers
+    report = inspect_workers(queue_dir, max_workers)
+    worker_state_active = report.active_count > 0
+    current_id: str | None = None
+    if report.active:
+        current_id = report.active[0].current_execution_id
+    elif report.legacy_lock not in {"exclusive", "shared"}:
+        with contextlib.suppress(Exception):
+            state = read_worker_state(queue_dir)
+            if state is not None and state.active:
+                worker_state_active = True
+                current_id = state.current_execution_id
 
     return QueueStatusSummary(
         counts=counts,
@@ -98,6 +137,10 @@ def summarize_queue(queue_dir: Path) -> QueueStatusSummary:
         worker_state_active=worker_state_active,
         worker_current_execution_id=current_id,
         queue_dir=Path(queue_dir),
+        max_workers=max_workers,
+        legacy_lock=report.legacy_lock,
+        worker_lines=format_worker_lines(report),
+        active_workers=_active_worker_payload(report),
     )
 
 
@@ -213,5 +256,8 @@ def dump_summary_json(summary: QueueStatusSummary) -> str:
         "worker_lock": summary.worker_lock,
         "worker_state_active": summary.worker_state_active,
         "worker_current_execution_id": summary.worker_current_execution_id,
+        "max_workers": summary.max_workers,
+        "legacy_lock": summary.legacy_lock,
+        "active_workers": summary.active_workers,
     }
     return json.dumps(payload, indent=2) + "\n"

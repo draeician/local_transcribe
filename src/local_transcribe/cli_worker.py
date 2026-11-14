@@ -14,7 +14,7 @@ from local_transcribe.logging_setup import configure_logging
 from local_transcribe.services.mount_validation import validate_queue_mount
 from local_transcribe.services.queue_paths import resolve_queue_dir
 from local_transcribe.services.worker import run_worker
-from local_transcribe.services.worker_lock import WorkerAlreadyActive, WorkerLock, worker_lock_path
+from local_transcribe.services.worker_lock import WorkerAlreadyActive
 from local_transcribe.services.worker_state import state_path
 
 console = Console(force_terminal=True)
@@ -103,14 +103,20 @@ def worker_status(
         console.print("[red]queue mounted but unsafe[/red]")
         for e in mount.errors:
             console.print(f"  {e}")
+    from local_transcribe.services.config import load_config
+    from local_transcribe.services.worker_slots import format_worker_lines, inspect_workers
+
     try:
-        lock = WorkerLock.acquire(worker_lock_path(qdir))
-        lock.release()
-        console.print("NLM lock: available (acquired locally then released)")
-    except WorkerAlreadyActive:
-        console.print("NLM lock held elsewhere")
+        report = inspect_workers(qdir, load_config().queue.max_workers)
     except Exception as exc:  # noqa: BLE001
         console.print(f"NLM environment unavailable: {exc}")
+    else:
+        for line in format_worker_lines(report):
+            console.print(line)
+        if report.legacy_lock == "exclusive":
+            console.print(
+                "Refusing new workers until the pre-0.9 exclusive lock is released"
+            )
 
     sp = state_path(qdir)
     if sp.is_file():

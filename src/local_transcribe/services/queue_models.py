@@ -41,6 +41,15 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool) or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def new_execution_id() -> str:
     """Return a new execution id (UUID4; documented alternative to UUIDv7)."""
     return str(uuid.uuid4())
@@ -210,6 +219,13 @@ class Execution:
     max_attempts: int = 3
     worker: str | None = None
     required_host: str | None = None
+    # Set when a worker claims the job. Advisory for operators; the per-job
+    # NLM claim lock is what proves a live owner.
+    worker_host: str | None = None
+    worker_pid: int | None = None
+    worker_slot: int | None = None
+    lease_expires_at: str | None = None
+    claim_token: str | None = None
     output_path: str | None = None
     error: ExecutionError | None = None
     options: ExecutionOptions = field(default_factory=ExecutionOptions)
@@ -235,6 +251,11 @@ class Execution:
             "max_attempts": self.max_attempts,
             "worker": self.worker,
             "required_host": self.required_host,
+            "worker_host": self.worker_host,
+            "worker_pid": self.worker_pid,
+            "worker_slot": self.worker_slot,
+            "lease_expires_at": self.lease_expires_at,
+            "claim_token": self.claim_token,
             "output_path": self.output_path,
             "error": self.error.to_dict() if self.error else None,
             "options": self.options.to_dict(),
@@ -261,6 +282,17 @@ class Execution:
             max_attempts=int(data.get("max_attempts", 3)),
             worker=data.get("worker"),
             required_host=data.get("required_host"),
+            worker_host=(
+                str(data["worker_host"]) if data.get("worker_host") else None
+            ),
+            worker_pid=_optional_int(data.get("worker_pid")),
+            worker_slot=_optional_int(data.get("worker_slot")),
+            lease_expires_at=(
+                str(data["lease_expires_at"]) if data.get("lease_expires_at") else None
+            ),
+            claim_token=(
+                str(data["claim_token"]) if data.get("claim_token") else None
+            ),
             output_path=data.get("output_path"),
             error=ExecutionError.from_dict(data.get("error")),
             options=ExecutionOptions.from_dict(data.get("options")),

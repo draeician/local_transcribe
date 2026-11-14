@@ -36,6 +36,17 @@ class QueueConfig:
     # Auto-import ref-cli's transcript-pending.md into the durable queue.
     legacy_pending_file: Path | None = None
     watch_legacy_pending: bool = True
+    # How many workers may process jobs on this queue at once (all hosts).
+    # Default 1 keeps the historical single-worker behavior.
+    max_workers: int = 1
+
+
+@dataclass
+class WorkerConfig:
+    """Per-host worker settings. The queue-wide cap is ``QueueConfig.max_workers``."""
+
+    concurrency: int = 1
+    lease_seconds: float = 90.0
 
 
 @dataclass
@@ -43,7 +54,33 @@ class AppConfig:
     """Top-level application configuration."""
 
     queue: QueueConfig = field(default_factory=QueueConfig)
+    worker: WorkerConfig = field(default_factory=WorkerConfig)
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+_MAX_WORKER_CAP = 64
+
+
+def _positive_int(value: Any, name: str, default: int, *, maximum: int) -> int:
+    """Parse a config integer in ``1..maximum``. Missing means ``default``."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer >= 1, got {value!r}")
+    if value < 1 or value > maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum}, got {value}")
+    return value
+
+
+def _positive_float(value: Any, name: str, default: float) -> float:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a number >= 1, got {value!r}")
+    number = float(value)
+    if number < 1:
+        raise ValueError(f"{name} must be >= 1, got {value!r}")
+    return number
 
 
 def _expand_path(value: str | Path | None) -> Path | None:
@@ -103,6 +140,30 @@ def _queue_from_mapping(data: Mapping[str, Any] | None) -> QueueConfig:
         default_auth_profile=default_auth,
         legacy_pending_file=_expand_path(legacy_pending),
         watch_legacy_pending=bool(watch_legacy),
+        max_workers=_positive_int(
+            data.get("max_workers"),
+            "queue.max_workers",
+            1,
+            maximum=_MAX_WORKER_CAP,
+        ),
+    )
+
+
+def _worker_from_mapping(data: Mapping[str, Any] | None) -> WorkerConfig:
+    if not data:
+        return WorkerConfig()
+    return WorkerConfig(
+        concurrency=_positive_int(
+            data.get("concurrency"),
+            "worker.concurrency",
+            1,
+            maximum=_MAX_WORKER_CAP,
+        ),
+        lease_seconds=_positive_float(
+            data.get("lease_seconds"),
+            "worker.lease_seconds",
+            90.0,
+        ),
     )
 
 
@@ -138,8 +199,15 @@ def load_config(config_path: Path | None = None) -> AppConfig:
     queue_data = raw.get("queue")
     if queue_data is not None and not isinstance(queue_data, Mapping):
         raise TypeError("config key 'queue' must be a mapping")
+    worker_data = raw.get("worker")
+    if worker_data is not None and not isinstance(worker_data, Mapping):
+        raise TypeError("config key 'worker' must be a mapping")
 
-    return AppConfig(queue=_queue_from_mapping(queue_data), raw=raw)
+    return AppConfig(
+        queue=_queue_from_mapping(queue_data),
+        worker=_worker_from_mapping(worker_data),
+        raw=raw,
+    )
 
 
 def write_queue_config(
