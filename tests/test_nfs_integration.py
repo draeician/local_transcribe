@@ -128,6 +128,79 @@ def test_nlm_lock_after_normal_exit(nfs_queue_dir: Path) -> None:
     again.release()
 
 
+def test_two_workers_never_share_a_job(nfs_queue_dir: Path) -> None:
+    """A second client must not take a job whose NLM claim lock is held.
+
+    After the holder is killed, NLM releases the lock and recovery requeues
+    the job without deleting lock files by hand.
+    """
+    q = _fresh_queue(nfs_queue_dir, "two-workers")
+    store = QueueStore(q)
+    result = store.enqueue("https://youtu.be/nfsLab00009")
+    assert result.execution is not None
+    eid = result.execution.execution_id
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            str(_HELPER),
+            str(worker_lock_path(q)),
+            "claim-hold",
+            str(q),
+            eid,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_helper_env(),
+    )
+    try:
+        assert holder.stdout is not None
+        line = holder.stdout.readline().strip()
+        if line != "CLAIMED":
+            err = holder.stderr.read() if holder.stderr else ""
+            holder.kill()
+            raise AssertionError(f"claim-hold failed: {line!r} stderr={err!r}")
+        try_proc = subprocess.run(
+            [
+                sys.executable,
+                str(_HELPER),
+                str(worker_lock_path(q)),
+                "claim-try",
+                str(q),
+                eid,
+            ],
+            capture_output=True,
+            text=True,
+            env=_helper_env(),
+            timeout=60,
+            check=False,
+        )
+        assert try_proc.stdout.strip() == "BUSY", try_proc.stderr
+        from local_transcribe.services.worker import recover_processing
+
+        assert recover_processing(q) == 0
+        assert (q / "processing" / f"{eid}.json").is_file()
+        os.kill(holder.pid, signal.SIGKILL)
+        holder.wait(timeout=10)
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)
+
+    from local_transcribe.services.worker import recover_processing
+
+    recovered = 0
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        recovered = recover_processing(q)
+        if recovered == 1:
+            break
+        time.sleep(0.5)
+    assert recovered == 1, "abandoned NFS job was not requeued after NLM release"
+    assert (q / "retry" / f"{eid}.json").is_file()
+    assert not (q / "processing" / f"{eid}.json").exists()
+
+
 def test_nlm_lock_after_kill(nfs_queue_dir: Path) -> None:
     q = _fresh_queue(nfs_queue_dir, "nlm-kill")
     lock_path = worker_lock_path(q)

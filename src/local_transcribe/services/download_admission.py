@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from local_transcribe.services.atomic_files import atomic_write_json
+from local_transcribe.services.queue_locks import queue_lock
 from local_transcribe.services.queue_models import utc_now_iso
 from local_transcribe.services.worker_lock import WorkerLock
 
@@ -47,6 +48,11 @@ class RateLimitState:
 
 def rate_limit_path(queue_dir: Path) -> Path:
     return Path(queue_dir) / "worker" / "rate-limit.json"
+
+
+def admission_lock_path(queue_dir: Path) -> Path:
+    """NLM lock that serializes rate-limit read-modify-write across workers."""
+    return Path(queue_dir) / ".locks" / "admission.lock"
 
 
 def _parse_ts(value: str | None) -> float | None:
@@ -101,6 +107,14 @@ class DownloadAdmission:
         self._sleep = sleep_fn
         self._time = time_fn
 
+    def _mutate(self, update):  # type: ignore[no-untyped-def]
+        """Apply ``update(state)`` while holding the shared admission lock."""
+        with queue_lock(admission_lock_path(self.queue_dir)):
+            state = load_state(self.queue_dir)
+            update(state)
+            save_state(self.queue_dir, state)
+            return state
+
     def _normalize(self, state: RateLimitState, now: float) -> RateLimitState:
         hour_start = _parse_ts(state.hour_window_started_at)
         day_start = _parse_ts(state.day_window_started_at)
@@ -144,24 +158,24 @@ class DownloadAdmission:
         """
         _require_held_lock(worker_lock)
         while True:
-            state = self._normalize(load_state(self.queue_dir), self._time())
-            wait = self.seconds_until_admitted(state)
-            if wait <= 0:
-                break
+            with queue_lock(admission_lock_path(self.queue_dir)):
+                state = self._normalize(load_state(self.queue_dir), self._time())
+                wait = self.seconds_until_admitted(state)
+                if wait <= 0:
+                    now = self._time()
+                    state = self._normalize(state, now)
+                    state.last_download_started_at = datetime.fromtimestamp(
+                        now, tz=timezone.utc
+                    ).isoformat()
+                    state.download_attempts_this_hour += 1
+                    state.download_attempts_today += 1
+                    if state.hour_window_started_at is None:
+                        state.hour_window_started_at = state.last_download_started_at
+                    if state.day_window_started_at is None:
+                        state.day_window_started_at = state.last_download_started_at
+                    save_state(self.queue_dir, state)
+                    return state
             self._sleep(min(wait, 1.0) if wait > 1 else wait)
-        now = self._time()
-        state = self._normalize(load_state(self.queue_dir), now)
-        state.last_download_started_at = datetime.fromtimestamp(
-            now, tz=timezone.utc
-        ).isoformat()
-        state.download_attempts_this_hour += 1
-        state.download_attempts_today += 1
-        if state.hour_window_started_at is None:
-            state.hour_window_started_at = state.last_download_started_at
-        if state.day_window_started_at is None:
-            state.day_window_started_at = state.last_download_started_at
-        save_state(self.queue_dir, state)
-        return state
 
     def record_429(
         self,
@@ -171,25 +185,26 @@ class DownloadAdmission:
     ) -> RateLimitState:
         """Record HTTP 429; set global ``blocked_until`` (lock holder only)."""
         _require_held_lock(worker_lock)
-        state = load_state(self.queue_dir)
-        state.total_429_errors += 1
-        state.consecutive_throttle_failures += 1
-        state.last_429_at = utc_now_iso()
-        n = state.consecutive_throttle_failures
-        delays = {1: 300.0, 2: 900.0, 3: 3600.0}
-        delay = (
-            retry_after_seconds
-            if retry_after_seconds is not None
-            else delays.get(
-                n, min(self.config.maximum_backoff_seconds, 3600.0 * (2 ** (n - 3)))
+
+        def update(state: RateLimitState) -> None:
+            state.total_429_errors += 1
+            state.consecutive_throttle_failures += 1
+            state.last_429_at = utc_now_iso()
+            n = state.consecutive_throttle_failures
+            delays = {1: 300.0, 2: 900.0, 3: 3600.0}
+            delay = (
+                retry_after_seconds
+                if retry_after_seconds is not None
+                else delays.get(
+                    n, min(self.config.maximum_backoff_seconds, 3600.0 * (2 ** (n - 3)))
+                )
             )
-        )
-        delay = min(delay, self.config.maximum_backoff_seconds)
-        state.blocked_until = datetime.fromtimestamp(
-            self._time() + delay, tz=timezone.utc
-        ).isoformat()
-        save_state(self.queue_dir, state)
-        return state
+            delay = min(delay, self.config.maximum_backoff_seconds)
+            state.blocked_until = datetime.fromtimestamp(
+                self._time() + delay, tz=timezone.utc
+            ).isoformat()
+
+        return self._mutate(update)
 
     def record_403(
         self,
@@ -200,29 +215,31 @@ class DownloadAdmission:
     ) -> RateLimitState:
         """Record HTTP 403; temporary throttle updates backoff / counters."""
         _require_held_lock(worker_lock)
-        state = load_state(self.queue_dir)
-        state.total_403_errors += 1
-        state.last_403_at = utc_now_iso()
-        if temporary:
-            state.consecutive_throttle_failures += 1
-            n = state.consecutive_throttle_failures
-            delay = (
-                backoff_seconds
-                if backoff_seconds is not None
-                else min(3600.0, 120.0 * (2 ** (n - 1)))
-            )
-            delay = min(delay, self.config.maximum_backoff_seconds)
-            state.blocked_until = datetime.fromtimestamp(
-                self._time() + delay, tz=timezone.utc
-            ).isoformat()
-        save_state(self.queue_dir, state)
-        return state
+
+        def update(state: RateLimitState) -> None:
+            state.total_403_errors += 1
+            state.last_403_at = utc_now_iso()
+            if temporary:
+                state.consecutive_throttle_failures += 1
+                n = state.consecutive_throttle_failures
+                delay = (
+                    backoff_seconds
+                    if backoff_seconds is not None
+                    else min(3600.0, 120.0 * (2 ** (n - 1)))
+                )
+                delay = min(delay, self.config.maximum_backoff_seconds)
+                state.blocked_until = datetime.fromtimestamp(
+                    self._time() + delay, tz=timezone.utc
+                ).isoformat()
+
+        return self._mutate(update)
 
     def clear_throttle_streak(self, *, worker_lock: WorkerLock) -> RateLimitState:
         """Reset consecutive throttle counter after a successful download."""
         _require_held_lock(worker_lock)
-        state = load_state(self.queue_dir)
-        if state.consecutive_throttle_failures:
-            state.consecutive_throttle_failures = 0
-            save_state(self.queue_dir, state)
-        return state
+
+        def update(state: RateLimitState) -> None:
+            if state.consecutive_throttle_failures:
+                state.consecutive_throttle_failures = 0
+
+        return self._mutate(update)

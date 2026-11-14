@@ -1,5 +1,17 @@
 # What's New
 
+## 0.9.0 — Concurrent NFSv3 workers (2026-11-14)
+
+- **More than one worker.** `queue.max_workers` (default 1) is how many jobs the queue may run at once, across hosts. Extra workers stay in `--standby` until a slot frees. `worker.concurrency` (default 1) caps how many workers one host starts.
+- **No shared jobs.** A worker claims a job by publishing it into `processing/` with `link()` and holding an NLM lock on `worker/claims/<id>.lock` until the job finishes. Another worker cannot take that lock, so it will not run or recover the job.
+- **Crashes clear themselves.** `kill -9` and a host reboot drop the slot lock and the claim lock through NLM. The next worker requeues the in-flight job. The processing record stores hostname and pid.
+- **Upgrade is exclusive.** 0.9 workers hold a shared lock on `worker/worker.lock`. A pre-0.9 worker's exclusive lock blocks them (they refuse to start, or wait in `--standby` and do not take jobs). Stop aether's `local-transcribe-worker.service`, upgrade, then start it again. Set the same `queue.max_workers` on each worker host.
+- **Status.** `lt queue stats`, `lt queue doctor`, and `lt status` show the cap and each active worker (host, pid, current job).
+
+Docs: [CHANGELOG.md](../CHANGELOG.md) · [docs/QUEUE_OPERATOR.md](QUEUE_OPERATOR.md)
+
+---
+
 ## 0.8.1 — Queue wait and force-generation correctness (2026-11-07)
 
 - **No premature completion.** `lt transcribe` waiting on a job can no longer print `completed` before the execution's `output_path` (or a failure's error record) is available. The terminal state file is published with its final metadata in one atomic step, and the waiter ignores a terminal directory entry whose embedded status does not match it.

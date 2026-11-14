@@ -5,15 +5,20 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
+import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from local_transcribe.services.atomic_files import (
     AtomicFileError,
     atomic_state_transition,
+    atomic_write_json,
 )
 from local_transcribe.services.config import load_config
 from local_transcribe.services.download_admission import DownloadAdmission
@@ -52,6 +57,16 @@ from local_transcribe.services.worker_lock import (
     WorkerLock,
     worker_lock_path,
 )
+from local_transcribe.services.worker_slots import (
+    DEFAULT_LEASE_SECONDS,
+    HeldLock,
+    acquire_any_slot,
+    claim_held_locally,
+    release_all_claims,
+    release_claim,
+    take_claim_lock,
+    try_take_abandoned_claim,
+)
 from local_transcribe.services.worker_state import (
     WorkerState,
     mark_worker_inactive,
@@ -88,7 +103,7 @@ class LocalRuntimeLock:
             self._file.close()
             self._file = None
             raise WorkerAlreadyActive(
-                f"Local worker already running ({self.path}): {exc}"
+                f"Local worker concurrency is full ({self.path}): {exc}"
             ) from exc
         self._file.seek(0)
         self._file.truncate()
@@ -104,6 +119,76 @@ class LocalRuntimeLock:
             finally:
                 self._file.close()
                 self._file = None
+
+
+def acquire_local_runtime_slot(base: Path, concurrency: int) -> LocalRuntimeLock:
+    """Take one same-host slot. Index 0 keeps the historical lock path."""
+    if concurrency < 1:
+        raise ValueError(f"host concurrency must be >= 1, got {concurrency}")
+    last: WorkerAlreadyActive | None = None
+    for index in range(concurrency):
+        path = base if index == 0 else base.with_name(f"{base.stem}-{index}{base.suffix}")
+        candidate = LocalRuntimeLock(path)
+        try:
+            candidate.acquire()
+        except WorkerAlreadyActive as exc:
+            last = exc
+            continue
+        return candidate
+    assert last is not None
+    raise last
+
+
+def _lease_expires_at(lease_seconds: float) -> str:
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+    return deadline.astimezone().isoformat(timespec="seconds")
+
+
+def _require_claim_token(queue_dir: Path, execution: Execution) -> None:
+    """Fail closed when recovery has replaced this claim."""
+    if not execution.claim_token:
+        return
+    path = queue_dir / "processing" / f"{execution.execution_id}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return
+    if isinstance(data, dict) and data.get("claim_token") not in (
+        None,
+        execution.claim_token,
+    ):
+        raise AtomicFileError(
+            f"Claim token mismatch for {execution.execution_id}; "
+            "the job was recovered by another worker"
+        )
+
+
+def refresh_processing_lease(
+    queue_dir: Path,
+    execution: Execution,
+    lease_seconds: float,
+) -> None:
+    """Push ``lease_expires_at`` forward on the processing record."""
+    if not execution.claim_token:
+        return
+    path = queue_dir / "processing" / f"{execution.execution_id}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    if data.get("claim_token") != execution.claim_token:
+        return
+    if data.get("status") != "processing":
+        return
+    data["lease_expires_at"] = _lease_expires_at(lease_seconds)
+    data["updated_at"] = utc_now_iso()
+    try:
+        atomic_write_json(path, data)
+    except OSError:
+        return
+    execution.lease_expires_at = data["lease_expires_at"]
 
 
 @dataclass(frozen=True)
@@ -377,6 +462,10 @@ def recover_processing(queue_dir: Path) -> int:
     SIGKILL/OOM never reaches ``fail_or_retry``, so recovery must honor
     ``max_attempts`` or the same job can death-loop forever.
 
+    A processing job whose per-job NLM claim lock is still held is left alone:
+    another live worker owns it. When that process dies, NLM releases the lock
+    and the next recovery pass requeues the job. No manual cleanup.
+
     Interrupted transitions are reconciled only after validating the proposed
     successor (JSON/schema, execution id, source identity, generation, state,
     attempts). Malformed or conflicting copies remain intact and are reported.
@@ -393,61 +482,79 @@ def recover_processing(queue_dir: Path) -> int:
             continue
         if _other_state_paths(queue_dir, execution_id, exclude="processing"):
             continue
-
-        with queue_lock(execution_lock_path(queue_dir, execution_id)):
-            if not path.is_file():
-                continue
-            if _other_state_paths(queue_dir, execution_id, exclude="processing"):
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                ex = Execution.from_dict(data)
-            except (
-                OSError,
-                json.JSONDecodeError,
-                KeyError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                logger.warning(
-                    "Skipping unreadable processing file %s: %s", path, exc
-                )
-                continue
-
-            can_retry = ex.attempts < ex.max_attempts
-            if can_retry:
-                status: str = "retry"
-                dest = queue_dir / "retry" / path.name
-                message = "Recovered abandoned processing job"
-            else:
-                status = "failed"
-                dest = queue_dir / "failed" / path.name
-                message = (
-                    "Recovered abandoned processing job; max attempts exceeded "
-                    f"({ex.attempts}/{ex.max_attempts})"
-                )
-            ex.error = ExecutionError(
-                category="worker_interrupted",
-                message=message,
-                retryable=can_retry,
-                occurred_at=utc_now_iso(),
-            )
-            ex.status = status  # type: ignore[assignment]
-            ex.updated_at = utc_now_iso()
-            if can_retry:
-                ex.available_at = utc_now_iso()
-            try:
-                atomic_state_transition(path, dest, ex.to_dict())
-            except (AtomicFileError, OSError) as exc:
-                logger.warning(
-                    "Failed to recover processing job %s: %s", path.name, exc
-                )
-                continue
-            count += 1
+        if claim_held_locally(execution_id):
+            continue
+        recovery_lock = try_take_abandoned_claim(queue_dir, execution_id)
+        if recovery_lock is None:
             logger.info(
-                "Recovered processing job %s -> %s/", ex.execution_id, status
+                "Leaving processing job %s; its NLM claim lock is still held",
+                execution_id,
             )
+            continue
+
+        try:
+            if _recover_one_processing(queue_dir, path, execution_id):
+                count += 1
+        finally:
+            recovery_lock.release()
     return count
+
+
+def _recover_one_processing(queue_dir: Path, path: Path, execution_id: str) -> bool:
+    """Move one abandoned processing file. Caller holds its claim lock."""
+    with queue_lock(execution_lock_path(queue_dir, execution_id)):
+        if not path.is_file():
+            return False
+        if _other_state_paths(queue_dir, execution_id, exclude="processing"):
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            ex = Execution.from_dict(data)
+        except (
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            logger.warning("Skipping unreadable processing file %s: %s", path, exc)
+            return False
+
+        can_retry = ex.attempts < ex.max_attempts
+        if can_retry:
+            status: str = "retry"
+            dest = queue_dir / "retry" / path.name
+            message = "Recovered abandoned processing job"
+        else:
+            status = "failed"
+            dest = queue_dir / "failed" / path.name
+            message = (
+                "Recovered abandoned processing job; max attempts exceeded "
+                f"({ex.attempts}/{ex.max_attempts})"
+            )
+        ex.error = ExecutionError(
+            category="worker_interrupted",
+            message=message,
+            retryable=can_retry,
+            occurred_at=utc_now_iso(),
+        )
+        ex.status = status  # type: ignore[assignment]
+        ex.updated_at = utc_now_iso()
+        if can_retry:
+            ex.available_at = utc_now_iso()
+        # The holder is gone. Drop the claim token so a later owner can set
+        # its own, and clear the lease so doctor does not show a live worker.
+        ex.claim_token = None
+        ex.lease_expires_at = None
+        try:
+            atomic_state_transition(path, dest, ex.to_dict())
+        except (AtomicFileError, OSError) as exc:
+            logger.warning(
+                "Failed to recover processing job %s: %s", path.name, exc
+            )
+            return False
+        logger.info("Recovered processing job %s -> %s/", ex.execution_id, status)
+        return True
 
 
 def promote_retries(queue_dir: Path, *, now: float | None = None) -> int:
@@ -543,7 +650,14 @@ def select_next_execution(
     return min(pool, key=sort_key)
 
 
-def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
+def claim_execution(
+    queue_dir: Path,
+    execution: Execution,
+    *,
+    hold_claim_lock: bool = False,
+    worker_slot: int | None = None,
+    lease_seconds: float = DEFAULT_LEASE_SECONDS,
+) -> Execution | None:
     """Claim pending -> processing under the shared execution lock.
 
     Claim and producer cancellation serialize on the same lock, so exactly one
@@ -557,6 +671,12 @@ def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
     a malformed or conflicting copy that recovery left intact), the claim fails
     closed. A copy that appears between selection and claim is therefore still
     excluded.
+
+    When ``hold_claim_lock`` is set, the per-job NLM lock is taken *before*
+    the pending file is published into ``processing/`` and held until
+    :func:`release_claim`. A second worker cannot take that lock, so it cannot
+    claim or recover the job. The lock is released if the publish fails.
+    ``O_EXCL`` is not used: NFSv3 does not make it atomic across clients.
     """
     src = queue_dir / "pending" / f"{execution.execution_id}.json"
     dest = queue_dir / "processing" / f"{execution.execution_id}.json"
@@ -577,18 +697,48 @@ def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
             # snapshot. The next selection pass reads the current record.
             return None
 
+        host = socket.gethostname()
+        pid = os.getpid()
+        token = uuid.uuid4().hex if hold_claim_lock else None
+        if hold_claim_lock:
+            try:
+                take_claim_lock(
+                    queue_dir,
+                    current.execution_id,
+                    extra={
+                        "hostname": host,
+                        "pid": pid,
+                        "slot": worker_slot,
+                        "execution_id": current.execution_id,
+                    },
+                )
+            except WorkerAlreadyActive:
+                return None
+
         claimed = replace(
             current,
             status="processing",
             started_at=utc_now_iso(),
             updated_at=utc_now_iso(),
             attempts=current.attempts + 1,
+            worker=f"{host}:{pid}",
+            worker_host=host,
+            worker_pid=pid,
+            worker_slot=worker_slot,
+            lease_expires_at=(
+                _lease_expires_at(lease_seconds) if hold_claim_lock else None
+            ),
+            claim_token=token,
         )
         try:
             atomic_state_transition(src, dest, claimed.to_dict())
         except FileNotFoundError:
+            if hold_claim_lock:
+                release_claim(current.execution_id)
             return None
         except AtomicFileError:
+            if hold_claim_lock:
+                release_claim(current.execution_id)
             return None
         return claimed
 
@@ -596,6 +746,7 @@ def claim_execution(queue_dir: Path, execution: Execution) -> Execution | None:
 def complete_execution(
     queue_dir: Path, execution: Execution, *, output_path: str | None = None
 ) -> None:
+    _require_claim_token(queue_dir, execution)
     src = queue_dir / "processing" / f"{execution.execution_id}.json"
     dest = queue_dir / "completed" / f"{execution.execution_id}.json"
     completed = replace(
@@ -622,6 +773,7 @@ def fail_or_retry(
     available_at: str | None = None,
 ) -> None:
     """Move processing → retry or failed; set future ``available_at`` on retry."""
+    _require_claim_token(queue_dir, execution)
     src = queue_dir / "processing" / f"{execution.execution_id}.json"
     if error.retryable and execution.attempts < execution.max_attempts:
         status: str = "retry"
@@ -672,6 +824,10 @@ def run_worker(
     until_execution_id: str | None = None,
     legacy_pending_file: Path | None = None,
     watch_legacy_pending: bool | None = None,
+    max_workers: int | None = None,
+    host_concurrency: int | None = None,
+    lease_seconds: float | None = None,
+    max_startup_waits: int | None = None,
 ) -> int:
     """Run the worker loop. Returns number of jobs processed.
 
@@ -682,9 +838,18 @@ def run_worker(
 
     When ``until_execution_id`` is set, stop once that execution reaches a
     terminal state directory (foreground fallback from ``lt transcribe``).
-    """
-    import socket
 
+    Startup takes three locks, in order:
+
+    1. A same-host flock slot (``worker.concurrency``, default 1).
+    2. A shared NLM lock on ``worker/worker.lock``. This blocks a pre-0.9
+       worker, which needs that file exclusively, and fails while one is
+       still running. Without ``standby`` the process exits. With
+       ``standby`` it waits and does not claim jobs.
+    3. One exclusive slot lock ``worker/slots/slot-N.lock`` for
+       ``N < queue.max_workers`` (default 1). Extra workers stay in standby
+       until a slot is released by process exit or NLM recovery.
+    """
     if job_runner is None:
         from local_transcribe.services.job_runner import create_default_job_runner
 
@@ -695,7 +860,16 @@ def run_worker(
     # injected callables are not required to, and are used as-is.
     idle_maintenance = resolve_idle_maintenance(job_runner)
 
-    queue_cfg = load_config().queue
+    app_cfg = load_config()
+    queue_cfg = app_cfg.queue
+    worker_cfg = app_cfg.worker
+    cap = queue_cfg.max_workers if max_workers is None else max_workers
+    local_cap = worker_cfg.concurrency if host_concurrency is None else host_concurrency
+    lease = worker_cfg.lease_seconds if lease_seconds is None else lease_seconds
+    if cap < 1:
+        raise ValueError(f"max_workers must be >= 1, got {cap}")
+    if local_cap < 1:
+        raise ValueError(f"host concurrency must be >= 1, got {local_cap}")
     if require_statd is None:
         require_statd = validate_nfs
 
@@ -721,86 +895,127 @@ def run_worker(
     expected_uuid = queue_cfg.expected_uuid if validate_nfs else None
     queue_uuid = verify_queue_identity(resolved, expected_uuid=expected_uuid)
     # Keep unit-test workers off the live XDG runtime lock held by systemd.
-    if validate_nfs:
-        local_lock = LocalRuntimeLock()
-    else:
-        local_lock = LocalRuntimeLock(resolved / "worker" / "local-runtime.lock")
-    try:
-        local_lock.acquire()
-    except WorkerAlreadyActive:
-        if not standby:
-            raise
-        logger.info("Local lock held; standby mode will still try NLM lock")
-
-    nlm: WorkerLock | None = None
-    while nlm is None:
-        try:
-            nlm = WorkerLock.acquire(worker_lock_path(resolved))
-        except WorkerAlreadyActive:
-            if not standby:
-                local_lock.release()
-                raise
-            logger.info("NLM lock held elsewhere; standby sleep %.0fs", standby_retry_seconds)
-            time.sleep(standby_retry_seconds)
-
-    assert nlm is not None
-    state = WorkerState.create(queue_uuid)
-    write_worker_state(resolved, state)
-    processed = 0
-    interactive_streak = 0
-    host = socket.gethostname()
-
-    watch_pending = (
-        queue_cfg.watch_legacy_pending
-        if watch_legacy_pending is None
-        else watch_legacy_pending
+    local_base = (
+        local_runtime_lock_path()
+        if validate_nfs
+        else resolved / "worker" / "local-runtime.lock"
     )
-    pending_path = legacy_pending_file
-    if pending_path is None:
-        pending_path = queue_cfg.legacy_pending_file
-    # Default home pending path only in production (validate_nfs=True) so unit
-    # tests with fake queues never touch the operator's real file.
-    if pending_path is None and watch_pending and validate_nfs:
-        pending_path = default_legacy_pending_path()
-    pending_watch = LegacyPendingWatchState()
+    local_lock: LocalRuntimeLock | None = None
+    compat: WorkerLock | None = None
+    slot_held: HeldLock | None = None
+    state: WorkerState | None = None
+    startup_waits = 0
 
-    def _import_legacy_pending(*, force: bool = False) -> None:
-        if not watch_pending or pending_path is None:
-            return
-        maybe_import_legacy_pending(
-            resolved,
-            pending_path,
-            state=pending_watch,
-            force=force,
-        )
-
-    def _done_for_target() -> bool:
-        return bool(
-            until_execution_id
-            and _execution_file_in_terminal_dir(resolved, until_execution_id)
-        )
-
-    def _run_idle_maintenance() -> None:
-        """Give the job runner a chance to drop an idle cached model.
-
-        Only ever called on the "nothing claimable" path, i.e. while this
-        process holds no running job, so a transcription in flight can never
-        lose its model. Failures must not stop the queue loop.
-        """
-        if idle_maintenance is None:
-            return
-        try:
-            idle_maintenance()
-        except Exception:
-            logger.exception("Idle model maintenance failed; continuing worker loop")
+    def _wait_or_raise(exc: WorkerAlreadyActive, reason: str) -> None:
+        nonlocal startup_waits
+        if not standby:
+            raise exc
+        startup_waits += 1
+        logger.info("%s; standby sleep %.0fs", reason, standby_retry_seconds)
+        time.sleep(standby_retry_seconds)
+        if max_startup_waits is not None and startup_waits >= max_startup_waits:
+            raise exc
 
     try:
+        while local_lock is None:
+            try:
+                local_lock = acquire_local_runtime_slot(local_base, local_cap)
+            except WorkerAlreadyActive as exc:
+                _wait_or_raise(
+                    exc, f"local worker concurrency ({local_cap}) is full"
+                )
+
+        while compat is None:
+            try:
+                compat = WorkerLock.acquire_shared(worker_lock_path(resolved))
+            except WorkerAlreadyActive as exc:
+                _wait_or_raise(
+                    exc, "pre-upgrade worker holds exclusive worker.lock"
+                )
+
+        while slot_held is None:
+            slot_held = acquire_any_slot(resolved, cap)
+            if slot_held is None:
+                _wait_or_raise(
+                    WorkerAlreadyActive(f"All {cap} worker slots are busy"),
+                    f"all {cap} worker slots are busy",
+                )
+
+        assert slot_held is not None
+        nlm = slot_held.lock
+        state = WorkerState.create(queue_uuid, slot=slot_held.slot)
+        write_worker_state(resolved, state)
+        processed = 0
+        interactive_streak = 0
+        host = socket.gethostname()
+
+        watch_pending = (
+            queue_cfg.watch_legacy_pending
+            if watch_legacy_pending is None
+            else watch_legacy_pending
+        )
+        pending_path = legacy_pending_file
+        if pending_path is None:
+            pending_path = queue_cfg.legacy_pending_file
+        # Default home pending path only in production (validate_nfs=True) so unit
+        # tests with fake queues never touch the operator's real file.
+        if pending_path is None and watch_pending and validate_nfs:
+            pending_path = default_legacy_pending_path()
+        pending_watch = LegacyPendingWatchState()
+
+        def _import_legacy_pending(*, force: bool = False) -> None:
+            if not watch_pending or pending_path is None:
+                return
+            maybe_import_legacy_pending(
+                resolved,
+                pending_path,
+                state=pending_watch,
+                force=force,
+            )
+
+        def _done_for_target() -> bool:
+            return bool(
+                until_execution_id
+                and _execution_file_in_terminal_dir(resolved, until_execution_id)
+            )
+
+        def _run_idle_maintenance() -> None:
+            """Give the job runner a chance to drop an idle cached model.
+
+            Only ever called on the "nothing claimable" path, i.e. while this
+            process holds no running job, so a transcription in flight can never
+            lose its model. Failures must not stop the queue loop.
+            """
+            if idle_maintenance is None:
+                return
+            try:
+                idle_maintenance()
+            except Exception:
+                logger.exception("Idle model maintenance failed; continuing worker loop")
+
+        def _note_current_job(execution_id: str | None) -> None:
+            assert slot_held is not None and state is not None
+            state.current_execution_id = execution_id
+            state.heartbeat_at = utc_now_iso()
+            write_worker_state(resolved, state)
+            try:
+                slot_held.lock.write_metadata(
+                    {
+                        "slot": slot_held.slot,
+                        "current_execution_id": execution_id,
+                    }
+                )
+            except OSError:
+                logger.exception("Failed to refresh slot metadata")
+
         recover_processing(resolved)
         _import_legacy_pending(force=True)
         while True:
             if _done_for_target():
                 break
             _import_legacy_pending()
+            # Pick up jobs whose owners died and dropped their NLM claim locks.
+            recover_processing(resolved)
             promote_retries(resolved)
             job = select_next_execution(
                 resolved, hostname=host, interactive_streak=interactive_streak
@@ -821,76 +1036,127 @@ def run_worker(
                 time.sleep(poll_interval_seconds)
                 continue
 
-            claimed = claim_execution(resolved, job)
+            claimed = claim_execution(
+                resolved,
+                job,
+                hold_claim_lock=True,
+                worker_slot=slot_held.slot,
+                lease_seconds=lease,
+            )
             if claimed is None:
                 continue
 
-            # Generation check
-            res = read_reservation(resolved, claimed.source_key)
-            if res and res.current_execution_id != claimed.execution_id:
-                fail_or_retry(
-                    resolved,
-                    claimed,
-                    ExecutionError(
-                        category="internal_error",
-                        message="Execution superseded by newer generation",
-                        retryable=False,
-                        occurred_at=utc_now_iso(),
-                    ),
-                )
-                if _done_for_target():
-                    break
-                continue
-
-            state.current_execution_id = claimed.execution_id
-            state.heartbeat_at = utc_now_iso()
-            write_worker_state(resolved, state)
-
-            scratch = (
-                Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-                / "local-transcribe"
-                / "jobs"
-                / claimed.execution_id
-            )
-            scratch.mkdir(parents=True, exist_ok=True)
-            admission = DownloadAdmission(resolved)
+            stop_beat = threading.Event()
+            beater: threading.Thread | None = None
             try:
-                # YouTube only: persist admission attempt before yt-dlp.
-                # Local files never consume download budget.
-                if claimed.source_type == "youtube":
-                    admission.admit_and_record(worker_lock=nlm)
-                payload = job_runner(claimed, scratch)
-                out = payload.get("_output_path")
-                if claimed.source_type == "youtube":
-                    admission.clear_throttle_streak(worker_lock=nlm)
-                complete_execution(
-                    resolved, claimed, output_path=str(out) if out else None
-                )
-                if claimed.priority >= 100:
-                    interactive_streak += 1
+                res = read_reservation(resolved, claimed.source_key)
+                if res and res.current_execution_id != claimed.execution_id:
+                    fail_or_retry(
+                        resolved,
+                        claimed,
+                        ExecutionError(
+                            category="internal_error",
+                            message="Execution superseded by newer generation",
+                            retryable=False,
+                            occurred_at=utc_now_iso(),
+                        ),
+                    )
                 else:
-                    interactive_streak = 0
-                processed += 1
-            except Exception as exc:
-                logger.exception("Job %s failed", claimed.execution_id)
-                error = classify_job_exception(exc)
-                avail: str | None = None
-                if claimed.source_type == "youtube":
-                    if error.category == "rate_limited":
-                        st = admission.record_429(worker_lock=nlm)
-                        avail = st.blocked_until
-                    elif error.category == "temporary_forbidden":
-                        st = admission.record_403(worker_lock=nlm, temporary=True)
-                        avail = st.blocked_until
-                fail_or_retry(resolved, claimed, error, available_at=avail)
+                    _note_current_job(claimed.execution_id)
+
+                    def _beat(
+                        stop_beat: threading.Event = stop_beat,
+                        claimed: Execution = claimed,
+                    ) -> None:
+                        interval = min(30.0, max(1.0, float(lease) / 3.0))
+                        while not stop_beat.wait(interval):
+                            try:
+                                refresh_processing_lease(resolved, claimed, lease)
+                                _note_current_job(claimed.execution_id)
+                            except Exception:
+                                logger.exception("worker lease heartbeat failed")
+
+                    beater = threading.Thread(
+                        target=_beat,
+                        name="lt-worker-lease",
+                        daemon=True,
+                    )
+                    beater.start()
+
+                    scratch = (
+                        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+                        / "local-transcribe"
+                        / "jobs"
+                        / claimed.execution_id
+                    )
+                    scratch.mkdir(parents=True, exist_ok=True)
+                    admission = DownloadAdmission(resolved)
+                    job_error: Exception | None = None
+                    output_path: str | None = None
+                    try:
+                        # YouTube only: persist admission attempt before yt-dlp.
+                        # Local files never consume download budget.
+                        if claimed.source_type == "youtube":
+                            admission.admit_and_record(worker_lock=nlm)
+                        payload = job_runner(claimed, scratch)
+                        out = payload.get("_output_path")
+                        output_path = str(out) if out else None
+                        if claimed.source_type == "youtube":
+                            admission.clear_throttle_streak(worker_lock=nlm)
+                    except Exception as exc:  # noqa: BLE001 - runner may raise anything
+                        job_error = exc
+                    finally:
+                        # Stop the lease thread before the terminal rename so
+                        # it cannot recreate processing/ after the move.
+                        stop_beat.set()
+                        beater.join(timeout=2)
+                        beater = None
+                    if job_error is None:
+                        complete_execution(
+                            resolved, claimed, output_path=output_path
+                        )
+                        if claimed.priority >= 100:
+                            interactive_streak += 1
+                        else:
+                            interactive_streak = 0
+                        processed += 1
+                    else:
+                        logger.error(
+                            "Job %s failed", claimed.execution_id, exc_info=job_error
+                        )
+                        error = classify_job_exception(job_error)
+                        avail: str | None = None
+                        if claimed.source_type == "youtube":
+                            if error.category == "rate_limited":
+                                st = admission.record_429(worker_lock=nlm)
+                                avail = st.blocked_until
+                            elif error.category == "temporary_forbidden":
+                                st = admission.record_403(
+                                    worker_lock=nlm, temporary=True
+                                )
+                                avail = st.blocked_until
+                        fail_or_retry(resolved, claimed, error, available_at=avail)
+            finally:
+                stop_beat.set()
+                if beater is not None:
+                    beater.join(timeout=2)
+                release_claim(claimed.execution_id)
+                if state is not None and state.current_execution_id:
+                    _note_current_job(None)
 
             if _done_for_target():
                 break
             if once or (max_jobs is not None and processed >= max_jobs):
                 break
     finally:
-        mark_worker_inactive(resolved, state)
-        nlm.release()
-        local_lock.release()
+        release_all_claims()
+        if state is not None:
+            mark_worker_inactive(resolved, state)
+        if slot_held is not None:
+            slot_held.release()
+        if compat is not None:
+            compat.release()
+        if local_lock is not None:
+            local_lock.release()
 
     return processed
